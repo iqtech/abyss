@@ -1,7 +1,7 @@
 Abyss
 =====
 
-Graph storage based on Akka and Scala.
+Distributed graph storage based on Akka and Scala.
 
 Check GraphTest to see how to use.
 
