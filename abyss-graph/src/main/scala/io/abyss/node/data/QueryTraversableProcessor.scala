@@ -361,9 +361,9 @@ trait QueryTraversableProcessor extends AbyssActor {
 
 		val graphElementSelected = element match {
 			case v: Vertex =>
-				currentQuery.filters (msg.step).asInstanceOf[VertexFilterFun](v)
+				currentQuery.filters (msg.step).asInstanceOf[VertexFilterFun](v.state)
 			case e: Edge =>
-				currentQuery.filters (msg.step).asInstanceOf[EdgeFilterFun](e)
+				currentQuery.filters (msg.step).asInstanceOf[EdgeFilterFun](e.state)
 		}
 
 		graphElementSelected match {

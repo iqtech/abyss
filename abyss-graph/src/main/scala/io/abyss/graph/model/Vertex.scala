@@ -20,8 +20,7 @@ package io.abyss.graph.model
 
 import java.util.UUID
 import scala.Some
-import io.abyss.VertexFilterFun
-import io.abyss.client.{GraphElementState, VertexState}
+import io.abyss.client.{VertexFilterFun, GraphElementState, VertexState}
 
 
 /*
@@ -99,7 +98,7 @@ final class Vertex (initialState: Option[VertexState], initialDirty: Boolean = t
 	 * @return Some(this) or None according to selctFun result
 	 */
 	def select (selectFun: VertexFilterFun): Option[ this.type ] = {
-		if ( selectFun (this) ) Some (this)
+		if ( selectFun (state) ) Some (this)
 		else None
 	}
 

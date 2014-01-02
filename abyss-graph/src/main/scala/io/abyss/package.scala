@@ -66,14 +66,6 @@ package object abyss {
 
 
 
-	type VertexFilterFun = ( Vertex ) => Boolean
 
-	type EdgeFilterFun = ( Edge ) => Boolean
-
-
-	val V = Array[ Any ](
-	{
-		_: Vertex => true // accept start vertex
-	})
 
 }

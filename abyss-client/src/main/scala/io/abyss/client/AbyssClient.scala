@@ -42,6 +42,8 @@ object AbyssClient {
 		sys.actorOf (Props (new AbyssClient (remotes)), actorName)
 	}
 
+    //val system = ActorSystem ("abyss-client")
+
 }
 
 
@@ -57,7 +59,7 @@ class AbyssClient (remotes: Seq[ String ]) extends Actor with ActorLogging {
 
 	// TODO try to connect next if fail, not necessary when in local mode
 
-	val f = ( context.actorSelection (remotes.head) ? ClientConnected () ).mapTo[ AbyssFrontMembers ]
+	val f = ( context.actorSelection (remotes.head) ? ClientConnected (self) ).mapTo[ AbyssFrontMembers ]
 
 	val remoteMembers = Await.result (f, duration)
 

@@ -27,15 +27,13 @@ import org.junit.Test
 import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{Future, Await, ExecutionContext}
+
 import io.abyss._
-import io.abyss.graph.model.{Edge, Vertex}
 import io.abyss.client._
-import io.abyss.client.AbyssClient
 
 
 /**
  * Created by cane, 11.06.13 21:20
- * $Id: GraphTest.scala,v 1.2 2013-12-31 21:09:28 cane Exp $
  */
 @Test
 class GraphTest {
@@ -106,15 +104,15 @@ class GraphTest {
 		// Graph traversing filters
 
 		val EOrbits = {
-			e: Edge => e.state.data.get.isInstanceOf[ Orbits ]
+			e: EdgeState => e.data.get.isInstanceOf[ Orbits ]
 		}
 
 		val VIsPlanet = {
-			v: Vertex => v.state.data.get.isInstanceOf[ Planet ]
+			v: VertexState => v.data.get.isInstanceOf[ Planet ]
 		}
 
 		val VIsStar = {
-			v: Vertex => v.state.data.get.isInstanceOf[ Star ]
+			v: VertexState => v.data.get.isInstanceOf[ Star ]
 		}
 
 		val whatStarIsMoonOrbiting = V ++: Array[ Any ](EOrbits, VIsPlanet, EOrbits, VIsStar)

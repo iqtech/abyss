@@ -19,11 +19,12 @@
 package io.abyss
 
 import akka.cluster.Member
+import akka.actor.ActorRef
 
 // Created by cane, 1/2/14 1:08 PM
 
 package object client {
-	case class ClientConnected ()
+	case class ClientConnected (clientRef: ActorRef)
 
 
 	case class AbyssFrontMembers (members: Set[ Member ])
@@ -190,6 +191,22 @@ package object client {
 	 * @return
 	 */
 	def shardId(id: String) = ( math.abs(id.hashCode) % NumberOfShards ).toShort
+
+
+    // Types for filter functions
+
+    type VertexFilterFun = ( VertexState ) => Boolean
+
+    type EdgeFilterFun = ( EdgeState ) => Boolean
+
+
+    /**
+     * Filter function for starting node.
+     */
+    val V: Array[ Any ] = Array[ Any ](
+    {
+        _: VertexState => true // accept start vertex
+    })
 
 
 }
