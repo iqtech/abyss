@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>pl.iqtech</groupId>
+    <artifactId>abyss</artifactId>
+    <version>1.0.0-M2</version>
+    <packaging>pom</packaging>
+
+
+    <name>${project.artifactId}</name>
+    <description>Abyss Graph by IQ Tech</description>
+    <inceptionYear>2013</inceptionYear>
+    <licenses>
+        <license>
+            <name>IQ Tech</name>
+            <url>http://iqtech.pl/abyss/licence</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <modules>
+        <module>abyss-graph</module>
+    </modules>
+
+    <properties>
+        <java.src.version>1.7</java.src.version>
+        <maven.compiler.plugin.version>3.1</maven.compiler.plugin.version>
+        <scala.commons.version>0.0.3-SNAPSHOT</scala.commons.version>
+
+        <maven.compiler.source>1.7</maven.compiler.source>
+        <maven.compiler.target>1.7</maven.compiler.target>
+        <encoding>UTF-8</encoding>
+
+        <scala.version>2.10.2</scala.version>
+        <akka.version>2.2.3</akka.version>
+
+        <camel.version>2.10.3</camel.version>
+
+        <maven.scala.plugin.version>2.15.2</maven.scala.plugin.version>
+        <maven.surefire.plugin.version>2.6</maven.surefire.plugin.version>
+        <junit.version>4.11</junit.version>
+
+        <slf4j.version>1.7.2</slf4j.version>
+    </properties>
+
+
+
+
+</project>
