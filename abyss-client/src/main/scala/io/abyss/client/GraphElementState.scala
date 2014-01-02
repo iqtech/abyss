@@ -16,9 +16,25 @@
  * the License.
  */
 
-package io.abyss.graph.internal
+package io.abyss.client
 
-import io.abyss.node._
+
+// Created by cane, 19.07.13 18:04
+
+
+
+trait GraphElementState {
+	val id: String
+	val dc: Short
+	val shard: Short
+	val graph: String
+	val collection: String
+	val data: Option[AnyRef]
+}
+
+
+
+
 
 /**
  * Graph edge state internal representation, immutable.
@@ -49,7 +65,7 @@ object EdgeState {
 			   bidirectional: Boolean, data: Option[AnyRef]): EdgeState = {
 		EdgeState (
 			id = id,
-			dc = dataCenterId,
+			dc = 0,
 			shard = shardId (id),
 			graph = graph,
 			collection = data.getClass.getSimpleName,
@@ -61,3 +77,32 @@ object EdgeState {
 }
 
 
+
+
+
+
+/**
+ * Vertex internal state representation.
+ * @param id Unique identifier of element. Usually UUID.
+ * @param dc Data center number, bound to cluster (exists in boundaries of single data center).
+ * @param shard Shard number, calculated from identifier's hash.
+ * @param graph Graph to which this element belongs.
+ * @param collection Collection to which this element belongs.
+ * @param data Element's data.
+ */
+case class VertexState (id: String,
+						dc: Short,
+						shard: Short,
+						graph: String,
+						collection: String,
+						data: Option[AnyRef])
+	extends GraphElementState
+
+
+object VertexState {
+	def apply (id: String, graph: String, data: Option[AnyRef]): VertexState = {
+		VertexState (id = id, dc = 0, shard = shardId (id),
+			graph = graph, collection = data.getClass.getSimpleName, data = data)
+	}
+
+}

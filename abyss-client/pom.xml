@@ -18,7 +18,6 @@ License for the specific language governing permissions and limitations under
 the License.
 -->
 
-
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -29,15 +28,10 @@ the License.
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <artifactId>abyss-graph</artifactId>
+    <artifactId>abyss-client</artifactId>
+
+
     <dependencies>
-
-
-        <dependency>
-            <groupId>io.abyss</groupId>
-            <artifactId>abyss-client</artifactId>
-            <version>${abyss.version}</version>
-        </dependency>
 
         <!-- scala & akka -->
 
@@ -51,60 +45,11 @@ the License.
             <artifactId>akka-kernel_2.10</artifactId>
             <version>${akka.version}</version>
         </dependency>
-
-        <dependency>
-            <groupId>com.typesafe.akka</groupId>
-            <artifactId>akka-remote_2.10</artifactId>
-            <version>${akka.version}</version>
-        </dependency>
-
         <dependency>
             <groupId>com.typesafe.akka</groupId>
             <artifactId>akka-cluster_2.10</artifactId>
             <version>${akka.version}</version>
         </dependency>
-
-        <dependency>
-            <groupId>com.typesafe.akka</groupId>
-            <artifactId>akka-camel_2.10</artifactId>
-            <version>${akka.version}</version>
-        </dependency>
-
-        <dependency>
-            <groupId>com.typesafe.akka</groupId>
-            <artifactId>akka-contrib_2.10</artifactId>
-            <version>${akka.version}</version>
-        </dependency>
-
-
-        <dependency>
-            <groupId>org.apache.camel</groupId>
-            <artifactId>camel-core</artifactId>
-            <version>${camel.version}</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.camel</groupId>
-            <artifactId>camel-quartz</artifactId>
-            <version>${camel.version}</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-log4j12</artifactId>
-            <version>${slf4j.version}</version>
-        </dependency>
-
-
-        <!-- Cassandra Client-->
-
-        <dependency>
-            <groupId>me.prettyprint</groupId>
-            <artifactId>hector-core</artifactId>
-            <version>1.0-5</version>
-        </dependency>
-
-
 
         <!-- TEST -->
 
@@ -114,6 +59,7 @@ the License.
             <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
 

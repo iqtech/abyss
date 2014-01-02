@@ -20,10 +20,9 @@ package io.abyss.node.data
 
 import akka.actor.Address
 import akka.actor.RootActorPath
-import io.abyss.QueryTraversable
+import io.abyss.client._
 import io.abyss._
 import io.abyss.graph.model._
-import io.abyss.node._
 import java.util.concurrent.ConcurrentMap
 import scala.Some
 

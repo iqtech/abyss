@@ -21,8 +21,7 @@ package io.abyss.node.data
 import akka.actor._
 import java.util.concurrent.ConcurrentMap
 import scala.collection.JavaConverters
-import io.abyss.node._
-import io.abyss.Command
+import io.abyss.client.Command
 import io.abyss.graph.model.GraphElement
 
 

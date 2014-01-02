@@ -21,7 +21,7 @@ package io.abyss.storage
 import akka.actor.{Props, ActorRef}
 import akka.camel.Consumer
 import io.abyss.AbyssActor
-import io.abyss.graph.internal.{EdgeState, VertexState}
+import io.abyss.client.{VertexState, EdgeState}
 
 
 /**

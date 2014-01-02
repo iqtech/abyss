@@ -22,6 +22,7 @@ import akka.cluster.ClusterEvent.CurrentClusterState
 import akka.cluster.Member
 import scala.collection.immutable
 import akka.actor.{ActorRef, Address}
+import io.abyss.client.QueryTraversable
 
 
 package object node {
@@ -30,12 +31,7 @@ package object node {
 	// TODO selected values should be configured externally
 
 
-	/**
-	 * Predefined number of shards, don't exceed 32768 because shard id is of type Short.
-	 * Number of shards also defines level of concurrency as each shard has instance of
-	 * ShardWorker actor.
-	 */
-	final val NumberOfShards = 128
+
 
 
 	/**
@@ -67,12 +63,7 @@ package object node {
 	}
 
 
-	/**
-	 * Returns short number representing id of shard which is designed to take care of given ID
-	 * @param id
-	 * @return
-	 */
-	def shardId(id: String) = ( math.abs(id.hashCode) % NumberOfShards ).toShort
+
 
 
 	/**

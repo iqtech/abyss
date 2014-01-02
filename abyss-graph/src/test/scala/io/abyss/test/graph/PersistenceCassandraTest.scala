@@ -30,8 +30,8 @@ import akka.actor.Props
 import scala.util.Random
 import io.abyss._
 import io.abyss.node.data.persistence.CassandraPersistenceProvider
-import io.abyss.graph.internal.{EdgeState, VertexState}
 import io.abyss.node.persistence.{CollectionConsistencyConfig, AbyssDefaultPersistenceConfig}
+import io.abyss.client.{EdgeState, VertexState}
 
 /*
  * Created by cane, 11/30/13 9:15 PM

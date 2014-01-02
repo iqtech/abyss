@@ -25,7 +25,7 @@ import akka.util.Timeout
 import scala.concurrent.duration._
 import akka.actor.RootActorPath
 import io.abyss._
-import io.abyss.node._
+import io.abyss.client._
 import io.abyss.node.{ShardNodeMap, AbyssClusterState}
 
 /*

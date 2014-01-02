@@ -20,8 +20,8 @@ package io.abyss.graph.model
 
 import java.util.UUID
 import scala.Some
-import io.abyss.graph.internal.{GraphElementState, VertexState}
 import io.abyss.VertexFilterFun
+import io.abyss.client.{GraphElementState, VertexState}
 
 
 /*

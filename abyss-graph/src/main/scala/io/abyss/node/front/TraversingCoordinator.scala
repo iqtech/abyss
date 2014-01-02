@@ -25,6 +25,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import io.abyss._
+import io.abyss.client._
 import io.abyss.node._
 
 

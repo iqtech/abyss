@@ -20,7 +20,7 @@ package io.abyss.graph.model
 
 import java.util.UUID
 import scala.Some
-import io.abyss.graph.internal.{GraphElementState, EdgeState}
+import io.abyss.client.{GraphElementState, EdgeState}
 
 
 /*

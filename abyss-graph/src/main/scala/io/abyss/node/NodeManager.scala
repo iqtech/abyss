@@ -22,8 +22,8 @@ import akka.actor.Props
 import akka.cluster.ClusterEvent.CurrentClusterState
 import io.abyss.node.front.FrontendManager
 import io.abyss.node.data.DataManager
-import io.abyss.{ClientConnected, AbyssFrontMembers, AbyssActor}
-import io.abyss.node._
+import io.abyss._
+import io.abyss.client._
 
 /**
  * Starts node roles actors and forwards some messages to them.

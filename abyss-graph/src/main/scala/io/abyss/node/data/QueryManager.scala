@@ -23,7 +23,8 @@ import akka.cluster.Member
 import akka.routing.RoundRobinRouter
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.immutable
-import io.abyss.{Query, AbyssActor}
+import io.abyss._
+import io.abyss.client._
 import io.abyss.node.{NotConfigured, PrepareQueryTraversable}
 import io.abyss.graph.model.GraphElement
 

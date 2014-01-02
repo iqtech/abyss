@@ -18,12 +18,13 @@
 
 package io.abyss.node.data
 
-import java.util.concurrent.ConcurrentMap
+
 import io.abyss._
-import io.abyss.ReadMany
-import io.abyss.InVertices
-import io.abyss.OutVertices
+import io.abyss.client._
 import io.abyss.graph.model.GraphElement
+
+import java.util.concurrent.ConcurrentMap
+
 
 
 /**
@@ -41,23 +42,23 @@ trait QueryProcessor extends AbyssActor {
 		case msg: ReadMany =>
 			sender ! msg.ids.map (memory.get(_).state).toArray
 
-		case msg: InVertices =>
-
-		case msg: OutVertices =>
-
-		case msg: InOutVertices =>
-
-		case msg: InEdges =>
-//			val v = memory.get(msg.id).asInstanceOf[Vertex] //.state.asInstanceOf[VertexState]
-//			v.inEdges foreach {
-//				eid =>
-//					val sid = shardId(eid)
-//					// TODO ask other node if shard not owned by me
-//			}
-
-		case msg: OutEdges =>
-
-		case msg: InOutEdges =>
+//		case msg: InVertices =>
+//
+//		case msg: OutVertices =>
+//
+//		case msg: InOutVertices =>
+//
+//		case msg: InEdges =>
+////			val v = memory.get(msg.id).asInstanceOf[Vertex] //.state.asInstanceOf[VertexState]
+////			v.inEdges foreach {
+////				eid =>
+////					val sid = shardId(eid)
+////					// TODO ask other node if shard not owned by me
+////			}
+//
+//		case msg: OutEdges =>
+//
+//		case msg: InOutEdges =>
 
 		case msg: Read =>
 			sender ! memory.get(msg.id).state

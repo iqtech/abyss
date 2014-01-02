@@ -27,13 +27,9 @@ import me.prettyprint.hector.api.Keyspace
 import me.prettyprint.hector.api.ddl.{ComparatorType, ColumnFamilyDefinition}
 import me.prettyprint.hector.api.factory.HFactory
 import scala.collection.JavaConverters
-import scala.Some
 import io.abyss._
 import io.abyss.node._
-import io.abyss.node.data._
-import io.abyss.graph._
 import io.abyss.graph.model._
-import io.abyss.graph.internal._
 import io.abyss.node.persistence._
 import io.abyss.node.persistence.CollectionConsistencyConfig
 import io.abyss.node.persistence.CassandraPersistenceProviderConfig
@@ -41,6 +37,7 @@ import io.abyss.node.ShardsOwned
 import scala.Some
 import io.abyss.node.persistence.DirtyVertex
 import io.abyss.node.persistence.AbyssPersistenceConfig
+import io.abyss.client.{VertexState, EdgeState, GraphElementState}
 
 /*
  * Created by cane, 8/16/13 2:07 PM

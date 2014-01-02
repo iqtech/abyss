@@ -19,13 +19,6 @@
 package io.abyss
 
 import akka.actor._
-import akka.pattern.ask
-import akka.routing.RoundRobinRouter
-import akka.util.Timeout
-import scala.concurrent.Await
-import scala.concurrent.duration._
-import scala.util.Random
-import akka.cluster.Member
 import io.abyss.node.{ClusterManager, NodeManager}
 
 
@@ -45,83 +38,10 @@ object Abyss {
 
 }
 
-object AbyssClient {
-
-	/**
-	 * Creates
-	 * @param sys
-	 * @param actorName
-	 * @param remotes
-	 * @return
-	 */
-	def apply (sys: ActorSystem, actorName: String, remotes: String*): ActorRef = {
-		sys.actorOf (Props (new AbyssClient (remotes)), actorName)
-	}
-
-}
 
 
 
 
 
 
-/**
- * Abyss client. May work in 'local' mode when run in 'abyss' actor system and surrounding logic is run as
- * one of the node's role.
- * @param remotes Sequence of root actor paths for nodes to which Abyss Client should try to connect
- */
-class AbyssClient (remotes: Seq[ String ]) extends Actor with ActorLogging {
-	implicit val timeout = Timeout (2 seconds)
-	implicit val duration = 2.seconds
 
-	// TODO try to connect next if fail, not necessary when in local mode
-
-	val f = ( context.actorSelection (remotes.head) ? ClientConnected () ).mapTo[ AbyssFrontMembers ]
-
-	val remoteMembers = Await.result (f, duration)
-
-	val routeesCommand = Vector(randomMember(remoteMembers.members).address.toString + "/user/node/front/command")
-	val routeesQuery = remoteMembers.members.map (m => m.address.toString + "/user/node/front/query").toVector
-
-
-	// TODO command actor should be selected by cluster and identify itself in returned message
-
-	/**
-	 * Routes all messages to randomly selected front command endpoint
-	 */
-	val commandRouter = context.actorOf (
-		Props.empty.withRouter (RoundRobinRouter (routees = routeesCommand)))
-
-
-	/**
-	 * Round robin router, will forward all messages to detected fronts
-	 */
-	val queryRouter = context.actorOf (
-		Props.empty.withRouter (RoundRobinRouter (routees = routeesQuery)))
-
-	log.info ("Connected to members: {}", remoteMembers.toString)
-
-
-	/**
-	 *
-	 * @return
-	 */
-	def receive = {
-		case msg: Command =>
-			commandRouter.forward(msg)
-		case msg: Query =>
-			queryRouter.forward (msg)
-	}
-
-
-	/**
-	 * Returns random member from given set of members.
-	 * @param members set of members
-	 * @return
-	 */
-	private def randomMember(members: Set[Member]): Member = {
-		val arr = members.toArray
-		arr(Random.nextInt(remoteMembers.members.size))
-	}
-
-}

@@ -18,7 +18,7 @@
 
 package io.abyss.storage
 
-import io.abyss.graph.internal.EdgeState
+import io.abyss.client.EdgeState
 
 
 /**

@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentMap
 import scala.concurrent.duration._
 import io.abyss.graph.model.{GraphElement, Edge, Vertex}
 import io.abyss._
-import io.abyss.node._
+import io.abyss.client._
 import scala.concurrent.ExecutionContext
 
 /*

@@ -19,7 +19,7 @@
 package io.abyss.graph.model
 
 import akka.cluster.VectorClock
-import io.abyss.graph.internal.GraphElementState
+import io.abyss.client.GraphElementState
 
 
 /*

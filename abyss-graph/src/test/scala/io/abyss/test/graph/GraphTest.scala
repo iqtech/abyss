@@ -29,8 +29,8 @@ import scala.concurrent.duration._
 import scala.concurrent.{Future, Await, ExecutionContext}
 import io.abyss._
 import io.abyss.graph.model.{Edge, Vertex}
-import io.abyss.CreateEdge
-import io.abyss.graph.internal.GraphElementState
+import io.abyss.client._
+import io.abyss.client.AbyssClient
 
 
 /**

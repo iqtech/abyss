@@ -19,7 +19,7 @@
 package io.abyss.test
 
 import java.util.Date
-import io.abyss.{CreateEdge, CreateVertex}
+import io.abyss.client._
 
 /**
  * Created by cane, 02.08.13 12:37

@@ -18,6 +18,8 @@
 
 package io.abyss.node
 
+import io.abyss.client._
+
 import scala.collection.immutable
 import akka.actor.Address
 import scala.util.Random
