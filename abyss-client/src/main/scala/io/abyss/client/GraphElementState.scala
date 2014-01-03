@@ -61,12 +61,12 @@ case class EdgeState (id: String,
 
 
 object EdgeState {
-	def apply (id: String, graph: String, fromVertex: String, toVertex: String,
+	def apply (id: String, shardId: Short, graph: String, fromVertex: String, toVertex: String,
 			   bidirectional: Boolean, data: Option[AnyRef]): EdgeState = {
 		EdgeState (
 			id = id,
 			dc = 0,
-			shard = shardId (id),
+			shard = shardId,
 			graph = graph,
 			collection = data.getClass.getSimpleName,
 			fromVertex = fromVertex,
@@ -100,8 +100,8 @@ case class VertexState (id: String,
 
 
 object VertexState {
-	def apply (id: String, graph: String, data: Option[AnyRef]): VertexState = {
-		VertexState (id = id, dc = 0, shard = shardId (id),
+	def apply (id: String, shardId: Short, graph: String, data: Option[AnyRef]): VertexState = {
+		VertexState (id = id, dc = 0, shard = shardId,
 			graph = graph, collection = data.getClass.getSimpleName, data = data)
 	}
 

@@ -20,12 +20,13 @@ package io.abyss.graph.model
 
 import java.util.UUID
 import scala.Some
-import io.abyss.client.{VertexFilterFun, GraphElementState, VertexState}
+
+import io.abyss._
+import io.abyss.client._
 
 
 /*
  * Created by cane, 11.06.13 17:28
- * $Id: Vertex.scala,v 1.3 2014-01-02 09:35:15 cane Exp $
  */
 
 // TODO make context for select functions, which will describe some aspects like security or access control
@@ -109,7 +110,7 @@ final class Vertex (initialState: Option[VertexState], initialDirty: Boolean = t
 object Vertex {
 
 	def apply (id: String = UUID.randomUUID ().toString, graph: String, data: Option[AnyRef]): Vertex = {
-		val vs = VertexState (id, graph, data)
+		val vs = VertexState (id, shardId(id), graph, data)
 		new Vertex (Some(vs))
 	}
 

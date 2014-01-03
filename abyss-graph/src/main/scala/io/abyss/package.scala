@@ -20,17 +20,33 @@ package io
 
 import akka.actor.{ActorLogging, Actor}
 import akka.cluster.Cluster
-import io.abyss.graph.model.{Vertex, Edge}
+import io.abyss.client._
 
 
 /**
  * Created by cane, 09.07.13 21:41
- * $Id: package.scala,v 1.2 2013-12-31 21:09:28 cane Exp $
  */
 package object abyss {
 
+    /**
+     * Predefined number of shards, don't exceed 32768 because shard id is of type Short.
+     * Number of shards also defines level of concurrency as each shard has instance of
+     * ShardWorker actor.
+     * TODO read from settings
+     */
+    final val NumberOfShards = 128
 
-	trait AbyssActor extends Actor with ActorLogging {
+
+    /**
+     * Returns short number representing id of shard which is designed to take care of given ID
+     * @param id
+     * @return
+     */
+    def shardId(id: String) = ( math.abs(id.hashCode) % NumberOfShards ).toShort
+
+
+
+    trait AbyssActor extends Actor with ActorLogging {
 		/**
 		 * Cluster object.
 		 */
@@ -66,6 +82,37 @@ package object abyss {
 
 
 
+    /**
+     * Ask for ElementExists or NoSuchElement message
+     * @param id Id of Vertex
+     */
+    case class VertexIntegrityRequired (id: String) extends Command
+
+    /**
+     * Ask for ElementExists or NoSuchElement message
+     * @param id Id of Edge
+     */
+    case class EdgeIntegrityRequired (id: String) extends Command
+
+
+
+    /**
+     * Sent when edge has been created and remote shard must update indices held by vertex.
+     * @param id
+     */
+    case class VertexInternalIndexUpdateRequired (id: String, from: String, to: String, bi: Boolean) extends Command
+
+
+    /**
+     * Returned when no element can be found
+     */
+    case object NoSuchElement
+
+
+    /**
+     * Returned when element exists in memory
+     */
+    case object ElementExists
 
 
 }

@@ -18,7 +18,7 @@
 
 package io.abyss.node
 
-import io.abyss.client._
+import io.abyss._
 
 import scala.collection.immutable
 import akka.actor.Address
@@ -27,7 +27,6 @@ import scala.util.Random
 
 /**
  * Created by cane, 10.07.13 16:10
- * $Id: package.scala,v 1.2 2013-12-31 21:09:28 cane Exp $
  */
 package object data {
 

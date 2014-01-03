@@ -20,12 +20,11 @@ package io.abyss.graph.model
 
 import java.util.UUID
 import scala.Some
-import io.abyss.client.{GraphElementState, EdgeState}
-
+import io.abyss._
+import io.abyss.client._
 
 /*
  * Created by cane, 11.06.13 17:27
- * $Id: Edge.scala,v 1.3 2014-01-02 09:35:15 cane Exp $
  */
 
 // TODO make context for select functions
@@ -68,8 +67,8 @@ final class Edge (initialState: Option[ EdgeState ], initialDirty: Boolean = tru
 	 * @return Some(this) or None, according to selectFun result
 	 */
 	def select (selectFun: ( Edge ) => Boolean): Option[ this.type ] = {
-		if ( selectFun (this) ) return Some (this)
-		else return None
+		if ( selectFun (this) ) Some (this)
+		else None
 	}
 
 
@@ -80,7 +79,7 @@ object Edge {
 
 	def apply (id: String = UUID.randomUUID ().toString, graph: String,
 			   fromVertex: String, toVertex: String, bidirectional: Boolean, data: Option[AnyRef]): Edge = {
-		val es = EdgeState (id, graph, fromVertex, toVertex, bidirectional, data)
+		val es = EdgeState (id, shardId(id), graph, fromVertex, toVertex, bidirectional, data)
 		new Edge (Some (es))
 	}
 

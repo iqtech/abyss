@@ -27,6 +27,7 @@ package object client {
 	case class ClientConnected (clientRef: ActorRef)
 
 
+    // TODO client could get reference to front member directly from one of selected by cluster
 	case class AbyssFrontMembers (members: Set[ Member ])
 
 
@@ -35,7 +36,7 @@ package object client {
 
 	// TODO commands should be propagated to persistence layer, where they may have impact on DB structure
 
-	sealed trait Command {
+	trait Command {
 		val id: String
 	}
 
@@ -82,64 +83,32 @@ package object client {
 
 
 
-//	// GRAPH queries - with some types defined for filtering ----------------------------------------------------
-//
-//
-//
-//	case class InVertices (id: String, graph: String, filter: VertexFilterFun) extends Query
-//
-//
-//
-//	case class OutVertices (id: String, graph: String, filter: VertexFilterFun) extends Query
-//
-//
-//	case class InOutVertices (id: String, graph: String, filter: VertexFilterFun) extends Query
-//
-//
-//	case class InEdges (id: String, graph: String, filter: EdgeFilterFun) extends Query
-//
-//
-//	case class OutEdges (id: String, graph: String, filter: EdgeFilterFun) extends Query
-//
-//
-//	case class InOutEdges (id: String, graph: String, filter: EdgeFilterFun) extends Query
-
-
-	// Traversable queries
-	// V("user") --> {
-	//   es=>es.data.asInstanceOf[MyEdgeData].myBoolean == true
-	// } --> {
-	//   vs=> vs.data.asInstanceOf[MyVertexData].myInt > 0
-	// }
+	// GRAPH queries - with some types defined for filtering ----------------------------------------------------
 
 
 
-	/**
-	 * Ask for ElementExists or NoSuchElement message
-	 * @param id Id of Vertex
-	 */
-	case class VertexIntegrityRequired (id: String) extends Command
-
-	/**
-	 * Ask for ElementExists or NoSuchElement message
-	 * @param id Id of Edge
-	 */
-	case class EdgeIntegrityRequired (id: String) extends Command
+	case class InVertices (id: String, graph: String, filter: VertexFilterFun) extends Query
 
 
-	// In-graph events -----------------------------------------------------------------------------------------
+
+	case class OutVertices (id: String, graph: String, filter: VertexFilterFun) extends Query
 
 
-	/**
-	 * Returned when no element can be found
-	 */
-	case object NoSuchElement
+	case class InOutVertices (id: String, graph: String, filter: VertexFilterFun) extends Query
 
 
-	/**
-	 * Returned when element exists in memory
-	 */
-	case object ElementExists
+	case class InEdges (id: String, graph: String, filter: EdgeFilterFun) extends Query
+
+
+	case class OutEdges (id: String, graph: String, filter: EdgeFilterFun) extends Query
+
+
+	case class InOutEdges (id: String, graph: String, filter: EdgeFilterFun) extends Query
+
+
+
+
+
 
 
 	/**
@@ -160,11 +129,6 @@ package object client {
 	case class CommandFailed (msg: String) extends CommandProcessingResult
 
 
-	/**
-	 * Sent when edge has been created and remote shard must update indices held by vertex.
-	 * @param id
-	 */
-	case class VertexInternalIndexUpdateRequired (id: String, from: String, to: String, bi: Boolean) extends Command
 
 
 	/**
@@ -176,21 +140,6 @@ package object client {
 
 
 
-	/**
-	 * Predefined number of shards, don't exceed 32768 because shard id is of type Short.
-	 * Number of shards also defines level of concurrency as each shard has instance of
-	 * ShardWorker actor.
-	 * TODO read from settings
-	 */
-	final val NumberOfShards = 128
-
-
-	/**
-	 * Returns short number representing id of shard which is designed to take care of given ID
-	 * @param id
-	 * @return
-	 */
-	def shardId(id: String) = ( math.abs(id.hashCode) % NumberOfShards ).toShort
 
 
     // Types for filter functions

@@ -26,12 +26,11 @@ import scala.collection.{immutable, mutable}
 import io.abyss.AbyssActor
 import io.abyss.node._
 import io.abyss.graph.model.GraphElement
-import io.abyss.client._
+import io.abyss._
 
 /**
  * Typed shards (remote, cache, write through and write behind cache, local), currently all local or remote.
  * Created by cane, 18.06.13 13:34
- * $Id: ShardManager.scala,v 1.3 2014-01-02 09:35:15 cane Exp $
  */
 
 

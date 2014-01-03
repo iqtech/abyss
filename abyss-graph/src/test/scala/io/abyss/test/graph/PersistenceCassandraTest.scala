@@ -35,7 +35,6 @@ import io.abyss.client.{EdgeState, VertexState}
 
 /*
  * Created by cane, 11/30/13 9:15 PM
- * $Id: PersistenceCassandraTest.scala,v 1.2 2013-12-31 21:09:28 cane Exp $
  */
 
 
@@ -63,15 +62,15 @@ class PersistenceCassandraTest extends PersistenceTestBase {
 
 		val id1 = UUID.randomUUID().toString
 		val model1 = TestModel(id1, Random.nextInt(), Random.nextInt())
-		cpp ! VertexState(model1.id, "g1", Some(model1))
+		cpp ! VertexState(model1.id, shardId(model1.id), "g1", Some(model1))
 
 		val id2 = UUID.randomUUID().toString
 		val model2 = TestModelAbc(id2, Random.nextInt(), Random.nextInt())
-		cpp ! VertexState(model2.id, "g3", Some(model2))
+		cpp ! VertexState(model2.id, shardId(model2.id), "g3", Some(model2))
 
 		val id3 = UUID.randomUUID().toString
 		val edge1 = TestEdge(id3, "contains", "Contains other element")
-		cpp ! EdgeState(id3, "g3", id1, id2, true, Some(edge1))
+		cpp ! EdgeState(id3, shardId(id3), "g3", id1, id2, true, Some(edge1))
 
 		awaitTermination(120)
 		system.shutdown()
