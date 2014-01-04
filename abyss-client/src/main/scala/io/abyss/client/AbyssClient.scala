@@ -19,16 +19,14 @@
 package io.abyss.client
 
 import akka.actor._
-import akka.util.Timeout
 import akka.routing.RoundRobinRouter
-import akka.pattern.ask
-import scala.concurrent.Await
-import scala.concurrent.duration._
 import scala.util.Random
 import akka.cluster.Member
 
 // Created by cane, 1/2/14 1:05 PM
 
+
+// States and data for FSM
 
 trait AbyssClientState
 case object Connecting extends AbyssClientState
@@ -42,29 +40,28 @@ case class WorkingData(commandRouter: ActorRef, queryRouter: ActorRef) extends A
  * Abyss client.
  * @param remotes Sequence of root actor paths for nodes to which client should try to connect
  */
-class AbyssClient (remotes: Seq[ String ])
+class AbyssClient(remotes: Seq[ String ])
     extends Actor
-    with FSM[AbyssClientState, AbyssClientData]
+    with FSM[ AbyssClientState, AbyssClientData ]
     with Stash {
 
+    log info "Trying to connect to remotes: %s".format(remotes.mkString(","))
 
-    context.actorSelection (remotes.head) ! ClientSpawned(self)
+    context.actorSelection(remotes.head) ! ClientSpawned(self)
 
     startWith(Connecting, NoData)
 
     when(Connecting) {
         case Event(msg: AbyssFrontMembers, NoData) =>
             val routeesCommand = Vector(AbyssClient.randomMember(msg.members).address.toString + "/user/node/front/command")
-            val routeesQuery = msg.members.map (m => m.address.toString + "/user/node/front/query").toVector
+            val routeesQuery = msg.members.map(m => m.address.toString + "/user/node/front/query").toVector
 
-            val commandRouter = context.actorOf (
-                Props.empty.withRouter (RoundRobinRouter (routees = routeesCommand)))
-            val queryRouter = context.actorOf (
-                Props.empty.withRouter (RoundRobinRouter (routees = routeesQuery)))
+            val commandRouter = context.actorOf(Props.empty.withRouter(RoundRobinRouter(routees = routeesCommand)))
+            val queryRouter = context.actorOf(Props.empty.withRouter(RoundRobinRouter(routees = routeesQuery)))
 
-            log.info ("Connected to members: {}", msg.members.mkString(","))
+            log.info("Connected to members: {}", msg.members.mkString(","))
 
-            goto (Working) using WorkingData(commandRouter, queryRouter)
+            goto(Working) using WorkingData(commandRouter, queryRouter)
 
         case Event(msg: Command, NoData) =>
             stash()
@@ -93,7 +90,6 @@ class AbyssClient (remotes: Seq[ String ])
 }
 
 
-
 object AbyssClient {
 
     /**
@@ -101,20 +97,20 @@ object AbyssClient {
      * @param members set of members
      * @return
      */
-    private def randomMember(members: Set[Member]): Member = {
+    private def randomMember(members: Set[ Member ]): Member = {
         val arr = members.toArray
         arr(Random.nextInt(arr.size))
     }
 
     /**
-     * Creates
-     * @param sys
-     * @param actorName
-     * @param remotes
-     * @return
+     * Creates client actor and returns its reference
+     * @param sys System in which client must be created
+     * @param actorName Name of actor (will be started ass top-level actor in user space)
+     * @param remotes Sequence of actor addresses of graph front actors
+     * @return Refernce to created actor
      */
-    def apply (sys: ActorSystem, actorName: String, remotes: String*): ActorRef = {
-        sys.actorOf (Props (new AbyssClient (remotes)), actorName)
+    def apply(sys: ActorSystem, actorName: String, remotes: String*): ActorRef = {
+        sys.actorOf(Props(new AbyssClient(remotes)), actorName)
     }
 
 
