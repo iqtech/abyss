@@ -24,10 +24,16 @@ import akka.actor.ActorRef
 // Created by cane, 1/2/14 1:08 PM
 
 package object client {
-	case class ClientConnected (clientRef: ActorRef)
+
+    /**
+     * Sent by client to server, expects AbyssFrontMembers in return
+     * @param clientRef Client actor reference
+     */
+    case class ClientSpawned (clientRef: ActorRef)
 
 
     // TODO client could get reference to front member directly from one of selected by cluster
+
 	case class AbyssFrontMembers (members: Set[ Member ])
 
 

@@ -71,7 +71,7 @@ class NodeManager extends AbyssActor {
 				lastAbyssClusterState = Some(acs)
 			}
 
-		case _: ClientConnected =>
+		case _: ClientSpawned =>
 			sender ! AbyssFrontMembers(lastAbyssClusterState.get.frontNodes)
 
 

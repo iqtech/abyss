@@ -23,7 +23,7 @@ import akka.pattern.ask
 import akka.util.Timeout
 import java.util.concurrent.ConcurrentHashMap
 import java.util.{UUID, Date}
-import org.junit.Test
+import org.junit.{Ignore, Test}
 import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{Future, Await, ExecutionContext}
@@ -75,22 +75,6 @@ class GraphTest {
 	}
 
 
-	private def runAndWait() = {
-		val system = Abyss.system
-
-		//		awaitAbyss(1)
-		//		( 1 to 10 ) foreach {
-		//			i =>
-		//				val id = UUID.randomUUID().toString
-		//				val shard = shardId(id)
-		//				val shardAddress = "/user/node/shard/%d" format shard
-		//
-		//				Abyss.system.actorSelection(shardAddress) ! id
-		//		}
-		awaitAbyss (120)
-		println ("Closing Actor System {}", system.name)
-		system.shutdown()
-	}
 
 
 	@Test
@@ -177,252 +161,9 @@ class GraphTest {
 	}
 
 
-	//	@Test
-	//	def testInit {
-	//		println("test write")
-	//
-	//		1L to 10000L foreach {
-	//			i =>
-	//				val uuid = UUID.randomUUID.toString
-	//				uids += uuid
-	//
-	//				val msg = CreateVertex(id = uuid, collection = "test",
-	//					data = Map[ String, Any ](
-	//						"name" -> "Actor named %s".format(i)
-	//					))
-	//
-	//				Abyss.dataManager ! msg
-	//		}
-	//		println("test read, expected %d vertices" format uids.size)
-	//
-	//		implicit val timeout = Timeout(5 seconds)
-	//
-	//		val res = scala.collection.mutable.HashSet.empty[ Map[ String, Any ] ]
-	//		//			val futures = for ( d <- dirties ) yield ( ask (d, msg).mapTo[ VertexState ] )
-	//		//			futures.foreach {
-	//		//				f =>
-	//		//					f.foreach {
-	//		//						state =>
-	//		//							log.debug ("ShardState - do something: %s" format state.toString)
-	//		//					}
-	//		//			}
-	//
-	//		val futures = for ( id <- uids ) yield ( ask(Abyss.dataManager, DataRequired(id)) ).mapTo[ Map[ String, Any ] ]
-	//
-	//		val ts1 = new Date()
-	//		var count = 0L
-	//		for {
-	//			future <- futures
-	//		} yield ( future.foreach ) {
-	//			m =>
-	//				res.add(m)
-	//				count += 1
-	//				if ( count == uids.size ) {
-	//					val ts2 = new Date()
-	//					println("read completed, result size is %s in %d milis.".format(
-	//						res.size, ts2.getTime - ts1.getTime))
-	//				}
-	//		}
-	//
-	//		for {
-	//			data <- ask(Abyss.dataManager, MultipleDataRequired(uids.toArray)).mapTo[ Array[ Map[ String, Any ] ] ]
-	//		} yield ( data.foreach ) {
-	//			p =>
-	//				println("Returned shard size is: %s" format p.size)
-	//		}
-	//
-	//
-	//		awaitAbyss
-	//		println("processed result size is %s" format res.size)
-	//
-	//	}
-	//
-	//
-	//	@Test
-	//	def testSolarSystem {
-	//
-	//		createSolarSystem
-	//		//		Abyss.dataManager ! VertexSelector ("star", {
-	//		//			state =>
-	//		//				state.id == "Sun" || state.id == "Venus"
-	//		//		})
-	//
-	//		awaitAbyss
-	//	}
-	//
-	//
-	//	@Test
-	//	def testTraverse {
-	//		createSolarSystem
-	//
-	//		/*
-	//		 # what planets are orbiting Sun closer than Earth does?
-	//
-	//		 star(Sun) <-- orbits(averageDistance < 149598261) --- planet
-	//
-	//		 # what moons or chinese satellites orbits Earth?
-	//
-	//		 planet(Earth) <-- orbits --- satellite(madeIn = 'China') or moon
-	//
-	//		val earth = V("Earth")
-	//
-	//		 val moonOrChineseSatellites = VF { state =>
-	//			 import state._
-	//			 id == "moon" ||
-	//			 (id == "satellite" && shard("madeIn") == "China")
-	//		 }
-	//
-	//		 val orbits = EF { state =>
-	//			 state.id == "orbits"
-	//		 }
-	//
-	//		 val objects = earth orbits moonOrChineseSatellites
-	//
-	//
-	//
-	//		 */
-	//
-	//		awaitAbyss
-	//	}
-	//
-	//
-	//	def createSolarSystem {
-	//		// create entities
-	//
-	//		val sun = CreateVertex(
-	//			id = "Sun",
-	//			collection = "star",
-	//			data = Map[ String, Any ](
-	//				"name" -> "Sun",
-	//				"mass" -> 1.9891E+30 // [kg]
-	//			)
-	//		)
-	//
-	//		val mercury = CreateVertex(
-	//			id = "Mercury",
-	//			collection = "planet",
-	//			data = Map[ String, Any ](
-	//				"name" -> "Mercury",
-	//				"mass" -> 3.3022E+23
-	//			)
-	//		)
-	//
-	//		val venus = CreateVertex(
-	//			id = "Venus",
-	//			collection = "planet",
-	//			data = Map[ String, Any ](
-	//				"name" -> "Venus",
-	//				"mass" -> 4.8685E+24
-	//			)
-	//		)
-	//
-	//		val earth = CreateVertex(
-	//			id = "Earth",
-	//			collection = "planet",
-	//			data = Map[ String, Any ](
-	//				"name" -> "Earth",
-	//				"mass" -> 5.9736E+24
-	//			)
-	//		)
-	//		val mars = CreateVertex(
-	//			id = "Mars",
-	//			collection = "planet",
-	//			data = Map[ String, Any ](
-	//				"name" -> "Mars",
-	//				"mass" -> 6.4185E+23
-	//			)
-	//		)
-	//
-	//		val moon = CreateVertex(
-	//			id = "Moon",
-	//			collection = "moon",
-	//			data = Map[ String, Any ](
-	//				"name" -> "Moon"
-	//			)
-	//		)
-	//
-	//		// create connections
-	//
-	//		val msgMercuryOrbitsSun = CreateEdge(
-	//			id = "MercuryOrbitsSun",
-	//			collection = "orbits",
-	//			fromVertex = "Mercury",
-	//			toVertex = "Sun",
-	//			mutual = false,
-	//			state = Map(
-	//				"averageDistance" -> 57909100 // [km]
-	//			)
-	//		)
-	//
-	//		val msgVenusOrbitsSun = CreateEdge(
-	//			id = "VenusOrbitsSun",
-	//			collection = "orbits",
-	//			fromVertex = "Venus",
-	//			toVertex = "Sun",
-	//			mutual = false,
-	//			state = Map(
-	//				"averageDistance" -> 108208000 // [km]
-	//			)
-	//		)
-	//
-	//		val msgEarthOrbitsSun = CreateEdge(
-	//			id = "EarthOrbitsSun",
-	//			collection = "orbits",
-	//			fromVertex = "Earth",
-	//			toVertex = "Sun",
-	//			mutual = false,
-	//			state = Map(
-	//				"averageDistance" -> 149598261 // [km]
-	//			)
-	//		)
-	//		val msgMarsOrbitsSun = CreateEdge(
-	//			id = "MarsOrbitsSun",
-	//			collection = "orbits",
-	//			fromVertex = "Mars",
-	//			toVertex = "Sun",
-	//			mutual = false,
-	//			state = Map(
-	//				"averageDistance" -> 227939100 // [km]
-	//			)
-	//		)
-	//
-	//		val msgMoonOrbitsEarth = CreateEdge(
-	//			id = "MoonOrbitsEarth",
-	//			collection = "orbits",
-	//			fromVertex = "Moon",
-	//			toVertex = "Earth",
-	//			mutual = false,
-	//			state = Map(
-	//				"averageDistance" -> 384399 // [km]
-	//			)
-	//		)
-	//
-	//		Abyss.dataManager ! sun
-	//		Abyss.dataManager ! mercury
-	//		Abyss.dataManager ! venus
-	//		Abyss.dataManager ! earth
-	//		Abyss.dataManager ! mars
-	//		// Mars
-	//		// Jupiter
-	//		// Saturn
-	//		// Uranus
-	//		// Neptune
-	//		// Pluto
-	//		Abyss.dataManager ! moon
-	//
-	//		// connections: orbits
-	//
-	//		Abyss.dataManager ! msgMercuryOrbitsSun
-	//		Abyss.dataManager ! msgVenusOrbitsSun
-	//		Abyss.dataManager ! msgEarthOrbitsSun
-	//		Abyss.dataManager ! msgMoonOrbitsEarth
-	//		Abyss.dataManager ! msgMarsOrbitsSun
-	//
-	//	}
-	//
-	//
 
 	@Test
+    @Ignore
 	def testDataStruct() = {
 
 		val m = new ConcurrentHashMap[ String, Any ](testVolume)
@@ -497,6 +238,7 @@ class GraphTest {
 
 
 	@Test
+    @Ignore
 	def testConfig() = {
 		System.setProperty ("config.resource", "/data.conf")
 		val c = Abyss.system.settings.config
@@ -507,6 +249,7 @@ class GraphTest {
 
 
 	@Test
+    @Ignore
 	def testHashCircle() = {
 		//UUID (32 characters - 16 bytes big integer): 8978dccc-8181-4f2a-826b-a10090bb7887
 		//val uuid = UUID.randomUUID().toString.replace("-", "")
@@ -519,6 +262,7 @@ class GraphTest {
 
 
 	@Test
+    @Ignore
 	def vectorClockTest() = {
 		//		val v0 = new VectorClock()
 		//		println(v0.timestamp.toString())
@@ -530,7 +274,14 @@ class GraphTest {
 	}
 
 
-	def awaitAbyss (s: Int) = try {
+    private def runAndWait() = {
+        val system = Abyss.system
+        awaitAbyss (120)
+        println ("Closing Actor System {}", system.name)
+        system.shutdown()
+    }
+
+	private def awaitAbyss (s: Int) = try {
 		val timeout = Timeout (s seconds)
 		val duration = timeout.duration
 		Abyss.system.awaitTermination (duration)
@@ -539,7 +290,7 @@ class GraphTest {
 	}
 
 
-	def awaitTest (s: Int)(implicit system: ActorSystem) = try {
+	private def awaitTest (s: Int)(implicit system: ActorSystem) = try {
 		val timeout = Timeout (s seconds)
 		val duration = timeout.duration
 		system.awaitTermination (duration)

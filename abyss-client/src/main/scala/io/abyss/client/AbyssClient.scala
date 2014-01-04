@@ -29,82 +29,93 @@ import akka.cluster.Member
 
 // Created by cane, 1/2/14 1:05 PM
 
-object AbyssClient {
 
-	/**
-	 * Creates
-	 * @param sys
-	 * @param actorName
-	 * @param remotes
-	 * @return
-	 */
-	def apply (sys: ActorSystem, actorName: String, remotes: String*): ActorRef = {
-		sys.actorOf (Props (new AbyssClient (remotes)), actorName)
-	}
+trait AbyssClientState
+case object Connecting extends AbyssClientState
+case object Working extends AbyssClientState
 
-    //val system = ActorSystem ("abyss-client")
+trait AbyssClientData
+case object NoData extends AbyssClientData
+case class WorkingData(commandRouter: ActorRef, queryRouter: ActorRef) extends AbyssClientData
+
+/**
+ * Abyss client.
+ * @param remotes Sequence of root actor paths for nodes to which client should try to connect
+ */
+class AbyssClient (remotes: Seq[ String ])
+    extends Actor
+    with FSM[AbyssClientState, AbyssClientData]
+    with Stash {
+
+
+    context.actorSelection (remotes.head) ! ClientSpawned(self)
+
+    startWith(Connecting, NoData)
+
+    when(Connecting) {
+        case Event(msg: AbyssFrontMembers, NoData) =>
+            val routeesCommand = Vector(AbyssClient.randomMember(msg.members).address.toString + "/user/node/front/command")
+            val routeesQuery = msg.members.map (m => m.address.toString + "/user/node/front/query").toVector
+
+            val commandRouter = context.actorOf (
+                Props.empty.withRouter (RoundRobinRouter (routees = routeesCommand)))
+            val queryRouter = context.actorOf (
+                Props.empty.withRouter (RoundRobinRouter (routees = routeesQuery)))
+
+            log.info ("Connected to members: {}", msg.members.mkString(","))
+
+            goto (Working) using WorkingData(commandRouter, queryRouter)
+
+        case Event(msg: Command, NoData) =>
+            stash()
+            stay()
+
+        case Event(msg: Query, NoData) =>
+            stash()
+            stay()
+    }
+
+    when(Working) {
+        case Event(msg: Command, sd: WorkingData) =>
+            sd.commandRouter forward msg
+            stay()
+
+        case Event(msg: Query, sd: WorkingData) =>
+            sd.queryRouter forward msg
+            stay()
+    }
+
+    onTransition {
+        case Connecting -> Working =>
+            unstashAll()
+    }
 
 }
 
 
 
-/**
- * Abyss client. May work in 'local' mode when run in 'abyss' actor system and surrounding logic is run as
- * one of the node's role.
- * @param remotes Sequence of root actor paths for nodes to which Abyss Client should try to connect
- */
-class AbyssClient (remotes: Seq[ String ]) extends Actor with ActorLogging {
-	implicit val timeout = Timeout (2 seconds)
-	implicit val duration = 2.seconds
+object AbyssClient {
 
-	// TODO try to connect next if fail, not necessary when in local mode
+    /**
+     * Returns random member from given set of members.
+     * @param members set of members
+     * @return
+     */
+    private def randomMember(members: Set[Member]): Member = {
+        val arr = members.toArray
+        arr(Random.nextInt(arr.size))
+    }
 
-	val f = ( context.actorSelection (remotes.head) ? ClientConnected (self) ).mapTo[ AbyssFrontMembers ]
+    /**
+     * Creates
+     * @param sys
+     * @param actorName
+     * @param remotes
+     * @return
+     */
+    def apply (sys: ActorSystem, actorName: String, remotes: String*): ActorRef = {
+        sys.actorOf (Props (new AbyssClient (remotes)), actorName)
+    }
 
-	val remoteMembers = Await.result (f, duration)
-
-	val routeesCommand = Vector(randomMember(remoteMembers.members).address.toString + "/user/node/front/command")
-	val routeesQuery = remoteMembers.members.map (m => m.address.toString + "/user/node/front/query").toVector
-
-
-	// TODO command actor should be selected by cluster and identify itself in returned message
-
-	/**
-	 * Routes all messages to randomly selected front command endpoint
-	 */
-	val commandRouter = context.actorOf (
-		Props.empty.withRouter (RoundRobinRouter (routees = routeesCommand)))
-
-
-	/**
-	 * Round robin router, will forward all messages to detected fronts
-	 */
-	val queryRouter = context.actorOf (
-		Props.empty.withRouter (RoundRobinRouter (routees = routeesQuery)))
-
-	log.info ("Connected to members: {}", remoteMembers.toString)
-
-
-	/**
-	 *
-	 * @return
-	 */
-	def receive = {
-		case msg: Command =>
-			commandRouter.forward(msg)
-		case msg: Query =>
-			queryRouter.forward (msg)
-	}
-
-
-	/**
-	 * Returns random member from given set of members.
-	 * @param members set of members
-	 * @return
-	 */
-	private def randomMember(members: Set[Member]): Member = {
-		val arr = members.toArray
-		arr(Random.nextInt(remoteMembers.members.size))
-	}
 
 }
