@@ -45,14 +45,17 @@ import io.abyss.client.{VertexState, EdgeState, GraphElementState}
  */
 
 
+
+
+
 /**
  * Persistence provider for Apache Cassandra, stores graph structure in created database (a key space and
  * column families, called collections from now). Configuration is stored externally and provided via constructor.
  * Also, persisted types consistency RW levels are provided externally. See <code>persistence-test.conf</code> file
  * for details.
  * <p/>
- * Collection V stores vertex metadata (from <code>VertexState</code>). Collection E stores edge metadata
- * (from <code>EdgeState</code>). Data is stored in collections named after model's class name, so if you
+ * Collection V stores vertex metadata (from <code>Vertex</code>). Collection E stores edge metadata
+ * (from <code>Edge</code>). Data is stored in collections named after model's class name, so if you
  * store your data in class like:
  * <code>
  * case class Foo(id: String, ts: Date)
@@ -64,13 +67,14 @@ import io.abyss.client.{VertexState, EdgeState, GraphElementState}
  */
 class CassandraPersistenceProvider (abyssPersistenceConfig: AbyssPersistenceConfig,
 									collectionConsistencyConfig: Array[ CollectionConsistencyConfig ])
-	extends Actor with ActorLogging {
+	extends Actor
+    with ActorLogging {
 
 	val ReadBatchSize = 50
 
 	val globalConfig = abyssPersistenceConfig.global
 
-	val cassandraConfig = abyssPersistenceConfig.storage.asInstanceOf[ CassandraPersistenceProviderConfig ]
+	val cassandraConfig = abyssPersistenceConfig.provider.asInstanceOf[ CassandraPersistenceProviderConfig ]
 
 	val cassandraCluster = HFactory.getOrCreateCluster (cassandraConfig.name, cassandraConfig.nodes.mkString (","))
 
@@ -376,5 +380,12 @@ class CassandraPersistenceProvider (abyssPersistenceConfig: AbyssPersistenceConf
 		kspace
 	}
 
+
+}
+
+
+// run as singleton on 'data' nodes, responsible for managing Cassandra's structures
+class CassandraManager(abyssPersistenceConfig: AbyssPersistenceConfig,
+                       collectionConsistencyConfig: Array[ CollectionConsistencyConfig ]) {
 
 }

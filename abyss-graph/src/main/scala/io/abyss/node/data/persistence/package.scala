@@ -74,10 +74,10 @@ package object persistence {
 	/**
 	 *
 	 * @param global Global settings
-	 * @param storage When set it defines storage backend
+	 * @param provider When set it defines storage backend
 	 */
 	case class AbyssPersistenceConfig (global: GlobalPersistenceConfig,
-									   storage: PersistenceProviderConfig)
+									   provider: PersistenceProviderConfig)
 
 
 	/**
@@ -89,7 +89,7 @@ package object persistence {
 
 		def apply (): AbyssPersistenceConfig = {
 			val global = GlobalPersistenceConfig (writeBehind = true, writeBehindIntervalMillis = Some (500))
-			val storage = CassandraPersistenceProviderConfig ("abyss-cluster", "default", 1, Array ("localhost:9160"))
+			val storage = CassandraPersistenceProviderConfig ("cassandra", "abyss-default", 1, Array ("localhost:9160"))
 
 			AbyssPersistenceConfig (global, storage)
 		}
@@ -126,5 +126,13 @@ package object persistence {
 	 */
 	case class DirtyEdge (id: String)
 
+
+    // state and data definition for persistence provider
+
+    trait PersistenceProviderState
+    case object Initializing
+
+    trait PersistenceProviderData
+    case object NoData
 
 }

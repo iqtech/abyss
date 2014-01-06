@@ -32,9 +32,9 @@ class PersistenceManager extends AbyssActor {
 
 
 	val apc = AbyssDefaultPersistenceConfig()
-	val types = readConsistencyConf(context.system)
+	val types = PersistenceManager.readConsistencyConf(context.system)
 
-	val provider = context.actorOf(Props(new CassandraPersistenceProvider(apc, types)), apc.storage.name)
+	val provider = context.actorOf(Props(new CassandraPersistenceProvider(apc, types)), apc.global.provider)
 
 	var abyssClusterState: Option[AbyssClusterState] = None
 
@@ -48,28 +48,33 @@ class PersistenceManager extends AbyssActor {
 	}
 
 
-	def readConsistencyConf(actorSystem: ActorSystem): Array[CollectionConsistencyConfig] = {
+}
 
-		val conf = actorSystem.settings.config
-		var res = Array.empty [CollectionConsistencyConfig]
 
-		val collectionsConf = if(conf.hasPath(CollectionsConsistencyConfigKey))
-			conf.getConfigList(CollectionsConsistencyConfigKey)
-		else
-			return res
+object PersistenceManager {
+    private def readConsistencyConf(actorSystem: ActorSystem): Array[CollectionConsistencyConfig] = {
 
-		0 to collectionsConf.size() - 1 foreach {
-			i =>
-				val colConf = collectionsConf.get(i)
-				val collection = colConf.getString("name")
+        val conf = actorSystem.settings.config
+        var res = Array.empty [CollectionConsistencyConfig]
 
-				// TODO cr and cw should be declared as strings, then mapped to enum
-				//val cr = if(colConf.hasPath("cr")) colConf.getInt("cr") else 1
-				//val cw = if(colConf.hasPath("cw")) colConf.getInt("cw") else 1
+        val collectionsConf = if(conf.hasPath(CollectionsConsistencyConfigKey))
+            conf.getConfigList(CollectionsConsistencyConfigKey)
+        else
+            return res
 
-				val tpp = CollectionConsistencyConfig(collection)
-				res = res :+ tpp
-		}
-		res
-	}
+        0 to collectionsConf.size() - 1 foreach {
+            i =>
+                val colConf = collectionsConf.get(i)
+                val collection = colConf.getString("name")
+
+                // TODO cr and cw should be declared as strings, then mapped to enum
+                //val cr = if(colConf.hasPath("cr")) colConf.getInt("cr") else 1
+                //val cw = if(colConf.hasPath("cw")) colConf.getInt("cw") else 1
+
+                val tpp = CollectionConsistencyConfig(collection)
+                res = res :+ tpp
+        }
+        res
+    }
+
 }
