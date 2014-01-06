@@ -64,35 +64,33 @@ class NodeManager
 	val dataRole = context.actorOf (Props[DataManager], DataRoleName)
 
 
-	startWith(Initializing, NoData)
+	startWith (Initializing, NoData)
 
-	when(Initializing) {
-		case Event(currentClusterState: CurrentClusterState, NoData) =>
+	when (Initializing) {
+		case Event (currentClusterState: CurrentClusterState, NoData) =>
 			val acs = AbyssClusterState (currentClusterState, None)
-
+			Node.abyssClusterState = acs
 			// propagate Abyss Cluster State to role-bound actors
 			if (nodeRoles.contains (FrontRoleName)) frontRole forward acs
 			if (nodeRoles.contains (DataRoleName)) dataRole forward acs
 
-			goto(Working) using WorkingData(currentClusterState, acs)
+			goto (Working) using WorkingData (currentClusterState, acs)
 	}
 
-	when(Working) {
-		case Event(msg: ClientSpawned, sd: WorkingData) =>
-			sender ! AbyssFrontMembers(sd.lastAbyssClusterState.frontNodes)
-			stay()
+	when (Working) {
+		case Event (msg: ClientSpawned, sd: WorkingData) =>
+			sender ! AbyssFrontMembers (sd.lastAbyssClusterState.frontNodes)
+			stay ()
 
-		case Event(currentClusterState: CurrentClusterState, sd: WorkingData) =>
-			val acs = AbyssClusterState (currentClusterState, Some(sd.lastClusterState))
-
+		case Event (currentClusterState: CurrentClusterState, sd: WorkingData) =>
+			val acs = AbyssClusterState (currentClusterState, Some (sd.lastClusterState))
+			Node.abyssClusterState = acs
 			// TODO reconfigure node due to cluster membership changes (may possibly result in some kind of maintenance state)
-			stay() using WorkingData(currentClusterState, acs)
+			stay () using WorkingData (currentClusterState, acs)
 	}
-
 
 
 }
-
 
 
 /**
@@ -107,6 +105,16 @@ object Node {
 
 
 	// TODO change map to hold AbstractGraphElement
-	val memory = new ConcurrentHashMap[ String, GraphElement ](InitialGraphMemorySize)
+	val memory = new ConcurrentHashMap[String, GraphElement](InitialGraphMemorySize)
+
+
+	private var abyssClusterStatePlaceholder: Option[AbyssClusterState] = None
+
+	def abyssClusterState: AbyssClusterState = abyssClusterStatePlaceholder match {
+		case None => throw new IllegalStateException ("Cluster uninitialized yet")
+		case Some (acs) => acs
+	}
+
+	protected[node] def abyssClusterState_=(acs: AbyssClusterState) = abyssClusterStatePlaceholder = Some(acs)
 
 }
