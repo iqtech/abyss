@@ -96,7 +96,7 @@ class ShardManager(val memory: ConcurrentHashMap[ String, GraphElement ]) extend
 
                     log.info("Configuring shards for the first time")
 
-					memberShardMap = Some(initialMemberShardMap(abyssClusterState.currentClusterState))
+					memberShardMap = Some(initialMemberShardMap(abyssClusterState.clusterState))
 
 					log.info("Member to shard doMap contains {} entries", memberShardMap.get.arr.size)
 

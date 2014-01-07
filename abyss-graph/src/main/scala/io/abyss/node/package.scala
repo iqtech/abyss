@@ -101,7 +101,7 @@ package object node {
 								 backNodes: immutable.SortedSet[ Member ],
 								 newNodes: immutable.SortedSet[ Member ],
 								 removedNodes: immutable.SortedSet[ Member ],
-								 currentClusterState: CurrentClusterState)
+								 clusterState: CurrentClusterState)
 
 
 	object AbyssClusterState {

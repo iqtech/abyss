@@ -20,13 +20,24 @@ package io.abyss.node
 
 import java.util.concurrent.ConcurrentHashMap
 import io.abyss.graph.model.GraphElement
-import akka.actor.{FSM, Props}
+import akka.actor.{Stash, ActorRef, FSM, Props}
 import akka.cluster.ClusterEvent.CurrentClusterState
 import io.abyss.node.front.FrontendManager
 import io.abyss.node.data.DataManager
 import io.abyss._
 import io.abyss.client._
 
+
+/**
+ * Holder for role actor references
+ * @param front Front role actor's reference
+ * @param data Data role actor's reference
+ */
+case class RolesRef(front: ActorRef,
+                    data: ActorRef)
+
+
+// FSM - state and data
 
 trait NodeState
 
@@ -39,8 +50,9 @@ trait NodeData
 
 case object NoData extends NodeData
 
-case class WorkingData(lastClusterState: CurrentClusterState,
-					   lastAbyssClusterState: AbyssClusterState) extends NodeData
+case class WorkingData(abyssClusterState: AbyssClusterState,
+                       roles: RolesRef) extends NodeData
+
 
 /**
  * Starts node roles actors and forwards some messages to them.
@@ -48,73 +60,76 @@ case class WorkingData(lastClusterState: CurrentClusterState,
  * Created by cane, 22.06.13 17:50
  */
 class NodeManager
-	extends AbyssActor
-	with FSM[NodeState, NodeData] {
+    extends AbyssActor
+    with FSM[ NodeState, NodeData ]
+    with Stash {
 
-	// TODO these actors should be replaced with some kind of proxy when not in role
+    startWith(Initializing, NoData)
 
-	/**
-	 * Frontend manager
-	 */
-	val frontRole = context.actorOf (Props[FrontendManager], FrontRoleName)
+    when(Initializing) {
+        case Event(newClusterState: CurrentClusterState, NoData) =>
+            val newData = WorkingData(
+                AbyssClusterState(newClusterState, None),
 
-	/**
-	 * Backend data manager
-	 */
-	val dataRole = context.actorOf (Props[DataManager], DataRoleName)
+                // When node is not member of role then use 'dead letters' actor reference
+                RolesRef(
+                    front =
+                        if ( nodeRoles.contains(FrontRoleName) ) context.actorOf(Props[ FrontendManager ], FrontRoleName)
+                        else context.system.deadLetters,
+                    data =
+                        if ( nodeRoles.contains(DataRoleName) ) context.actorOf(Props[ DataManager ], DataRoleName)
+                        else context.system.deadLetters
+                )
+            )
+
+            // propagate Abyss Cluster State to role-bound actors
+            if ( nodeRoles.contains(FrontRoleName) ) newData.roles.front forward newData.abyssClusterState
+            if ( nodeRoles.contains(DataRoleName) ) newData.roles.data forward newData.abyssClusterState
+
+            goto(Working) using newData
 
 
-	startWith (Initializing, NoData)
+        case Event(msg: ClientSpawned, NoData) =>
+            stash()
+            stay()
+    }
 
-	when (Initializing) {
-		case Event (currentClusterState: CurrentClusterState, NoData) =>
-			val acs = AbyssClusterState (currentClusterState, None)
-			Node.abyssClusterState = acs
-			// propagate Abyss Cluster State to role-bound actors
-			if (nodeRoles.contains (FrontRoleName)) frontRole forward acs
-			if (nodeRoles.contains (DataRoleName)) dataRole forward acs
 
-			goto (Working) using WorkingData (currentClusterState, acs)
-	}
+    when(Working) {
+        case Event(msg: ClientSpawned, sd: WorkingData) =>
+            sender ! AbyssFrontMembers(sd.abyssClusterState.frontNodes)
+            stay()
 
-	when (Working) {
-		case Event (msg: ClientSpawned, sd: WorkingData) =>
-			sender ! AbyssFrontMembers (sd.lastAbyssClusterState.frontNodes)
-			stay ()
+        case Event(newClusterState: CurrentClusterState, sd: WorkingData) =>
+            val acs = AbyssClusterState(newClusterState, Some(sd.abyssClusterState.clusterState))
+            // TODO reconfigure node due to cluster membership changes (may possibly result in some kind of maintenance state)
+            stay() using sd.copy(abyssClusterState = acs)
+    }
 
-		case Event (currentClusterState: CurrentClusterState, sd: WorkingData) =>
-			val acs = AbyssClusterState (currentClusterState, Some (sd.lastClusterState))
-			Node.abyssClusterState = acs
-			// TODO reconfigure node due to cluster membership changes (may possibly result in some kind of maintenance state)
-			stay () using WorkingData (currentClusterState, acs)
-	}
+
+    onTransition {
+        case Initializing -> Working =>
+            unstashAll()
+    }
 
 
 }
 
 
 /**
- * Object is visible to every actor which is run on this machine. Holds global stuff like memory for graph elements.
+ * Object is visible to every actor which is run on physical node. Holds global stuff like memory for graph elements.
  *
  * Created by cane, 12/2/13 4:36 PM
- * $Id: Node.scala,v 1.3 2014-01-02 09:35:15 cane Exp $
  */
 object Node {
 
-	val InitialGraphMemorySize: Int = 1000000
+    // TODO move to configuration
+    val InitialGraphMemorySize = 1000000
+    val LoadFactor = 0.75f
+    val ConcurrencyLevel = 16
 
 
-	// TODO change map to hold AbstractGraphElement
-	val memory = new ConcurrentHashMap[String, GraphElement](InitialGraphMemorySize)
-
-
-	private var abyssClusterStatePlaceholder: Option[AbyssClusterState] = None
-
-	def abyssClusterState: AbyssClusterState = abyssClusterStatePlaceholder match {
-		case None => throw new IllegalStateException ("Cluster uninitialized yet")
-		case Some (acs) => acs
-	}
-
-	protected[node] def abyssClusterState_=(acs: AbyssClusterState) = abyssClusterStatePlaceholder = Some(acs)
+    // TODO change map to hold AbstractGraphElement
+    val memory = new ConcurrentHashMap[ String, GraphElement ](InitialGraphMemorySize, LoadFactor, ConcurrencyLevel)
 
 }
