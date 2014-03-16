@@ -58,7 +58,7 @@ the License.
         <encoding>UTF-8</encoding>
 
         <scala.version>2.10.2</scala.version>
-        <akka.version>2.2.3</akka.version>
+        <akka.version>2.3.0</akka.version>
 
         <camel.version>2.10.3</camel.version>
 
