@@ -18,7 +18,7 @@
 
 package io.abyss.node.data.persistence
 
-import akka.actor.{ActorLogging, Actor}
+import akka.actor.{ActorRef, FSM, ActorLogging, Actor}
 import java.util.{UUID, Date}
 import me.prettyprint.cassandra.serializers.StringSerializer
 import me.prettyprint.cassandra.service.ThriftKsDef
@@ -39,18 +39,37 @@ import io.abyss.node.persistence.DirtyVertex
 import io.abyss.node.persistence.AbyssPersistenceConfig
 import io.abyss.client.{VertexState, EdgeState, GraphElementState}
 
-/*
- * Created by cane, 8/16/13 2:07 PM
- * $Id: CassandraPersistenceProvider.scala,v 1.2 2013-12-31 21:09:28 cane Exp $
- */
+// Created by cane, 8/16/13 2:07 PM
+
+
+// API
+
+case class Restore(collector: ActorRef,
+                   restoreIndices: Boolean = false,
+                   restoreData: Boolean = false)
 
 
 
+// FSM definitions
+
+trait PersistenceProviderState
+case object Idle extends PersistenceProviderState
+case object Initializing extends PersistenceProviderState
+case object Restoring extends PersistenceProviderState
+case object Working extends PersistenceProviderState
+case object ShuttingDown extends PersistenceProviderState
+
+trait PersistenceProviderData
+case object NoData extends PersistenceProviderData
+case class RestoringData(collector: ActorRef,
+                         ts: Date = new Date) extends PersistenceProviderData
+case class WorkingData(ts: Date = new Date)
+case class ShuttingDownData(ts: Date) extends PersistenceProviderData
 
 
 /**
  * Persistence provider for Apache Cassandra, stores graph structure in created database (a key space and
- * column families, called collections from now). Configuration is stored externally and provided via constructor.
+ * column families, called collections in Abyss). Configuration is stored externally and provided via constructor.
  * Also, persisted types consistency RW levels are provided externally. See <code>persistence-test.conf</code> file
  * for details.
  * <p/>
@@ -68,7 +87,7 @@ import io.abyss.client.{VertexState, EdgeState, GraphElementState}
 class CassandraPersistenceProvider (abyssPersistenceConfig: AbyssPersistenceConfig,
 									collectionConsistencyConfig: Array[ CollectionConsistencyConfig ])
 	extends Actor
-    with ActorLogging {
+    with FSM[PersistenceProviderState, PersistenceProviderData] {
 
 	val ReadBatchSize = 50
 
@@ -87,10 +106,33 @@ class CassandraPersistenceProvider (abyssPersistenceConfig: AbyssPersistenceConf
 	log.info ("Cassandra Persistence Provider ready at path: {}", self.path)
 
 
+    startWith(Idle, NoData)
+
+
+    when(Idle) {
+        case Event(msg: Restore, NoData) =>
+            goto(Restoring) using RestoringData(collector = msg.collector)
+    }
+
+
+    when(Restoring) {
+        case Event("break", sd: RestoringData) =>
+            stay()
+    }
+
+
+    onTransition {
+        case Idle -> Restoring =>
+            // TODO create restoring worker
+            //nextStateData.asInstanceOf[RestoringData].collector
+    }
+
+
+
 	// TODO check shard id for every message which reads data from <code>Node.memory</code>
 	// TODO provide a way to obtain MyShards
 
-	def receive = {
+	override def receive = {
 
 		case acs: AbyssClusterState =>
 

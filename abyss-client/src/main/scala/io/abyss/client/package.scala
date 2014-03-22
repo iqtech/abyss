@@ -148,11 +148,28 @@ package object client {
 
 
 
-    // Types for filter functions
+    // Types for functions - filtering, unmarshalling
 
     type VertexFilterFun = ( VertexState ) => Boolean
 
     type EdgeFilterFun = ( EdgeState ) => Boolean
+
+    type DataUnmarshalFun = (Map[String, Any]) => Any
+
+
+
+    case class DataUnmarshallingConfiguration(callbacks: Map[Any, DataUnmarshalFun] = Map.empty)
+
+    /**
+     * Returns map as map
+     */
+    val UnmarshalMap = { m: Map[String, Any] => m }
+
+    val AllToMapUnmarshalConfiguration = DataUnmarshallingConfiguration(
+        Map(
+            AnyRef -> UnmarshalMap
+        )
+    )
 
 
     /**

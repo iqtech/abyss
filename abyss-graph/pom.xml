@@ -109,6 +109,13 @@ the License.
         <!-- TEST -->
 
         <dependency>
+            <groupId>com.github.tototoshi</groupId>
+            <artifactId>scala-csv_2.10</artifactId>
+            <version>1.0.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
             <version>${junit.version}</version>

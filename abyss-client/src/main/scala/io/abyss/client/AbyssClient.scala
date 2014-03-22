@@ -29,8 +29,8 @@ import akka.cluster.Member
 // States and data for FSM
 
 trait AbyssClientState
-case object Connecting extends AbyssClientState
-case object Working extends AbyssClientState
+case object AbyssClientConnecting extends AbyssClientState
+case object AbyssClientWorking extends AbyssClientState
 
 trait AbyssClientData
 case object NoData extends AbyssClientData
@@ -49,9 +49,9 @@ class AbyssClient(remotes: Seq[ String ])
 
     context.actorSelection(remotes.head) ! ClientSpawned(self)
 
-    startWith(Connecting, NoData)
+    startWith(AbyssClientConnecting, NoData)
 
-    when(Connecting) {
+    when(AbyssClientConnecting) {
         case Event(msg: AbyssFrontMembers, NoData) =>
             val routeesCommand = Vector(AbyssClient.randomMember(msg.members).address.toString + "/user/node/front/command")
             val routeesQuery = msg.members.map(m => m.address.toString + "/user/node/front/query").toVector
@@ -61,7 +61,7 @@ class AbyssClient(remotes: Seq[ String ])
 
             log.info("Connected to members: {}", msg.members.mkString(","))
 
-            goto(Working) using WorkingData(commandRouter, queryRouter)
+            goto(AbyssClientWorking) using WorkingData(commandRouter, queryRouter)
 
         case Event(msg: Command, NoData) =>
             stash()
@@ -72,7 +72,7 @@ class AbyssClient(remotes: Seq[ String ])
             stay()
     }
 
-    when(Working) {
+    when(AbyssClientWorking) {
         case Event(msg: Command, sd: WorkingData) =>
             sd.commandRouter forward msg
             stay()
@@ -83,7 +83,7 @@ class AbyssClient(remotes: Seq[ String ])
     }
 
     onTransition {
-        case Connecting -> Working =>
+        case AbyssClientConnecting -> AbyssClientWorking =>
             unstashAll()
     }
 
