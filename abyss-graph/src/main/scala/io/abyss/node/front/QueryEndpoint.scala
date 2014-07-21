@@ -34,90 +34,90 @@ import io.abyss.node._
  */
 class QueryEndpoint extends AbyssActor {
 
-	implicit val defaultTimeout = Timeout (2 seconds)
+    implicit val defaultTimeout = Timeout( 2 seconds )
 
-	private var backNodes = collection.immutable.SortedSet.empty[ Member ]
+    private var backNodes = collection.immutable.SortedSet.empty[Member]
 
-	private var shardNodes: Array[ Set[ Address ] ] = null
-
-
-	def receive = {
-
-		case msg: QueryTraversable =>
-
-			// nodes to talk to are chosen from shard map
-			val coordinator = context.actorOf (Props (new TraversingCoordinator (shardMapForQuery)))
-			coordinator forward msg
+    private var shardNodes: Array[Set[Address]] = null
 
 
-		case msg: ReadMany =>
+    def receive = {
 
-			// client who wants data
-			val askedBy = sender
+        case msg: QueryTraversable =>
 
-			// group by node taken from shard id TODO don't use head only, use as many as defined by consistency level
-
-			val grouped = msg.ids.groupBy {
-				id => shardNodes (shardId (id)).head
-			}
-
-			log.debug ("ReadMany processing -> gathering results from nodes")
-
-			// gather results, make union and return to client
-
-			val futures = grouped map {
-				t =>
-					log.info ("Sending ReadMany to {}", t._1.toString)
-					val dataQuery = context actorSelection (RootActorPath (t._1) / "user" / "node" / "data" / "query")
-					( dataQuery ? msg.copy (ids = t._2) ).mapTo[ Array[ GraphElementState ] ]
-			}
-
-			val resFuture = Future.fold (futures)(Array.empty[ GraphElementState ])(_ ++ _)
-
-			resFuture foreach {
-				res =>
-					log.info ("Returning results")
-					askedBy ! res
-			}
+            // nodes to talk to are chosen from shard map
+            val coordinator = context.actorOf( Props( new TraversingCoordinator( shardMapForQuery ) ) )
+            coordinator forward msg
 
 
-		// simple id query TODO should ask many data nodes, according to consistency level and shard mapping
-		case msg: Query =>
-			val queryWorker = context.actorSelection (RootActorPath (backNodes.head.address) / "user" / "node" / "data" / "query")
-			val f = for {
-				r <- ( queryWorker ? msg ).mapTo[ Any ]
-			} yield r
+        case msg: ReadMany =>
 
-			val askedBy = sender
+            // client who wants data
+            val askedBy = sender( )
 
-			f foreach {
-				res => askedBy ! res
-			}
+            // group by node taken from shard id TODO don't use head only, use as many as defined by consistency level
+
+            val grouped = msg.ids.groupBy {
+                id => shardNodes( shardId( id ) ).head
+            }
+
+            log.debug( "ReadMany processing -> gathering results from nodes" )
+
+            // gather results, make union and return to client
+
+            val futures = grouped map {
+                t =>
+                    log.info( "Sending ReadMany to {}", t._1.toString )
+                    val dataQuery = context actorSelection (RootActorPath( t._1 ) / "user" / "node" / "data" / "query")
+                    (dataQuery ? msg.copy( ids = t._2 )).mapTo[Array[GraphElementState]]
+            }
+
+            val resFuture = Future.fold( futures )( Array.empty[GraphElementState] )( _ ++ _ )
+
+            resFuture foreach {
+                res =>
+                    log.info( "Returning results" )
+                    askedBy ! res
+            }
 
 
-		// cluster state has been distributed
-		case acs: AbyssClusterState =>
-			backNodes = acs.backNodes
+        // simple id query TODO should ask many data nodes, according to consistency level and shard mapping
+        case msg: Query =>
+            val queryWorker = context.actorSelection( RootActorPath( backNodes.head.address ) / "user" / "node" / "data" / "query" )
+            val f = for {
+                r <- (queryWorker ? msg).mapTo[Any]
+            } yield r
 
-		// shards were calculated
-		case msg: ShardNodeMap =>
-			shardNodes = msg.arr
+            val askedBy = sender( )
 
-		// by default warn about messages not processed
-		case msg =>
-			log.warning ("Uncaught message: {}", msg)
-	}
+            f foreach {
+                res => askedBy ! res
+            }
 
 
-	/**
-	 * Returns shards mapped to address for this query. Selects nodes which will be used. In current implementation
-	 * all nodes are selected, as if consistency level was set to 1.
-	 * TODO node may have some shards cached or consistency level may be greater than 1
-	 * @return
-	 */
-	def shardMapForQuery: Array[ Address ] = {
-		shardNodes.map (_.head)
-	}
+        // cluster state has been distributed
+        case acs: AbyssClusterState =>
+            backNodes = acs.backNodes
+
+        // shards were calculated
+        case msg: ShardNodeMap =>
+            shardNodes = msg.arr
+
+        // by default warn about messages not processed
+        case msg =>
+            log.warning( "Uncaught message: {}", msg )
+    }
+
+
+    /**
+     * Returns shards mapped to address for this query. Selects nodes which will be used. In current implementation
+     * all nodes are selected, as if consistency level was set to 1.
+     * TODO node may have some shards cached or consistency level may be greater than 1
+     * @return
+     */
+    def shardMapForQuery: Array[Address] = {
+        shardNodes.map( _.head )
+    }
 
 
 }
