@@ -1,19 +1,17 @@
 /*
- * This software is licensed under the Apache 2 license, quoted below.
+ * Copyright 2013-2014 IQ TECH <http://www.iqtech.pl>
  *
- * Copyright 2009-2013 Typesafe Inc. <http://www.typesafe.com>
- *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not
- * use this file except in compliance with the License. You may obtain a copy of
- * the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations under
- * the License.
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package io.abyss.graph.model
@@ -22,10 +20,7 @@ import akka.cluster.VectorClock
 import io.abyss.client.GraphElementState
 
 
-/*
- * Created by cane, 11.06.13 15:31
- * $Id: GraphElement.scala,v 1.1 2014-01-02 09:35:14 cane Exp $
- */
+// Created by cane, 11.06.13 15:31
 
 
 /**
