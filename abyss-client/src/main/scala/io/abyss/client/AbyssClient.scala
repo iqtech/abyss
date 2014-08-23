@@ -17,9 +17,10 @@
 package io.abyss.client
 
 import akka.actor._
-import akka.routing.RoundRobinRouter
-import scala.util.Random
 import akka.cluster.Member
+import akka.routing.RoundRobinRouter
+
+import scala.util.Random
 
 // Created by cane, 1/2/14 1:05 PM
 

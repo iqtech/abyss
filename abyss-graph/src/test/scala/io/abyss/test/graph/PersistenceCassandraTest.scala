@@ -16,20 +16,22 @@
 
 package io.abyss.test.graph
 
-import org.junit.Test
-import me.prettyprint.hector.api.factory.HFactory
-import me.prettyprint.hector.api.ddl.ComparatorType
-import me.prettyprint.cassandra.service.ThriftKsDef
 import java.util
-import me.prettyprint.cassandra.service.template.ThriftColumnFamilyTemplate
-import me.prettyprint.cassandra.serializers.{DateSerializer, LongSerializer, StringSerializer}
-import java.util.{UUID, Date}
+import java.util.{Date, UUID}
+
 import akka.actor.Props
-import scala.util.Random
 import io.abyss._
-import io.abyss.node.data.persistence.CassandraPersistenceProvider
-import io.abyss.node.persistence.{CollectionConsistencyConfig, AbyssDefaultPersistenceConfig}
 import io.abyss.client.{EdgeState, VertexState}
+import io.abyss.node.data.persistence.CassandraPersistenceProvider
+import io.abyss.node.persistence.{AbyssDefaultPersistenceConfig, CollectionConsistencyConfig}
+import me.prettyprint.cassandra.serializers.{DateSerializer, LongSerializer, StringSerializer}
+import me.prettyprint.cassandra.service.ThriftKsDef
+import me.prettyprint.cassandra.service.template.ThriftColumnFamilyTemplate
+import me.prettyprint.hector.api.ddl.ComparatorType
+import me.prettyprint.hector.api.factory.HFactory
+import org.junit.Test
+
+import scala.util.Random
 
 /*
  * Created by cane, 11/30/13 9:15 PM

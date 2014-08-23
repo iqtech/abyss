@@ -16,7 +16,7 @@
 
 package io
 
-import akka.actor.{ActorLogging, Actor}
+import akka.actor.{Actor, ActorLogging}
 import akka.cluster.Cluster
 import io.abyss.client._
 

@@ -16,9 +16,7 @@
 
 package io.abyss.node.data
 
-import akka.actor.Props
-import akka.actor.RootActorPath
-import scala.Some
+import akka.actor.{Props, RootActorPath}
 import io.abyss.AbyssActor
 import io.abyss.node._
 import io.abyss.node.data.persistence.PersistenceManager

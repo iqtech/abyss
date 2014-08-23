@@ -17,13 +17,14 @@
 package io.abyss.node
 
 import java.util.concurrent.ConcurrentHashMap
-import io.abyss.graph.model.GraphElement
-import akka.actor.{Stash, ActorRef, FSM, Props}
+
+import akka.actor.{ActorRef, FSM, Props, Stash}
 import akka.cluster.ClusterEvent.CurrentClusterState
-import io.abyss.node.front.FrontendManager
-import io.abyss.node.data.DataManager
 import io.abyss._
 import io.abyss.client._
+import io.abyss.graph.model.GraphElement
+import io.abyss.node.data.DataManager
+import io.abyss.node.front.FrontendManager
 
 
 /**

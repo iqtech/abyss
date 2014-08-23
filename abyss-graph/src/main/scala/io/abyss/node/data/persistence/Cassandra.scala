@@ -16,26 +16,22 @@
 
 package io.abyss.node.data.persistence
 
-import akka.actor.{ActorRef, FSM, ActorLogging, Actor}
-import java.util.{UUID, Date}
+import java.util.{Date, UUID}
+
+import akka.actor.{Actor, ActorRef, FSM}
+import io.abyss._
+import io.abyss.client.{EdgeState, GraphElementState, VertexState}
+import io.abyss.graph.model._
+import io.abyss.node.persistence.{AbyssPersistenceConfig, CassandraPersistenceProviderConfig, CollectionConsistencyConfig, DirtyVertex, _}
+import io.abyss.node.{ShardsOwned, _}
 import me.prettyprint.cassandra.serializers.StringSerializer
 import me.prettyprint.cassandra.service.ThriftKsDef
 import me.prettyprint.cassandra.service.template.{ColumnFamilyUpdater, ThriftColumnFamilyTemplate}
 import me.prettyprint.hector.api.Keyspace
-import me.prettyprint.hector.api.ddl.{ComparatorType, ColumnFamilyDefinition}
+import me.prettyprint.hector.api.ddl.{ColumnFamilyDefinition, ComparatorType}
 import me.prettyprint.hector.api.factory.HFactory
+
 import scala.collection.JavaConverters
-import io.abyss._
-import io.abyss.node._
-import io.abyss.graph.model._
-import io.abyss.node.persistence._
-import io.abyss.node.persistence.CollectionConsistencyConfig
-import io.abyss.node.persistence.CassandraPersistenceProviderConfig
-import io.abyss.node.ShardsOwned
-import scala.Some
-import io.abyss.node.persistence.DirtyVertex
-import io.abyss.node.persistence.AbyssPersistenceConfig
-import io.abyss.client.{VertexState, EdgeState, GraphElementState}
 
 // Created by cane, 8/16/13 2:07 PM
 

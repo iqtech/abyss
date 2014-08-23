@@ -16,7 +16,8 @@
 
 package io.abyss.test
 
-import java.util.{UUID, Date}
+import java.util.{Date, UUID}
+
 import io.abyss.client._
 
 /**

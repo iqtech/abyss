@@ -16,15 +16,15 @@
 
 package io.abyss.node.front
 
-import akka.actor.{Address, ActorPath}
+import akka.actor.{ActorPath, Address, RootActorPath}
 import akka.cluster.Member
 import akka.pattern.ask
 import akka.util.Timeout
-import scala.concurrent.duration._
-import akka.actor.RootActorPath
 import io.abyss._
 import io.abyss.client._
-import io.abyss.node.{ShardNodeMap, AbyssClusterState}
+import io.abyss.node.{AbyssClusterState, ShardNodeMap}
+
+import scala.concurrent.duration._
 
 /*
  * Created by cane, 09.07.13 21:33
@@ -81,7 +81,7 @@ class CommandEndpoint extends AbyssActor {
 
 
 		// TODO construct envelope with sender attached and reply from backend directly
-		val askedBy = sender
+		val askedBy = sender()
 
 		ask(shard, msg).mapTo[ Any ] foreach {
 			res =>

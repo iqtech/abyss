@@ -19,12 +19,13 @@ package io.abyss.node.front
 import akka.actor._
 import akka.pattern.ask
 import akka.util.Timeout
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.Future
-import scala.concurrent.duration._
 import io.abyss._
 import io.abyss.client._
 import io.abyss.node._
+
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
+import scala.concurrent.duration._
 
 
 /*

@@ -17,11 +17,11 @@
 package io.abyss.node.data
 
 
+import java.util.concurrent.ConcurrentMap
+
 import io.abyss._
 import io.abyss.client._
 import io.abyss.graph.model.GraphElement
-
-import java.util.concurrent.ConcurrentMap
 
 
 

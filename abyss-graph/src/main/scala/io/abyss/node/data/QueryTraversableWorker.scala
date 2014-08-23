@@ -16,11 +16,12 @@
 
 package io.abyss.node.data
 
-import akka.actor.{ActorRef, Address}
 import java.util.concurrent.ConcurrentMap
+
+import akka.actor.{ActorRef, Address}
 import io.abyss.client._
-import io.abyss.node.{CoordinatedWorkDone, StartCoordinatedWork, WorkerReady}
 import io.abyss.graph.model.GraphElement
+import io.abyss.node.{CoordinatedWorkDone, StartCoordinatedWork, WorkerReady}
 
 
 /**

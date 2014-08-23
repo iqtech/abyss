@@ -16,11 +16,12 @@
 
 package io.abyss
 
+import akka.actor.{ActorRef, Address}
 import akka.cluster.ClusterEvent.CurrentClusterState
 import akka.cluster.Member
-import scala.collection.immutable
-import akka.actor.{ActorRef, Address}
 import io.abyss.client.QueryTraversable
+
+import scala.collection.immutable
 
 
 package object node {

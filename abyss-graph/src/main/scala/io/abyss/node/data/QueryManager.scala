@@ -16,15 +16,17 @@
 
 package io.abyss.node.data
 
+import java.util.concurrent.ConcurrentHashMap
+
 import akka.actor.Props
 import akka.cluster.Member
 import akka.routing.RoundRobinRouter
-import java.util.concurrent.ConcurrentHashMap
-import scala.collection.immutable
 import io.abyss._
 import io.abyss.client._
-import io.abyss.node.{NotConfigured, PrepareQueryTraversable}
 import io.abyss.graph.model.GraphElement
+import io.abyss.node.{NotConfigured, PrepareQueryTraversable}
+
+import scala.collection.immutable
 
 
 /**

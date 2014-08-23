@@ -16,9 +16,10 @@
 
 package io.abyss.client.test
 
-import org.junit.Test
-import io.abyss.client._
 import java.util.{Date, UUID}
+
+import io.abyss.client._
+import org.junit.Test
 
 // Created by cane, 1/19/14 1:17 PM
 

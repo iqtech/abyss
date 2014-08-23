@@ -16,11 +16,13 @@
 
 package io.abyss.node.data
 
-import akka.actor.ActorRef
 import java.util.concurrent.ConcurrentMap
-import scala.collection.JavaConverters
+
+import akka.actor.ActorRef
 import io.abyss.AbyssActor
 import io.abyss.graph.model.GraphElement
+
+import scala.collection.JavaConverters
 
 
 /*

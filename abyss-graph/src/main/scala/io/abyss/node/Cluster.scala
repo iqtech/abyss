@@ -19,8 +19,8 @@ package io.abyss.node
 // Created by cane, 1/6/14 12:25 PM
 
 import akka.actor.Address
-import akka.cluster.{MemberStatus, Member, Cluster}
 import akka.cluster.ClusterEvent._
+import akka.cluster.{Cluster, Member, MemberStatus}
 import io.abyss.{Abyss, AbyssActor}
 
 class ClusterManager extends AbyssActor with ClusterMembersCollector {

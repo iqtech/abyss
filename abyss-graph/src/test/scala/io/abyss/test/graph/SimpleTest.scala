@@ -16,9 +16,10 @@
 
 package io.abyss.test.graph
 
-import org.junit.Test
 import java.util.UUID
+
 import io.abyss._
+import org.junit.Test
 
 /*
  * Created by cane, 08.07.13 12:55

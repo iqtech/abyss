@@ -16,9 +16,9 @@
 
 package io.abyss.test.graph
 
-import org.junit.Test
 import akka.actor.ActorSystem
 import io.abyss.node.persistence.CollectionConsistencyConfig
+import org.junit.Test
 
 /**
  * Created by cane, 12/1/13 5:01 PM

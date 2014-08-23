@@ -16,10 +16,9 @@
 
 package io.abyss.node.front
 
-import akka.actor.{Address, Terminated, Props}
+import akka.actor.{Address, Props, Terminated}
 import akka.routing.{Broadcast, RoundRobinRouter}
 import io.abyss._
-import io.abyss.client._
 import io.abyss.node._
 
 

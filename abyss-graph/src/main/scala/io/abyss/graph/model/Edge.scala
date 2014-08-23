@@ -17,7 +17,7 @@
 package io.abyss.graph.model
 
 import java.util.UUID
-import scala.Some
+
 import io.abyss._
 import io.abyss.client._
 

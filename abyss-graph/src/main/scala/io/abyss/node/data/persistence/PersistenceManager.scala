@@ -16,11 +16,11 @@
 
 package io.abyss.node.data.persistence
 
-import akka.actor.{Props, ActorSystem}
+import akka.actor.ActorSystem
 import io.abyss.AbyssActor
-import io.abyss.node.persistence.{CollectionConsistencyConfig, AbyssDefaultPersistenceConfig}
 import io.abyss.node.AbyssClusterState
 import io.abyss.node.data._
+import io.abyss.node.persistence.{AbyssDefaultPersistenceConfig, CollectionConsistencyConfig}
 
 /**
  * Created by cane, 8/16/13 2:03 PM

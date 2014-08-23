@@ -16,16 +16,17 @@
 
 package io.abyss.node.front
 
-import akka.actor.{Props, Address, RootActorPath}
+import akka.actor.{Address, Props, RootActorPath}
 import akka.cluster.Member
-import akka.util.Timeout
 import akka.pattern.ask
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.Future
-import scala.concurrent.duration._
+import akka.util.Timeout
 import io.abyss._
 import io.abyss.client._
 import io.abyss.node._
+
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
+import scala.concurrent.duration._
 
 
 /**

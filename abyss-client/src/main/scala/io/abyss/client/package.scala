@@ -16,8 +16,8 @@
 
 package io.abyss
 
-import akka.cluster.Member
 import akka.actor.ActorRef
+import akka.cluster.Member
 
 // Created by cane, 1/2/14 1:08 PM
 

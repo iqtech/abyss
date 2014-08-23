@@ -16,13 +16,12 @@
 
 package io.abyss.node.data
 
-import akka.actor.Address
-import akka.actor.RootActorPath
-import io.abyss.client._
-import io.abyss._
-import io.abyss.graph.model._
 import java.util.concurrent.ConcurrentMap
-import scala.Some
+
+import akka.actor.{Address, RootActorPath}
+import io.abyss._
+import io.abyss.client._
+import io.abyss.graph.model._
 
 
 /*

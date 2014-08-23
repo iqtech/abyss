@@ -56,7 +56,7 @@
         <encoding>UTF-8</encoding>
 
         <scala.version>2.11.1</scala.version>
-        <akka.version>2.3.4</akka.version>
+        <akka.version>2.3.5</akka.version>
 
         <camel.version>2.13.1</camel.version>
 

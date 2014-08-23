@@ -16,10 +16,10 @@
 
 package io.abyss.node
 
+import akka.actor.Address
 import io.abyss._
 
 import scala.collection.immutable
-import akka.actor.Address
 import scala.util.Random
 
 

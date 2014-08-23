@@ -16,14 +16,16 @@
 
 package io.abyss.node.data
 
+import java.util.concurrent.ConcurrentMap
+
 import akka.pattern.ask
 import akka.util.Timeout
-import java.util.concurrent.ConcurrentMap
-import scala.concurrent.duration._
-import io.abyss.graph.model.{GraphElement, Edge, Vertex}
 import io.abyss._
 import io.abyss.client._
+import io.abyss.graph.model.{Edge, GraphElement, Vertex}
+
 import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
 
 /*
  * Created by cane, 13.07.13 12:27
@@ -83,7 +85,7 @@ trait CommandProcessor extends AbyssActor {
 				askedBy ! CommandFailed ("Edge exists")
 
 			} else {
-                import ExecutionContext.Implicits.global
+                import scala.concurrent.ExecutionContext.Implicits.global
 				// Index update in connected vertices, VertexInternalIndexUpdateRequired is sent to selected shard worker.
 				// Integrity is required - check vertices existence.
 

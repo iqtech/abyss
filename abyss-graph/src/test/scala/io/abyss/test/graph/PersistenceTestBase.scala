@@ -16,10 +16,11 @@
 
 package io.abyss.test.graph
 
+import akka.actor.ActorSystem
 import akka.util.Timeout
+
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
-import akka.actor.ActorSystem
 
 /**
  * Created by cane, 12/1/13 12:15 PM

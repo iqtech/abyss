@@ -16,15 +16,15 @@
 
 package io.abyss.node.data
 
-import akka.actor.{Address, ActorRef, Props}
-import akka.cluster.ClusterEvent.CurrentClusterState
 import java.util.concurrent.ConcurrentHashMap
-import scala.Some
-import scala.collection.{immutable, mutable}
-import io.abyss.AbyssActor
-import io.abyss.node._
+
+import akka.actor.{ActorRef, Address, Props}
+import akka.cluster.ClusterEvent.CurrentClusterState
+import io.abyss.{AbyssActor, _}
 import io.abyss.graph.model.GraphElement
-import io.abyss._
+import io.abyss.node._
+
+import scala.collection.{immutable, mutable}
 
 /**
  * Typed shards (remote, cache, write through and write behind cache, local), currently all local or remote.
