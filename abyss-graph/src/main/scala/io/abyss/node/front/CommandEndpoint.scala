@@ -90,4 +90,24 @@ class CommandEndpoint extends AbyssActor {
 		}
 
 	}
+
+
+	private def routeToShard(msg: AbyssCreateCommand) {
+		import scala.concurrent.ExecutionContext.Implicits.global
+		// send message to shard with correct ID and wait for response, which then return to sender, all asynchronously
+
+		// TODO don't use head only, but don't forget about sequence of command - should be forwarded to same shards
+		val shard = context.actorSelection (shardManagers.head / shardId(msg.data.hashCode.toString).toString)
+
+
+		// TODO construct envelope with sender attached and reply from backend directly
+		val askedBy = sender
+
+		ask(shard, msg).mapTo[ Any ] foreach {
+			res =>
+				log.info ("Command result received: %s" format res.toString)
+				askedBy ! res
+		}
+
+	}
 }
