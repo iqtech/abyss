@@ -1,51 +1,101 @@
 package io.abyss.client
 
+import java.util.UUID
+
 // Created by cane, 04.10.14 19:58
 
-
+/**
+ * Simple DSL which creates sequence of filters used by graph traversing.
+ */
 object DSL {
 
-	trait GE {
-		def apply(k: String): Any
-		def back(p: String): GE
-		def option(p: String): GE
+	trait ValueLike {
+
+		// TODO requires information about graph (G), element type (V|E) and key (K) -> (G:V:K) as unique id
+
+		/**
+		 * Tests equality of two elements. Implementation should always use indices, so index must
+		 * be defined per search key.
+		 * @param v
+		 * @return
+		 */
+		def ===(v: Any): Boolean = ???
+
+		def >(v: Any): Boolean = ???
+
+		def <(v: Any): Boolean = ???
+
 	}
 
-	type F = ( GE ) => Boolean
-
-	def f(ge: GE): Boolean = {
-		true
+	trait ElementLike {
+		def apply(key: String): ValueLike
 	}
 
-	trait E extends GE {
-		def inV: V
-		def outV: V
-	}
+	case class Q( name: String = UUID.randomUUID( ).toString, seq: Array[F] = Array.empty ) {
 
-	trait V extends GE {
-		def inE( f: F ): E
+		/**
+		 * Selects vertices using given selector
+		 * @return new, updated query
+		 */
+		def v( f: F ): Q = {
+			//find vertex
+			copy(seq = seq :+ f)
+		}
 
-		def inE: E = inE(_=>true)
+		/**
+		 * Selects edges using given selector
+		 * @param f
+		 * @return
+		 */
+		def e( f: F ): Q = {
+			// find edge
+			copy(seq = seq :+ f)
+		}
 
-		def outE( f: F ): E
+		def inE( f: F ): Q = ???
 
-		def outE: E = outE(_=>true)
+		def inE: Q = inE( _ => true )
 
-		def as(p: String): V
-	}
+		def outE( f: F ): Q = ???
 
+		def outE(ec: String)(f: F): Q = ???
 
-	object G {
-		def apply(f: F): V = ???
+		def inV: Q = ???
+
+		def outV: Q = ???
+
+		def apply( k: String ): Any = ???
+
+		def back( p: String ): Q = ???
+
+		def option( p: String ): Q = ???
+
+		def as( p: String ): Q = ???
+
+		def get: Q = ???
+
+		def branch(q: Q): Q = ???
+
+		def addFilter( f: F ): Unit = {
+			// TODO
+		}
 	}
 
 	object V {
-		def apply(f: F): V = G(f)
+		def apply(f: F): Q = Q().v(f)
 	}
 
+	object E {
+		def apply(f: F): Q = Q().e(f)
+	}
+
+	type F = ( ElementLike ) => Boolean
 
 	object Test {
-		val q = V(f).as("main").inE.outV.outE.outV.back("main")
+		val root = V( _("id") === "root" )
+		val translation = Q().outE("hasTranslation")(_("lang") === "pl").outV
+		val contentTreeChildren = Q().outE("hasContent")(_=>true).outV
+		val q = root as "root" branch translation back "root" branch contentTreeChildren option "root"
 	}
 
 }
