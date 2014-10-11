@@ -52,11 +52,12 @@ object DSL {
 			copy(seq = seq :+ f)
 		}
 
-		def inE( f: F ): Q = ???
 
-		def inE: Q = inE( _ => true )
+		//def inE: Q = inE( _ => true )
 
-		def outE( f: F ): Q = ???
+		//def outE( f: F ): Q = ???
+
+		def inE(ec: String)( f: F ): Q = ???
 
 		def outE(ec: String)(f: F): Q = ???
 
@@ -82,10 +83,12 @@ object DSL {
 	}
 
 	object V {
+		def apply(): Q = Q()
 		def apply(f: F): Q = Q().v(f)
 	}
 
 	object E {
+		def apply(): Q = Q()
 		def apply(f: F): Q = Q().e(f)
 	}
 
@@ -93,8 +96,9 @@ object DSL {
 
 	object Test {
 		val root = V( _("id") === "root" )
-		val translation = Q().outE("hasTranslation")(_("lang") === "pl").outV
-		val contentTreeChildren = Q().outE("hasContent")(_=>true).outV
+		val translation = V().outE("hasTranslation")(_("lang") === "pl").outV
+		val contentTreeChildren = V().outE("hasContent")(_=>true).outV
+
 		val q = root as "root" branch translation back "root" branch contentTreeChildren option "root"
 	}
 
