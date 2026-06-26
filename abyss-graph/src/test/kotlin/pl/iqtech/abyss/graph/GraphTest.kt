@@ -35,7 +35,11 @@ val graphTestModule = SerializersModule {
 
 val graphTestHz by lazy {
     System.setProperty("hazelcast.logging.type", "none")
-    Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(graphTestModule))
+    Hazelcast.newHazelcastInstance(
+        Config()
+            .registerAbyssSerializers(graphTestModule)
+            .configureAbyssGraph("g-edges")
+    )
 }
 
 val graphTest by lazy { AbyssGraph(graphTestHz, "g-nodes", "g-edges") }

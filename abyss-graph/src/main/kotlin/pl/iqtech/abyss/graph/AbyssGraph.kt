@@ -6,9 +6,11 @@ import arrow.core.left
 import arrow.core.right
 import com.hazelcast.config.Config
 import com.hazelcast.config.MapStoreConfig
+import com.hazelcast.config.PartitioningStrategyConfig
 import com.hazelcast.config.SerializerConfig
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import com.hazelcast.partition.PartitioningStrategy
 import com.hazelcast.query.Predicate
 import com.hazelcast.query.Predicates
 import kotlinx.coroutines.Dispatchers
@@ -89,10 +91,10 @@ class AbyssGraph(
             .mapLeft { AbyssError.Unexpected(it) }
 
     override fun outEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
-        edgeFlow(eq("__key.fromId", nodeId.toString()), pageSize)
+        outEdgeFlow(nodeId, eq("__key.fromId", nodeId.toString()))
 
     override fun outEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
-        edgeFlow(Predicates.and(eq("__key.fromId", nodeId.toString()), eq("__key.type", type)), pageSize)
+        outEdgeFlow(nodeId, Predicates.and(eq("__key.fromId", nodeId.toString()), eq("__key.type", type)))
 
     override fun inEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
         edgeFlow(eq("__key.toId", nodeId.toString()), pageSize)
@@ -104,6 +106,12 @@ class AbyssGraph(
 
     private val edgeOrder = Comparator<Map.Entry<EdgeKey, EdgeLike>> { a, b ->
         compareValuesBy(a.key, b.key, { it.fromId.toString() }, { it.toId.toString() }, { it.type })
+    }
+
+    private fun outEdgeFlow(nodeId: UUID, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
+        // ponytail: dummy EdgeKey so the PartitioningStrategy (which expects EdgeKey) extracts fromId correctly
+        val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike>(EdgeKey(nodeId, nodeId, ""), predicate)
+        withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
     }
 
     private fun edgeFlow(predicate: Predicate<EdgeKey, EdgeLike>, pageSize: Int): Flow<EdgeLike> = flow {
@@ -170,6 +178,14 @@ fun Config.registerAbyssSerializers(module: SerializersModule = EmptySerializers
     serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer())
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
+}
+
+// Call before creating the HazelcastInstance — partitioning config is immutable after startup.
+// Co-locates edges by fromId so outEdges() queries hit a single partition instead of all partitions.
+fun Config.configureAbyssGraph(edgesMapName: String = "abyss-edges"): Config = apply {
+    getMapConfig(edgesMapName).setPartitioningStrategyConfig(
+        PartitioningStrategyConfig(PartitioningStrategy<EdgeKey> { it.fromId })
+    )
 }
 
 private sealed interface Op {
