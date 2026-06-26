@@ -1,6 +1,9 @@
 package pl.iqtech.abyss.graph.traversal
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -23,42 +26,39 @@ class TraversalBuilder(
         private set
 
     override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
-        val next = mutableSetOf<UUID>()
-        for (nodeId in frontier) {
-            val edges = when (direction) {
-                HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
-                HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
-            }
-            for (edge in edges) {
-                if (edgePredicate != null && !edgePredicate(edge)) continue
-                next += when (direction) {
-                    HopDirection.OUTGOING -> edge.toId
-                    HopDirection.INCOMING -> edge.fromId
+        frontier = coroutineScope {
+            frontier.map { nodeId ->
+                async {
+                    val edges = when (direction) {
+                        HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
+                        HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
+                    }
+                    edges
+                        .filter { edgePredicate == null || edgePredicate(it) }
+                        .map { if (direction == HopDirection.OUTGOING) it.toId else it.fromId }
                 }
-            }
+            }.awaitAll().flatten().toSet()
         }
-        frontier = next
     }
 
     override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)?) {
-        val next = mutableSetOf<UUID>()
-        for (nodeId in frontier) {
-            val edges = when (direction) {
-                HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
-                HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
-            }
-            for (edge in edges) {
-                val endId = when (direction) {
-                    HopDirection.OUTGOING -> edge.toId
-                    HopDirection.INCOMING -> edge.fromId
+        frontier = coroutineScope {
+            frontier.map { nodeId ->
+                async {
+                    val edges = when (direction) {
+                        HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
+                        HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
+                    }
+                    edges.mapNotNull { edge ->
+                        val endId = if (direction == HopDirection.OUTGOING) edge.toId else edge.fromId
+                        val node = engine.node(endId).getOrNull() ?: return@mapNotNull null
+                        if (node::class.findAnnotation<SerialName>()?.value != nodeType) return@mapNotNull null
+                        if (nodePredicate != null && !nodePredicate(node)) return@mapNotNull null
+                        endId
+                    }
                 }
-                val node = engine.node(endId).getOrNull() ?: continue
-                if (node::class.findAnnotation<SerialName>()?.value != nodeType) continue
-                if (nodePredicate != null && !nodePredicate(node)) continue
-                next += endId
-            }
+            }.awaitAll().flatten().toSet()
         }
-        frontier = next
     }
 
     override suspend fun collectNodes(nodeType: String, filter: ((NodeLike) -> Boolean)?): Flow<NodeLike> {
