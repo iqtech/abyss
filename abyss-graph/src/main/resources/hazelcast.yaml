@@ -1,0 +1,24 @@
+hazelcast:
+  map:
+    abyss-nodes:
+      max-idle-seconds: 86400
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: FREE_HEAP_PERCENTAGE
+        size: 25
+
+    abyss-edges:
+      max-idle-seconds: 86400
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: FREE_HEAP_PERCENTAGE
+        size: 25
+      indexes:
+        - name: idx_edge_fromId
+          type: HASH
+          attributes:
+            - __key.fromId
+        - name: idx_edge_toId
+          type: HASH
+          attributes:
+            - __key.toId

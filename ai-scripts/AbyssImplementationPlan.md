@@ -113,7 +113,7 @@ Each step is one focused coding session. Mark `[x]` when done.
 
 ## Phase 5 — Hazelcast config
 
-- [ ] **19. Hazelcast YAML config**
+- [x] **19. Hazelcast YAML config**
   `abyss-nodes` and `abyss-edges` maps: HASH indexes on `__key.fromId` / `__key.toId`,
   LRU eviction, `FREE_HEAP_PERCENTAGE` max-size, `max-idle-seconds = 86400`.
   File: `abyss-graph/src/main/resources/hazelcast.yaml`
