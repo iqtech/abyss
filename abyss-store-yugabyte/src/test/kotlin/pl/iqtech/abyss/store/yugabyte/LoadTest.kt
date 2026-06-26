@@ -20,6 +20,7 @@ import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.time.Duration.Companion.seconds
 
 @Serializable
 @SerialName("yb_test_node")
@@ -99,6 +100,35 @@ class LoadTest {
         val result = runBlocking { ybStore.loadEdge(UUID.randomUUID(), UUID.randomUUID(), "yb_test_edge") }
         assertIs<Either.Right<EdgeLike?>>(result)
         assertEquals(null, result.value)
+    }
+
+    @Test fun `transaction saveNode with null ttl persists to ysql`() {
+        val node = YbTestNode(id = UUID.randomUUID(), name = "tx-ysql-node")
+        assertIs<Either.Right<Unit>>(runBlocking { ybStore.transaction { saveNode(node) } })
+        val loaded = runBlocking { ybStore.loadNode(node.id) }
+        assertEquals("tx-ysql-node", assertIs<YbTestNode>((loaded as Either.Right).value).name)
+    }
+
+    @Test fun `transaction saveNode with ttl persists to ycql`() {
+        val node = YbTestNode(id = UUID.randomUUID(), name = "tx-ycql-node")
+        assertIs<Either.Right<Unit>>(runBlocking { ybStore.transaction { saveNode(node, 3600.seconds) } })
+        val loaded = runBlocking { ybStore.loadNode(node.id) }
+        assertEquals("tx-ycql-node", assertIs<YbTestNode>((loaded as Either.Right).value).name)
+    }
+
+    @Test fun `transaction saveEdge with null ttl persists to ysql`() {
+        val edge = YbTestEdge(fromId = UUID.randomUUID(), toId = UUID.randomUUID(), label = "tx-ysql-edge")
+        assertIs<Either.Right<Unit>>(runBlocking { ybStore.transaction { saveEdge(edge) } })
+        val loaded = runBlocking { ybStore.loadEdge(edge.fromId, edge.toId, "yb_test_edge") }
+        assertEquals("tx-ysql-edge", assertIs<YbTestEdge>((loaded as Either.Right).value).label)
+    }
+
+    @Test fun `transaction deleteNode removes from ysql`() {
+        val node = YbTestNode(id = UUID.randomUUID(), name = "to-delete")
+        runBlocking { ybStore.transaction { saveNode(node) } }
+        assertIs<Either.Right<Unit>>(runBlocking { ybStore.transaction { deleteNode(node.id) } })
+        val loaded = runBlocking { ybStore.loadNode(node.id) }
+        assertEquals(null, (loaded as Either.Right).value)
     }
 
     @Test fun `loadEdge returns edge inserted in ycql`() {

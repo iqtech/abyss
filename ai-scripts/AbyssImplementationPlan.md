@@ -104,7 +104,7 @@ Each step is one focused coding session. Mark `[x]` when done.
   Fire YSQL and YCQL queries in parallel (`async` + `awaitFirst`); return first non-null.
   Serialization: JSONB column → `NodeLike` / `EdgeLike` via kotlinx polymorphic JSON.
 
-- [ ] **18. `transaction()` — TTL routing**
+- [x] **18. `transaction()` — TTL routing**
   `null` TTL → YSQL (`BEGIN` / `INSERT OR UPDATE` / `COMMIT`).
   Non-null TTL → YCQL (`INSERT … USING TTL <seconds>`).
   Mixed transactions (durable + ephemeral ops) commit YSQL first, YCQL second.
