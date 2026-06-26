@@ -67,7 +67,7 @@ Each step is one focused coding session. Mark `[x]` when done.
   `node()`, `edge()`, `nodeExists()`, `edgeExists()` — Hazelcast get, MapLoader handles miss.
   Implemented on `AbyssGraph`.
 
-- [ ] **12. Edge traversal as Flow**
+- [x] **12. Edge traversal as Flow**
   `outEdges()` — `PartitionPredicate` + `__key.fromId` HASH index + `PagingPredicate`.
   `inEdges()` — `__key.toId` HASH index + `PagingPredicate` (scatter-gather).
   Both emit as `Flow<EdgeLike>` with configurable `pageSize`.

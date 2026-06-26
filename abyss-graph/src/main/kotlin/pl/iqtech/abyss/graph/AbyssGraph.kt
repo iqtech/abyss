@@ -7,13 +7,16 @@ import arrow.core.right
 import com.hazelcast.config.Config
 import com.hazelcast.config.MapStoreConfig
 import com.hazelcast.config.SerializerConfig
-import kotlinx.serialization.modules.EmptySerializersModule
-import kotlinx.serialization.modules.SerializersModule
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import com.hazelcast.query.Predicate
+import com.hazelcast.query.Predicates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.modules.EmptySerializersModule
+import kotlinx.serialization.modules.SerializersModule
 import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.EdgeKey
@@ -74,10 +77,33 @@ class AbyssGraph(
         Either.catch { withContext(Dispatchers.IO) { edgesMap.containsKey(EdgeKey(fromId, toId, type)) } }
             .mapLeft { AbyssError.Unexpected(it) }
 
-    override fun outEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> = TODO()
-    override fun outEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> = TODO()
-    override fun inEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> = TODO()
-    override fun inEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> = TODO()
+    override fun outEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
+        edgeFlow(eq("__key.fromId", nodeId.toString()), pageSize)
+
+    override fun outEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
+        edgeFlow(Predicates.and(eq("__key.fromId", nodeId.toString()), eq("__key.type", type)), pageSize)
+
+    override fun inEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
+        edgeFlow(eq("__key.toId", nodeId.toString()), pageSize)
+
+    override fun inEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
+        edgeFlow(Predicates.and(eq("__key.toId", nodeId.toString()), eq("__key.type", type)), pageSize)
+
+    private fun eq(attr: String, value: String): Predicate<EdgeKey, EdgeLike> = Predicates.equal(attr, value)
+
+    private val edgeOrder = Comparator<Map.Entry<EdgeKey, EdgeLike>> { a, b ->
+        compareValuesBy(a.key, b.key, { it.fromId.toString() }, { it.toId.toString() }, { it.type })
+    }
+
+    private fun edgeFlow(predicate: Predicate<EdgeKey, EdgeLike>, pageSize: Int): Flow<EdgeLike> = flow {
+        val paging = Predicates.pagingPredicate(predicate, edgeOrder, pageSize)
+        while (true) {
+            val page = withContext(Dispatchers.IO) { edgesMap.values(paging) }
+            page.forEach { emit(it) }
+            if (page.size < pageSize) break
+            paging.nextPage()
+        }
+    }
 
     override suspend fun <T> from(nodeId: UUID, block: suspend TraversalBuilderLike.() -> T): Either<AbyssError, T> = TODO()
 

@@ -3,6 +3,7 @@ package pl.iqtech.abyss.graph
 import arrow.core.Either
 import com.hazelcast.config.Config
 import com.hazelcast.core.Hazelcast
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
@@ -10,7 +11,9 @@ import kotlinx.serialization.modules.subclass
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.edge
 import pl.iqtech.abyss.dsl.edgeExists
+import pl.iqtech.abyss.dsl.inEdges
 import pl.iqtech.abyss.dsl.node
+import pl.iqtech.abyss.dsl.outEdges
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
@@ -128,6 +131,81 @@ class GraphTest {
     @Test fun `edgeExists() returns false when absent`() {
         runBlocking {
             assertEquals(Either.Right(false), graphTest.edgeExists<TestEdge>(UUID.randomUUID(), UUID.randomUUID()))
+        }
+    }
+
+    // ── outEdges ──────────────────────────────────────────────────────────────
+
+    @Test fun `outEdges() returns all edges from a node`() {
+        runBlocking {
+            val from = UUID.randomUUID()
+            val edges = (1..3).map { TestEdge(fromId = from, toId = UUID.randomUUID(), label = "e$it") }
+            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+
+            val result = graphTest.outEdges(from).toList()
+            assertEquals(3, result.size)
+        }
+    }
+
+    @Test fun `outEdges() with type filters correctly`() {
+        runBlocking {
+            val from = UUID.randomUUID()
+            val edges = (1..3).map { TestEdge(fromId = from, toId = UUID.randomUUID(), label = "e$it") }
+            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+            // decoy with a different key type
+            graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(from, UUID.randomUUID(), "other_type")] =
+                edges[0].copy(toId = UUID.randomUUID())
+
+            val result = graphTest.outEdges(from, "test_edge").toList()
+            assertEquals(3, result.size)
+        }
+    }
+
+    @Test fun `reified outEdges() emits typed edges`() {
+        runBlocking {
+            val from = UUID.randomUUID()
+            val edges = (1..2).map { TestEdge(fromId = from, toId = UUID.randomUUID(), label = "e$it") }
+            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+
+            val result = graphTest.outEdges<TestEdge>(from).toList()
+            assertEquals(2, result.size)
+            result.forEach { assertIs<TestEdge>(it) }
+        }
+    }
+
+    @Test fun `outEdges() pages correctly`() {
+        runBlocking {
+            val from = UUID.randomUUID()
+            val edges = (1..5).map { TestEdge(fromId = from, toId = UUID.randomUUID(), label = "e$it") }
+            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+
+            val result = graphTest.outEdges(from, pageSize = 2).toList()
+            assertEquals(5, result.size)
+        }
+    }
+
+    // ── inEdges ───────────────────────────────────────────────────────────────
+
+    @Test fun `inEdges() returns all edges to a node`() {
+        runBlocking {
+            val to = UUID.randomUUID()
+            val edges = (1..3).map { TestEdge(fromId = UUID.randomUUID(), toId = to, label = "e$it") }
+            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+
+            val result = graphTest.inEdges(to).toList()
+            assertEquals(3, result.size)
+        }
+    }
+
+    @Test fun `reified inEdges() emits typed edges`() {
+        runBlocking {
+            val to = UUID.randomUUID()
+            val edges = (1..2).map { TestEdge(fromId = UUID.randomUUID(), toId = to, label = "e$it") }
+            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+
+            val result = graphTest.inEdges<TestEdge>(to).toList()
+            assertEquals(2, result.size)
+            result.forEach { assertIs<TestEdge>(it) }
         }
     }
 }
