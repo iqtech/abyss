@@ -208,17 +208,17 @@ class YugabyteAbyssStoreLike(
         for (op in ops) when (op) {
             is StoreOp.SaveNode -> {
                 val (type, data) = jsonPair(nodeSer, op.node)
-                // ponytail: USING TTL omitted — per-row TTL is not supported on transactional YCQL tables
-                // (transactions = true is required for secondary indexes). Use table-level TTL for expiry.
+                val ttl = op.ttl!!.inWholeSeconds
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO abyss_test_graph.ephemeral_nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO abyss_test_graph.ephemeral_nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     op.node.id, type, data, op.node.tags, op.node.createdAt, op.node.updatedAt
                 ))
             }
             is StoreOp.SaveEdge -> {
                 val (type, data) = jsonPair(edgeSer, op.edge)
+                val ttl = op.ttl!!.inWholeSeconds
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     op.edge.fromId, op.edge.toId, type, data, op.edge.tags, op.edge.createdAt, op.edge.updatedAt
                 ))
             }

@@ -9,6 +9,9 @@ CREATE KEYSPACE IF NOT EXISTS abyss_test_graph
 -- Partition key: id (UUID). Per-row TTL set at write time by YugabyteAbyssStoreLike.
 -- `data` carries the full polymorphic JSON (TEXT, not JSONB — YCQL has no JSONB type).
 
+-- No secondary indexes and no transactions flag — both are required together in YugabyteDB YCQL,
+-- and transactions=true blocks per-row USING TTL (issue #10992). Primary-key lookups suffice
+-- for loadNode(id) and loadEdge(fromId, toId, type).
 CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_nodes (
     id          UUID      PRIMARY KEY,
     type        TEXT,
@@ -16,14 +19,11 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_nodes (
     tags        LIST<TEXT>,
     created_at  TIMESTAMP,
     updated_at  TIMESTAMP
-) WITH transactions = {'enabled': 'true'};
-
-CREATE INDEX IF NOT EXISTS idx_ephemeral_nodes_type ON abyss_test_graph.ephemeral_nodes (type);
+);
 
 -- ── ephemeral_edges ──────────────────────────────────────────────────────────
 -- Partition key: from_id — co-locates all outgoing edges of a node on one tablet.
 -- Clustering columns: (to_id, type) — match EdgeKey ordering.
--- Secondary index on to_id supports inEdges() scatter-gather across partitions.
 
 CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
     from_id     UUID,
@@ -34,7 +34,4 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
     created_at  TIMESTAMP,
     updated_at  TIMESTAMP,
     PRIMARY KEY ((from_id), to_id, type)
-) WITH transactions = {'enabled': 'true'};
-
-CREATE INDEX IF NOT EXISTS idx_ephemeral_edges_to_id ON abyss_test_graph.ephemeral_edges (to_id);
-CREATE INDEX IF NOT EXISTS idx_ephemeral_edges_type  ON abyss_test_graph.ephemeral_edges (type);
+);
