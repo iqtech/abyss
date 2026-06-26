@@ -1,0 +1,22 @@
+[versions]
+kotlin             = "2.1.21"
+arrow              = "2.0.1"
+kotlinx-serial     = "1.7.3"
+kotlinx-coroutines = "1.9.0"
+hazelcast          = "5.5.0"
+hikari             = "5.1.0"
+postgresql         = "42.7.4"
+datastax           = "4.19.0-yb-1"
+
+[libraries]
+arrow-core                = { module = "io.arrow-kt:arrow-core",                                  version.ref = "arrow" }
+kotlinx-serialization     = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json",        version.ref = "kotlinx-serial" }
+kotlinx-coroutines        = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core",           version.ref = "kotlinx-coroutines" }
+hazelcast                 = { module = "com.hazelcast:hazelcast",                                  version.ref = "hazelcast" }
+hikari                    = { module = "com.zaxxer:HikariCP",                                      version.ref = "hikari" }
+postgresql                = { module = "org.postgresql:postgresql",                                version.ref = "postgresql" }
+datastax-driver           = { module = "com.yugabyte:java-driver-core",                           version.ref = "datastax" }
+
+[plugins]
+kotlin-jvm          = { id = "org.jetbrains.kotlin.jvm",                   version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization",  version.ref = "kotlin" }
