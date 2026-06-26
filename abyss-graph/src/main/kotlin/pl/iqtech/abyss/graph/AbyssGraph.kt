@@ -129,19 +129,32 @@ class AbyssGraph(
         val buffer = BufferedTransaction()
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
 
+        val ops = withContext(Dispatchers.IO) {
+            buffer.ops.flatMap { op ->
+                if (op is Op.RemoveNode) listOf(op) + cascadeEdgeRemovals(op.id)
+                else listOf(op)
+            }
+        }
+
         if (store != null) {
-            val storeResult = store.transaction { buffer.ops.forEach { applyToStore(it) } }
+            val storeResult = store.transaction { ops.forEach { applyToStore(it) } }
             if (storeResult.isLeft()) {
                 log.error("Store transaction failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
                 return storeResult
             }
         }
 
-        Either.catch { withContext(Dispatchers.IO) { buffer.ops.forEach { applyToCache(it) } } }
+        Either.catch { withContext(Dispatchers.IO) { ops.forEach { applyToCache(it) } } }
             .fold(ifLeft = { log.warn("Cache update failed after store commit; cache may be stale", it) }, ifRight = {})
 
-        log.debug("Transaction committed [{} op(s), nodes={}, edges={}]", buffer.ops.size, nodesMapName, edgesMapName)
+        log.debug("Transaction committed [{} op(s), nodes={}, edges={}]", ops.size, nodesMapName, edgesMapName)
         return Unit.right()
+    }
+
+    private fun cascadeEdgeRemovals(nodeId: UUID): List<Op.RemoveEdge> {
+        val out = edgesMap.entrySet(Predicates.partitionPredicate(nodeId, eq("__key.fromId", nodeId.toString())))
+        val inc = edgesMap.entrySet(eq("__key.toId", nodeId.toString()))
+        return (out + inc).distinctBy { it.key }.map { Op.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
     }
 
     private fun AbyssStoreTransactionLike.applyToStore(op: Op) = when (op) {

@@ -15,6 +15,7 @@ import pl.iqtech.abyss.dsl.edgeExists
 import pl.iqtech.abyss.dsl.inEdges
 import pl.iqtech.abyss.dsl.node
 import pl.iqtech.abyss.dsl.outEdges
+import pl.iqtech.abyss.dsl.removeEdge
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
@@ -257,6 +258,31 @@ class GraphTest {
             graphTest.transaction { addEdge(edge) }
             graphTest.transaction { removeEdge(edge.fromId, edge.toId, "test_edge") }
             assertIs<Either.Left<AbyssError>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+        }
+    }
+
+    @Test fun `transaction removeEdge with edge instance removes edge`() {
+        runBlocking {
+            val edge = TestEdge(fromId = UUID.randomUUID(), toId = UUID.randomUUID(), label = "bye")
+            graphTest.transaction { addEdge(edge) }
+            graphTest.transaction { removeEdge(edge) }
+            assertIs<Either.Left<AbyssError>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+        }
+    }
+
+    @Test fun `transaction removeNode cascades to connected edges`() {
+        runBlocking {
+            val node  = TestNode(id = UUID.randomUUID(), name = "hub")
+            val other = TestNode(id = UUID.randomUUID(), name = "other")
+            val out = TestEdge(fromId = node.id,  toId = other.id, label = "out")
+            val inc = TestEdge(fromId = other.id, toId = node.id,  label = "in")
+            graphTest.transaction { addNode(node); addNode(other); addEdge(out); addEdge(inc) }
+
+            graphTest.transaction { removeNode(node.id) }
+
+            assertIs<Either.Left<AbyssError>>(graphTest.node(node.id))
+            assertIs<Either.Left<AbyssError>>(graphTest.edge(node.id,  other.id, "test_edge"))
+            assertIs<Either.Left<AbyssError>>(graphTest.edge(other.id, node.id,  "test_edge"))
         }
     }
 

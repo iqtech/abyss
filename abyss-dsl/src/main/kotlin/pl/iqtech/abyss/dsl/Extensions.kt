@@ -37,6 +37,9 @@ inline fun <reified E : EdgeLike> AbyssEngineLike.inEdges(nodeId: UUID, pageSize
 inline fun <reified E : EdgeLike> AbyssTransactionLike.removeEdge(fromId: UUID, toId: UUID) =
     removeEdge(fromId, toId, E::class.findAnnotation<SerialName>()!!.value)
 
+fun AbyssTransactionLike.removeEdge(edge: EdgeLike) =
+    removeEdge(edge.fromId, edge.toId, edge::class.findAnnotation<SerialName>()!!.value)
+
 // TraversalBuilderLike
 
 suspend inline fun <reified E : EdgeLike> TraversalBuilderLike.outgoing() =
