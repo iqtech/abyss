@@ -95,12 +95,12 @@ Each step is one focused coding session. Mark `[x]` when done.
   YCQL: `graph.ephemeral_nodes`, `graph.ephemeral_edges` with per-row TTL.
   Directory: `abyss-store-yugabyte/src/main/resources/db/`
 
-- [ ] **16. YugabyteAbyssStoreLike skeleton + connections**
+- [x] **16. YugabyteAbyssStoreLike skeleton + connections**
   `YugabyteAbyssStoreLike(ysql: DataSource, ycql: CqlSession, ...)` class.
   HikariCP `DataSource` for YSQL; `CqlSession` (YugabyteDB Java driver) for YCQL.
   File: `pl.iqtech.abyss.store.yugabyte.YugabyteAbyssStoreLike`
 
-- [ ] **17. `loadNode()` / `loadEdge()`**
+- [x] **17. `loadNode()` / `loadEdge()`**
   Fire YSQL and YCQL queries in parallel (`async` + `awaitFirst`); return first non-null.
   Serialization: JSONB column → `NodeLike` / `EdgeLike` via kotlinx polymorphic JSON.
 
