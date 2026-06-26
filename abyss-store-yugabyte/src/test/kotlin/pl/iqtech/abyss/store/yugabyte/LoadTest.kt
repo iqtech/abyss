@@ -123,6 +123,19 @@ class LoadTest {
         assertEquals("tx-ysql-edge", assertIs<YbTestEdge>((loaded as Either.Right).value).label)
     }
 
+    @Test fun `ephemeral node with ttl is readable before expiry and gone after`() {
+        val node = YbTestNode(id = UUID.randomUUID(), name = "ephemeral")
+        assertIs<Either.Right<Unit>>(runBlocking { ybStore.transaction { saveNode(node, 5.seconds) } })
+
+        Thread.sleep(1_000)
+        val before = runBlocking { ybStore.loadNode(node.id) }
+        assertEquals("ephemeral", assertIs<YbTestNode>((before as Either.Right).value).name)
+
+        Thread.sleep(5_000)
+        val after = runBlocking { ybStore.loadNode(node.id) }
+        assertEquals(null, (after as Either.Right).value)
+    }
+
     @Test fun `transaction deleteNode removes from ysql`() {
         val node = YbTestNode(id = UUID.randomUUID(), name = "to-delete")
         runBlocking { ybStore.transaction { saveNode(node) } }
