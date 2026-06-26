@@ -3,4 +3,5 @@ dependencies {
     implementation(libs.hikari)
     implementation(libs.postgresql)
     implementation(libs.datastax.driver)
+    testImplementation(kotlin("test"))
 }
