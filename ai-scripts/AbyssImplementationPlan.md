@@ -73,12 +73,12 @@ Each step is one focused coding session. Mark `[x]` when done.
   Both emit as `Flow<EdgeLike>` with configurable `pageSize`.
   Implemented on `AbyssGraph`.
 
-- [ ] **13. Transaction — store-first write ordering**
+- [x] **13. Transaction — store-first write ordering**
   `transaction {}`: accumulate ops in `AbyssTransactionLike` impl, commit to store atomically,
   then bulk-put into Hazelcast (best-effort; cache-put failure is non-fatal, logged WARN).
   Implemented on `AbyssGraph`.
 
-- [ ] **14. Traversal DSL — `from()` implementation**
+- [x] **14. Traversal DSL — `from()` implementation**
   `TraversalBuilderLike` impl backed by `AbyssGraph`.
   `outgoing<E>()` / `incoming<E>()` compile to predicate queries on `__key.fromId` / `__key.toId` + edge type.
   `nodes<N>()` — fetch node for each matched edge endpoint, filter by type discriminator, emit as `Flow`.

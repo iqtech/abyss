@@ -7,6 +7,7 @@ hazelcast          = "5.5.0"
 hikari             = "5.1.0"
 postgresql         = "42.7.4"
 datastax           = "4.19.0-yb-1"
+slf4j              = "2.0.9"
 
 [libraries]
 arrow-core                = { module = "io.arrow-kt:arrow-core",                                  version.ref = "arrow" }
@@ -16,6 +17,7 @@ hazelcast                 = { module = "com.hazelcast:hazelcast",               
 hikari                    = { module = "com.zaxxer:HikariCP",                                      version.ref = "hikari" }
 postgresql                = { module = "org.postgresql:postgresql",                                version.ref = "postgresql" }
 datastax-driver           = { module = "com.yugabyte:java-driver-core",                           version.ref = "datastax" }
+slf4j-api                 = { module = "org.slf4j:slf4j-api",                                      version.ref = "slf4j" }
 
 [plugins]
 kotlin-jvm          = { id = "org.jetbrains.kotlin.jvm",                   version.ref = "kotlin" }
