@@ -122,7 +122,7 @@ Each step is one focused coding session. Mark `[x]` when done.
 
 ## Phase 6 — Logging
 
-- [ ] **20. SLF4J log points**
+- [x] **20. SLF4J log points**
   Wire log calls at levels defined in the concept doc:
   `AbyssGraph` init/close → INFO; cache miss → DEBUG; transaction summary → DEBUG;
   cache-put failure → WARN; store error → ERROR.

@@ -66,6 +66,8 @@ class AbyssGraph(
         }
         nodesMap = hazelcast.getMap(nodesMapName)
         edgesMap = hazelcast.getMap(edgesMapName)
+        log.info("AbyssGraph started [nodes={}, edges={}, store={}]",
+            nodesMapName, edgesMapName, store?.javaClass?.simpleName ?: "none")
     }
 
     override suspend fun node(id: UUID): Either<AbyssError, NodeLike> =
@@ -124,12 +126,16 @@ class AbyssGraph(
 
         if (store != null) {
             val storeResult = store.transaction { buffer.ops.forEach { applyToStore(it) } }
-            if (storeResult.isLeft()) return storeResult
+            if (storeResult.isLeft()) {
+                log.error("Store transaction failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                return storeResult
+            }
         }
 
         Either.catch { withContext(Dispatchers.IO) { buffer.ops.forEach { applyToCache(it) } } }
             .fold(ifLeft = { log.warn("Cache update failed after store commit; cache may be stale", it) }, ifRight = {})
 
+        log.debug("Transaction committed [{} op(s), nodes={}, edges={}]", buffer.ops.size, nodesMapName, edgesMapName)
         return Unit.right()
     }
 
