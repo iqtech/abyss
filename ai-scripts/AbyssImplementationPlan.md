@@ -90,8 +90,8 @@ Each step is one focused coding session. Mark `[x]` when done.
 
 ## Phase 4 — `abyss-store-yugabyte` (durable + ephemeral persistence)
 
-- [ ] **15. DB schema scripts**
-  YSQL: `graph.nodes`, `graph.edges` with indexes (GIN tags, btree type, GIST geo stub).
+- [x] **15. DB schema scripts**
+  YSQL: `graph.nodes`, `graph.edges` with indexes (GIN tags, btree type).
   YCQL: `graph.ephemeral_nodes`, `graph.ephemeral_edges` with per-row TTL.
   Directory: `abyss-store-yugabyte/src/main/resources/db/`
 
@@ -126,3 +126,10 @@ Each step is one focused coding session. Mark `[x]` when done.
   Wire log calls at levels defined in the concept doc:
   `AbyssGraph` init/close → INFO; cache miss → DEBUG; transaction summary → DEBUG;
   cache-put failure → WARN; store error → ERROR.
+
+---
+
+## Deferred
+
+- **GIST geo index** on `graph.nodes` / `graph.edges` — add when a geospatial property
+  is defined on `NodeLike`/`EdgeLike`. Schema stub omitted intentionally.
