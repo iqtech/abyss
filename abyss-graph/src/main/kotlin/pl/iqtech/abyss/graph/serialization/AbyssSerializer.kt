@@ -4,9 +4,13 @@ import com.hazelcast.nio.ObjectDataInput
 import com.hazelcast.nio.ObjectDataOutput
 import com.hazelcast.nio.serialization.StreamSerializer
 import kotlinx.serialization.PolymorphicSerializer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.modules.EmptySerializersModule
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.plus
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import java.time.Instant
@@ -33,8 +37,10 @@ data class UnknownEdge(val raw: JsonElement) : EdgeLike {
     override fun toString() = raw.toString()
 }
 
-class NodeLikeHzSerializer : StreamSerializer<NodeLike> {
-    private val json = createPolymorphicJsonSerializer<NodeLike> { UnknownNode(it) }
+class NodeLikeHzSerializer(extraModule: SerializersModule = EmptySerializersModule()) : StreamSerializer<NodeLike> {
+    private val json = createPolymorphicJsonSerializer<NodeLike>(
+        baseJsonSerializer = Json(from = customJsonSerializer) { serializersModule = customJsonSerializer.serializersModule + extraModule }
+    ) { UnknownNode(it) }
     private val kSerializer = PolymorphicSerializer(NodeLike::class)
 
     override fun getTypeId() = TYPE_ID
@@ -45,8 +51,10 @@ class NodeLikeHzSerializer : StreamSerializer<NodeLike> {
     companion object { const val TYPE_ID = 2001 }
 }
 
-class EdgeLikeHzSerializer : StreamSerializer<EdgeLike> {
-    private val json = createPolymorphicJsonSerializer<EdgeLike> { UnknownEdge(it) }
+class EdgeLikeHzSerializer(extraModule: SerializersModule = EmptySerializersModule()) : StreamSerializer<EdgeLike> {
+    private val json = createPolymorphicJsonSerializer<EdgeLike>(
+        baseJsonSerializer = Json(from = customJsonSerializer) { serializersModule = customJsonSerializer.serializersModule + extraModule }
+    ) { UnknownEdge(it) }
     private val kSerializer = PolymorphicSerializer(EdgeLike::class)
 
     override fun getTypeId() = TYPE_ID

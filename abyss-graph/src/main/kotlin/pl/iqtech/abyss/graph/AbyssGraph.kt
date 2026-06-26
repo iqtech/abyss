@@ -1,12 +1,19 @@
 package pl.iqtech.abyss.graph
 
 import arrow.core.Either
+import arrow.core.flatMap
+import arrow.core.left
+import arrow.core.right
 import com.hazelcast.config.Config
 import com.hazelcast.config.MapStoreConfig
 import com.hazelcast.config.SerializerConfig
+import kotlinx.serialization.modules.EmptySerializersModule
+import kotlinx.serialization.modules.SerializersModule
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.EdgeKey
@@ -49,10 +56,23 @@ class AbyssGraph(
         edgesMap = hazelcast.getMap(edgesMapName)
     }
 
-    override suspend fun node(id: UUID): Either<AbyssError, NodeLike> = TODO()
-    override suspend fun edge(fromId: UUID, toId: UUID, type: String): Either<AbyssError, EdgeLike> = TODO()
-    override suspend fun nodeExists(id: UUID): Either<AbyssError, Boolean> = TODO()
-    override suspend fun edgeExists(fromId: UUID, toId: UUID, type: String): Either<AbyssError, Boolean> = TODO()
+    override suspend fun node(id: UUID): Either<AbyssError, NodeLike> =
+        Either.catch { withContext(Dispatchers.IO) { nodesMap[id] } }
+            .mapLeft { AbyssError.Unexpected(it) }
+            .flatMap { it?.right() ?: AbyssError.NodeNotFound(id).left() }
+
+    override suspend fun edge(fromId: UUID, toId: UUID, type: String): Either<AbyssError, EdgeLike> =
+        Either.catch { withContext(Dispatchers.IO) { edgesMap[EdgeKey(fromId, toId, type)] } }
+            .mapLeft { AbyssError.Unexpected(it) }
+            .flatMap { it?.right() ?: AbyssError.EdgeNotFound(fromId, toId, type).left() }
+
+    override suspend fun nodeExists(id: UUID): Either<AbyssError, Boolean> =
+        Either.catch { withContext(Dispatchers.IO) { nodesMap.containsKey(id) } }
+            .mapLeft { AbyssError.Unexpected(it) }
+
+    override suspend fun edgeExists(fromId: UUID, toId: UUID, type: String): Either<AbyssError, Boolean> =
+        Either.catch { withContext(Dispatchers.IO) { edgesMap.containsKey(EdgeKey(fromId, toId, type)) } }
+            .mapLeft { AbyssError.Unexpected(it) }
 
     override fun outEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> = TODO()
     override fun outEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> = TODO()
@@ -65,8 +85,9 @@ class AbyssGraph(
 }
 
 // Call before creating the HazelcastInstance — serialization config is immutable after startup.
-fun Config.registerAbyssSerializers(): Config = apply {
+// Pass the consuming project's SerializersModule so concrete NodeLike/EdgeLike types are known.
+fun Config.registerAbyssSerializers(module: SerializersModule = EmptySerializersModule()): Config = apply {
     serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer())
-    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer()))
-    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer()))
+    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
+    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }

@@ -63,7 +63,7 @@ Each step is one focused coding session. Mark `[x]` when done.
   return first non-null. Wired as `MapLoader` on both IMap configs.
   File: `pl.iqtech.abyss.graph.loader.NodeMapLoader`, `EdgeMapLoader`
 
-- [ ] **11. Point reads**
+- [x] **11. Point reads**
   `node()`, `edge()`, `nodeExists()`, `edgeExists()` — Hazelcast get, MapLoader handles miss.
   Implemented on `AbyssGraph`.
 
