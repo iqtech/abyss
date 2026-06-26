@@ -80,13 +80,13 @@ Apply the schema scripts from `abyss-store-yugabyte/src/main/resources/db/` then
 
 ```kotlin
 val store = YugabyteAbyssStoreLike.create(
-    ysqlUrl  = "jdbc:postgresql://localhost:5433/my_graph",
-    username = "abyss",
-    password = "abyss",
-    ycqlHost = "localhost",
-    ycqlPort = 9042,
-    keyspace = "my_graph",
-    module   = module,
+    ysqlUrl          = "jdbc:postgresql://localhost:5433/my_graph",
+    ysqlUser         = "abyss",
+    ysqlPassword     = "abyss",
+    ycqlHost         = "localhost",
+    ycqlPort         = 9042,
+    ycqlDatacenter   = "datacenter1",
+    module           = module,
 )
 
 val config = Config().registerAbyssSerializers(module)
