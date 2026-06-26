@@ -20,6 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.plus
+import pl.iqtech.abyss.store.api.abyssSerializersModule
 import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
@@ -65,7 +66,7 @@ class YugabyteAbyssStoreLike(
         ignoreUnknownKeys = true
         isLenient = true
         classDiscriminator = "type"
-        serializersModule = baseJsonModule + module
+        serializersModule = abyssSerializersModule + module
     }
 
     private val nodeSer = PolymorphicSerializer(NodeLike::class)

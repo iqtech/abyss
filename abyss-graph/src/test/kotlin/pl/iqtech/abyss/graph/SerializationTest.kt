@@ -9,13 +9,13 @@ import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.plus
 import kotlinx.serialization.modules.subclass
-import pl.iqtech.abyss.graph.serialization.InstantSerializer
 import pl.iqtech.abyss.graph.serialization.UnknownEdge
 import pl.iqtech.abyss.graph.serialization.UnknownNode
-import pl.iqtech.abyss.graph.serialization.UuidSerializer
 import pl.iqtech.abyss.graph.serialization.createPolymorphicJsonSerializer
-import pl.iqtech.abyss.graph.serialization.customJsonModule
 import pl.iqtech.abyss.graph.serialization.customJsonSerializer
+import pl.iqtech.abyss.store.api.InstantSerializer
+import pl.iqtech.abyss.store.api.UuidSerializer
+import pl.iqtech.abyss.store.api.abyssSerializersModule
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import java.time.Instant
@@ -53,7 +53,7 @@ private val testModule = SerializersModule {
 }
 
 private fun baseJson() = Json(from = customJsonSerializer) {
-    serializersModule = customJsonModule + testModule
+    serializersModule = abyssSerializersModule + testModule
 }
 
 private val nodeJson = createPolymorphicJsonSerializer<NodeLike>(baseJson()) { UnknownNode(it) }

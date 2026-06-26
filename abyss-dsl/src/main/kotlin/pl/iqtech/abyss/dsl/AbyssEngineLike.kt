@@ -27,10 +27,8 @@ interface AbyssEngineLike {
 
 interface AbyssTransactionLike {
     fun addNode(node: NodeLike, ttl: Duration? = null)
-    fun updateNode(node: NodeLike)
     fun removeNode(id: UUID)
 
     fun addEdge(edge: EdgeLike, ttl: Duration? = null)
-    fun updateEdge(edge: EdgeLike)
     fun removeEdge(fromId: UUID, toId: UUID, type: String)
 }

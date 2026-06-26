@@ -232,11 +232,11 @@ class GraphTest {
         }
     }
 
-    @Test fun `transaction updateNode updates cached value`() {
+    @Test fun `transaction addNode overwrites existing node`() {
         runBlocking {
             val node = TestNode(id = UUID.randomUUID(), name = "before")
             graphTest.transaction { addNode(node) }
-            graphTest.transaction { updateNode(node.copy(name = "after")) }
+            graphTest.transaction { addNode(node.copy(name = "after")) }
             val result = graphTest.node<TestNode>(node.id)
             assertEquals("after", (result as Either.Right).value.name)
         }

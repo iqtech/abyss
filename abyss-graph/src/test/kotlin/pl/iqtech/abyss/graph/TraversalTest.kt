@@ -8,7 +8,6 @@ import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.reaches
-import pl.iqtech.abyss.dsl.traverse
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import java.util.UUID
@@ -123,23 +122,6 @@ class TraversalTest {
 
             val result = graphTest.from(a.id) {
                 outgoing<TestEdge>({ it.label == "keep" })
-                nodes<TestNode>().toList()
-            }
-            assertIs<Either.Right<List<TestNode>>>(result)
-            assertEquals(listOf(b), result.value)
-        }
-    }
-
-    // ── traverse wrapper ──────────────────────────────────────────────────────
-
-    @Test fun `from - traverse block updates frontier same as direct hop`() {
-        runBlocking {
-            val a = putNode("a")
-            val b = putNode("b")
-            putEdge(a.id, b.id)
-
-            val result = graphTest.from(a.id) {
-                traverse { outgoing<TestEdge>() }
                 nodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)

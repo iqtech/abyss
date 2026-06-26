@@ -23,7 +23,7 @@ class TraversalBuilder(
     var frontier: Set<UUID> = startFrontier
         private set
 
-    override fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?, stop: Boolean) {
+    override fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
         val next = mutableSetOf<UUID>()
         for (nodeId in frontier) {
             val edges = runBlocking {
@@ -43,7 +43,7 @@ class TraversalBuilder(
         frontier = next
     }
 
-    override fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)?, stop: Boolean) {
+    override fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)?) {
         val next = mutableSetOf<UUID>()
         for (nodeId in frontier) {
             val edges = runBlocking {
@@ -77,8 +77,6 @@ class TraversalBuilder(
             }
         }
     }
-
-    override fun addTraversal(block: TraversalBuilderLike.() -> Unit) = block(this)
 
     override fun checkReaches(targetId: UUID, block: TraversalBuilderLike.() -> Unit): Boolean {
         val visited = mutableSetOf<UUID>()

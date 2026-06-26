@@ -46,24 +46,22 @@ inline fun <reified E : EdgeLike> TraversalBuilderLike.incoming() =
     addHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value)
 
 @JvmName("outgoingEdgePredicate")
-inline fun <reified E : EdgeLike> TraversalBuilderLike.outgoing(noinline predicate: (E) -> Boolean, stop: Boolean = false) =
-    addHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value, { predicate(it as E) }, stop)
+inline fun <reified E : EdgeLike> TraversalBuilderLike.outgoing(noinline predicate: (E) -> Boolean) =
+    addHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value, { predicate(it as E) })
 
 @JvmName("incomingEdgePredicate")
-inline fun <reified E : EdgeLike> TraversalBuilderLike.incoming(noinline predicate: (E) -> Boolean, stop: Boolean = false) =
-    addHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, { predicate(it as E) }, stop)
+inline fun <reified E : EdgeLike> TraversalBuilderLike.incoming(noinline predicate: (E) -> Boolean) =
+    addHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, { predicate(it as E) })
 
 @JvmName("outgoingNodePredicate")
-inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.outgoing(noinline predicate: (N) -> Boolean, stop: Boolean = false) =
-    addNodeHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) }, stop)
+inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.outgoing(noinline predicate: (N) -> Boolean) =
+    addNodeHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
 @JvmName("incomingNodePredicate")
-inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.incoming(noinline predicate: (N) -> Boolean, stop: Boolean = false) =
-    addNodeHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) }, stop)
+inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.incoming(noinline predicate: (N) -> Boolean) =
+    addNodeHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
 inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline filter: ((N) -> Boolean)? = null): Flow<N> =
     collectNodes(N::class.findAnnotation<SerialName>()!!.value, filter?.let { f -> { f(it as N) } }).filterIsInstance<N>()
-
-fun TraversalBuilderLike.traverse(block: TraversalBuilderLike.() -> Unit) = addTraversal(block)
 
 fun TraversalBuilderLike.reaches(targetId: UUID, block: TraversalBuilderLike.() -> Unit): Boolean = checkReaches(targetId, block)

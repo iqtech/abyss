@@ -141,10 +141,8 @@ class AbyssGraph(
 
     private fun AbyssStoreTransactionLike.applyToStore(op: Op) = when (op) {
         is Op.AddNode    -> saveNode(op.node, op.ttl)
-        is Op.UpdateNode -> saveNode(op.node)
         is Op.RemoveNode -> deleteNode(op.id)
         is Op.AddEdge    -> saveEdge(op.edge, op.ttl)
-        is Op.UpdateEdge -> saveEdge(op.edge)
         is Op.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
     }
 
@@ -153,14 +151,12 @@ class AbyssGraph(
             nodesMap.set(op.node.id, op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
         else
             nodesMap.set(op.node.id, op.node)
-        is Op.UpdateNode -> nodesMap.set(op.node.id, op.node)
         is Op.RemoveNode -> nodesMap.delete(op.id)
         is Op.AddEdge -> {
             val key = EdgeKey(op.edge.fromId, op.edge.toId, edgeType(op.edge))
             if (op.ttl != null) edgesMap.set(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
             else edgesMap.set(key, op.edge)
         }
-        is Op.UpdateEdge -> edgesMap.set(EdgeKey(op.edge.fromId, op.edge.toId, edgeType(op.edge)), op.edge)
         is Op.RemoveEdge -> edgesMap.delete(EdgeKey(op.fromId, op.toId, op.type))
     }
 
@@ -178,19 +174,15 @@ fun Config.registerAbyssSerializers(module: SerializersModule = EmptySerializers
 
 private sealed interface Op {
     data class AddNode(val node: NodeLike, val ttl: Duration?) : Op
-    data class UpdateNode(val node: NodeLike) : Op
     data class RemoveNode(val id: UUID) : Op
     data class AddEdge(val edge: EdgeLike, val ttl: Duration?) : Op
-    data class UpdateEdge(val edge: EdgeLike) : Op
     data class RemoveEdge(val fromId: UUID, val toId: UUID, val type: String) : Op
 }
 
 private class BufferedTransaction : AbyssTransactionLike {
     val ops = mutableListOf<Op>()
-    override fun addNode(node: NodeLike, ttl: Duration?)         { ops += Op.AddNode(node, ttl) }
-    override fun updateNode(node: NodeLike)                       { ops += Op.UpdateNode(node) }
-    override fun removeNode(id: UUID)                             { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike, ttl: Duration?)          { ops += Op.AddEdge(edge, ttl) }
-    override fun updateEdge(edge: EdgeLike)                       { ops += Op.UpdateEdge(edge) }
+    override fun addNode(node: NodeLike, ttl: Duration?)          { ops += Op.AddNode(node, ttl) }
+    override fun removeNode(id: UUID)                              { ops += Op.RemoveNode(id) }
+    override fun addEdge(edge: EdgeLike, ttl: Duration?)           { ops += Op.AddEdge(edge, ttl) }
     override fun removeEdge(fromId: UUID, toId: UUID, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
 }
