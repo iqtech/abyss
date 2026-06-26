@@ -8,8 +8,8 @@ import java.util.UUID
 enum class HopDirection { OUTGOING, INCOMING }
 
 interface TraversalBuilderLike {
-    fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)? = null)
-    fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)? = null)
-    fun collectNodes(nodeType: String, filter: ((NodeLike) -> Boolean)? = null): Flow<NodeLike>
-    fun checkReaches(targetId: UUID, block: TraversalBuilderLike.() -> Unit): Boolean
+    suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)? = null)
+    suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)? = null)
+    suspend fun collectNodes(nodeType: String, filter: ((NodeLike) -> Boolean)? = null): Flow<NodeLike>
+    suspend fun checkReaches(targetId: UUID, block: suspend TraversalBuilderLike.() -> Unit): Boolean
 }

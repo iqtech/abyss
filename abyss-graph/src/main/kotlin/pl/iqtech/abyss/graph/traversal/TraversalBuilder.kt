@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.dsl.AbyssEngineLike
@@ -23,14 +22,12 @@ class TraversalBuilder(
     var frontier: Set<UUID> = startFrontier
         private set
 
-    override fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
+    override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
         val next = mutableSetOf<UUID>()
         for (nodeId in frontier) {
-            val edges = runBlocking {
-                when (direction) {
-                    HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
-                    HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
-                }
+            val edges = when (direction) {
+                HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
+                HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
             }
             for (edge in edges) {
                 if (edgePredicate != null && !edgePredicate(edge)) continue
@@ -43,21 +40,19 @@ class TraversalBuilder(
         frontier = next
     }
 
-    override fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)?) {
+    override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)?) {
         val next = mutableSetOf<UUID>()
         for (nodeId in frontier) {
-            val edges = runBlocking {
-                when (direction) {
-                    HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
-                    HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
-                }
+            val edges = when (direction) {
+                HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
+                HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
             }
             for (edge in edges) {
                 val endId = when (direction) {
                     HopDirection.OUTGOING -> edge.toId
                     HopDirection.INCOMING -> edge.fromId
                 }
-                val node = runBlocking { engine.node(endId).getOrNull() } ?: continue
+                val node = engine.node(endId).getOrNull() ?: continue
                 if (node::class.findAnnotation<SerialName>()?.value != nodeType) continue
                 if (nodePredicate != null && !nodePredicate(node)) continue
                 next += endId
@@ -66,7 +61,7 @@ class TraversalBuilder(
         frontier = next
     }
 
-    override fun collectNodes(nodeType: String, filter: ((NodeLike) -> Boolean)?): Flow<NodeLike> {
+    override suspend fun collectNodes(nodeType: String, filter: ((NodeLike) -> Boolean)?): Flow<NodeLike> {
         val snapshot = frontier.toSet()
         return flow {
             for (id in snapshot) {
@@ -78,7 +73,7 @@ class TraversalBuilder(
         }
     }
 
-    override fun checkReaches(targetId: UUID, block: TraversalBuilderLike.() -> Unit): Boolean {
+    override suspend fun checkReaches(targetId: UUID, block: suspend TraversalBuilderLike.() -> Unit): Boolean {
         val visited = mutableSetOf<UUID>()
         visited += frontier
         var current = frontier.toSet()
