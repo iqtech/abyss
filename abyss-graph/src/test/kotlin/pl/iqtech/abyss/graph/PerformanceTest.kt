@@ -26,11 +26,14 @@ class PerformanceTest {
             val ids = (1..NODE_COUNT).map { UUID.randomUUID() }
             val nodesMap = graphTestHz.getMap<UUID, NodeLike>("perf-nodes")
             val edgesMap = graphTestHz.getMap<Any, EdgeLike>("perf-edges")
+            val reverseMap = graphTestHz.getMap<ReverseEdgeKey, Unit>("perf-edges-reverse")
             ids.forEach { id -> nodesMap[id] = TestNode(id = id, name = id.toString()) }
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
-                    edgesMap[EdgeKey(fromId, toId, "test_edge")] = TestEdge(fromId = fromId, toId = toId, label = "")
+                    val edge = TestEdge(fromId = fromId, toId = toId, label = "")
+                    edgesMap[EdgeKey(fromId, toId, "test_edge")] = edge
+                    reverseMap[ReverseEdgeKey(toId, fromId, "test_edge")] = Unit
                 }
             }
             ids
@@ -48,6 +51,20 @@ class PerformanceTest {
         }
         val opsPerSec = n * 1000.0 / elapsed.inWholeMilliseconds
         println("\noutEdges: ${opsPerSec.toInt()} ops/sec  ($n queries, ${elapsed.inWholeMilliseconds}ms)")
+        assertTrue(opsPerSec > 500, "Expected >500 ops/sec, got ${opsPerSec.toInt()}")
+    }
+
+    @Test fun `inEdges throughput`() {
+        if (System.getProperty("perf") == null) return
+        val ids = nodeIds
+        runBlocking { repeat(200) { perfGraph.inEdges(ids.random()).toList() } }  // warmup
+
+        val n = 2_000
+        val elapsed = measureTime {
+            runBlocking { repeat(n) { perfGraph.inEdges(ids.random()).toList() } }
+        }
+        val opsPerSec = n * 1000.0 / elapsed.inWholeMilliseconds
+        println("\ninEdges: ${opsPerSec.toInt()} ops/sec  ($n queries, ${elapsed.inWholeMilliseconds}ms)")
         assertTrue(opsPerSec > 500, "Expected >500 ops/sec, got ${opsPerSec.toInt()}")
     }
 
