@@ -21,6 +21,7 @@ class TraversalTest {
     @BeforeTest fun clear() {
         graphTestHz.getMap<Any, Any>("g-nodes").clear()
         graphTestHz.getMap<Any, Any>("g-edges").clear()
+        graphTestHz.getMap<Any, Any>("g-edges-reverse").clear()
     }
 
     // helpers
@@ -33,7 +34,7 @@ class TraversalTest {
 
     private fun putEdge(from: UUID, to: UUID): TestEdge {
         val edge = TestEdge(fromId = from, toId = to, label = "$from→$to")
-        graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(from, to, "test_edge")] = edge
+        runBlocking { graphTest.transaction { addEdge(edge) } }
         return edge
     }
 

@@ -29,6 +29,7 @@ import pl.iqtech.abyss.graph.loader.NodeMapLoader
 import pl.iqtech.abyss.graph.serialization.EdgeKeySerializer
 import pl.iqtech.abyss.graph.serialization.EdgeLikeHzSerializer
 import pl.iqtech.abyss.graph.serialization.NodeLikeHzSerializer
+import pl.iqtech.abyss.graph.serialization.ReverseEdgeKeySerializer
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
@@ -50,6 +51,7 @@ class AbyssGraph(
 
     private val nodesMap: IMap<UUID, NodeLike>
     private val edgesMap: IMap<EdgeKey, EdgeLike>
+    private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit>
 
     init {
         if (store != null) {
@@ -66,6 +68,7 @@ class AbyssGraph(
         }
         nodesMap = hazelcast.getMap(nodesMapName)
         edgesMap = hazelcast.getMap(edgesMapName)
+        reverseEdgesMap = hazelcast.getMap("${edgesMapName}-reverse")
         log.info("AbyssGraph started [nodes={}, edges={}, store={}]",
             nodesMapName, edgesMapName, store?.javaClass?.simpleName ?: "none")
     }
@@ -95,10 +98,10 @@ class AbyssGraph(
         outEdgeFlow(nodeId, Predicates.and(eq("__key.fromId", nodeId.toString()), eq("__key.type", type)))
 
     override fun inEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
-        inEdgeFlow(nodeId, eq("__key.toId", nodeId.toString()), pageSize)
+        inEdgeFlow(nodeId)
 
     override fun inEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
-        inEdgeFlow(nodeId, Predicates.and(eq("__key.toId", nodeId.toString()), eq("__key.type", type)), pageSize)
+        inEdgeFlow(nodeId, type)
 
     private fun eq(attr: String, value: String): Predicate<EdgeKey, EdgeLike> = Predicates.equal(attr, value)
 
@@ -118,13 +121,25 @@ class AbyssGraph(
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
     }
 
-    private fun inEdgeFlow(nodeId: UUID, predicate: Predicate<EdgeKey, EdgeLike>, pageSize: Int): Flow<EdgeLike> = flow {
+    // ReverseEdgeKey is PartitionAware on toId — all incoming-edge index entries for a node land on
+    // the same partition, making this a single-partition key-set query followed by point-lookups.
+    private fun inEdgeFlow(nodeId: UUID, typeFilter: String? = null): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
             store?.loadInEdges(nodeId)?.getOrNull()?.forEach { edge ->
-                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, edgeType(edge)), edge)
+                val type = edgeType(edge)
+                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, type), edge)
+                reverseEdgesMap.putIfAbsent(ReverseEdgeKey(edge.toId, edge.fromId, type), Unit)
             }
         }
-        edgeFlow(predicate, pageSize).collect { emit(it) }
+        val revPredicate = Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
+            nodeId, Predicates.equal("__key.toId", nodeId.toString())
+        )
+        val revKeys = withContext(Dispatchers.IO) { reverseEdgesMap.keySet(revPredicate) }
+        val filtered = if (typeFilter != null) revKeys.filter { it.type == typeFilter } else revKeys
+        val edgeKeys = filtered.map { EdgeKey(it.fromId, it.toId, it.type) }.toSet()
+        if (edgeKeys.isNotEmpty()) {
+            withContext(Dispatchers.IO) { edgesMap.getAll(edgeKeys) }.values.forEach { emit(it) }
+        }
     }
 
     private fun edgeFlow(predicate: Predicate<EdgeKey, EdgeLike>, pageSize: Int): Flow<EdgeLike> = flow {
@@ -170,11 +185,12 @@ class AbyssGraph(
     }
 
     private fun cascadeEdgeRemovals(nodeId: UUID): List<Op.RemoveEdge> {
-        // out: partition-local query (fromId co-located); inc: full scan — incoming edges are keyed
-        // by their own fromId and are scattered across partitions (see TODO: inEdges partition fix).
         val out = edgesMap.entrySet(Predicates.partitionPredicate(nodeId, eq("__key.fromId", nodeId.toString())))
-        val inc = edgesMap.entrySet(eq("__key.toId", nodeId.toString()))
-        return (out + inc).distinctBy { it.key }.map { Op.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
+            .map { Op.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
+        val inc = reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
+            nodeId, Predicates.equal("__key.toId", nodeId.toString())
+        )).map { Op.RemoveEdge(it.fromId, it.toId, it.type) }
+        return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
 
     private fun AbyssStoreTransactionLike.applyToStore(op: Op) = when (op) {
@@ -191,11 +207,20 @@ class AbyssGraph(
             nodesMap.set(op.node.id, op.node)
         is Op.RemoveNode -> nodesMap.delete(op.id)
         is Op.AddEdge -> {
-            val key = EdgeKey(op.edge.fromId, op.edge.toId, edgeType(op.edge))
-            if (op.ttl != null) edgesMap.set(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
-            else edgesMap.set(key, op.edge)
+            val key    = EdgeKey(op.edge.fromId, op.edge.toId, edgeType(op.edge))
+            val revKey = ReverseEdgeKey(op.edge.toId, op.edge.fromId, edgeType(op.edge))
+            if (op.ttl != null) {
+                edgesMap.set(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
+                reverseEdgesMap.set(revKey, Unit, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
+            } else {
+                edgesMap.set(key, op.edge)
+                reverseEdgesMap.set(revKey, Unit)
+            }
         }
-        is Op.RemoveEdge -> edgesMap.delete(EdgeKey(op.fromId, op.toId, op.type))
+        is Op.RemoveEdge -> {
+            edgesMap.delete(EdgeKey(op.fromId, op.toId, op.type))
+            reverseEdgesMap.delete(ReverseEdgeKey(op.toId, op.fromId, op.type))
+        }
     }
 
     private fun edgeType(edge: EdgeLike): String =
@@ -206,6 +231,7 @@ class AbyssGraph(
 // Pass the consuming project's SerializersModule so concrete NodeLike/EdgeLike types are known.
 fun Config.registerAbyssSerializers(module: SerializersModule = EmptySerializersModule()): Config = apply {
     serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer())
+    serializationConfig.compactSerializationConfig.addSerializer(ReverseEdgeKeySerializer())
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }

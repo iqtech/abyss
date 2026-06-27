@@ -46,6 +46,7 @@ class GraphTest {
     @BeforeTest fun clear() {
         graphTestHz.getMap<Any, Any>("g-nodes").clear()
         graphTestHz.getMap<Any, Any>("g-edges").clear()
+        graphTestHz.getMap<Any, Any>("g-edges-reverse").clear()
     }
 
     // ── node ─────────────────────────────────────────────────────────────────
@@ -196,7 +197,7 @@ class GraphTest {
         runBlocking {
             val to = UUID.randomUUID()
             val edges = (1..3).map { TestEdge(fromId = UUID.randomUUID(), toId = to, label = "e$it") }
-            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+            edges.forEach { graphTest.transaction { addEdge(it) } }
 
             val result = graphTest.inEdges(to).toList()
             assertEquals(3, result.size)
@@ -207,7 +208,7 @@ class GraphTest {
         runBlocking {
             val to = UUID.randomUUID()
             val edges = (1..2).map { TestEdge(fromId = UUID.randomUUID(), toId = to, label = "e$it") }
-            edges.forEach { graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(it.fromId, it.toId, "test_edge")] = it }
+            edges.forEach { graphTest.transaction { addEdge(it) } }
 
             val result = graphTest.inEdges<TestEdge>(to).toList()
             assertEquals(2, result.size)
@@ -307,6 +308,7 @@ class GraphTest {
             assertEquals(1, result.size)
             graphTestHz.getMap<Any, Any>("w-in-nodes").clear()
             graphTestHz.getMap<Any, Any>("w-in-edges").clear()
+            graphTestHz.getMap<Any, Any>("w-in-edges-reverse").clear()
         }
     }
 

@@ -2,11 +2,6 @@
 
 ## High
 
-- **`inEdges` still scans all partitions**
-  `PartitionAware` only benefits `outEdges`. Reverse traversal fans out to every partition on every
-  call — warming fixes the cold-restart problem but not the per-call fan-out cost.
-  Needs a structural fix: separate reverse-edge Hazelcast map keyed by `toId`.
-
 - **Transaction not atomic across YSQL and YCQL**
   If YSQL commit succeeds and YCQL fails, the graph is silently inconsistent. Currently logs a
   warning and continues.
