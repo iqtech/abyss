@@ -59,7 +59,9 @@ private fun StoreOp.goesYcql() = when (this) {
 class YugabyteAbyssStoreLike(
     private val ysql: DataSource,
     private val ycql: CqlSession,
-    module: SerializersModule = EmptySerializersModule()
+    module: SerializersModule = EmptySerializersModule(),
+    private val ysqlSchema: String = "abyss",
+    private val ycqlKeyspace: String = "abyss_test_graph"
 ) : AbyssStoreLike, Closeable {
 
     private val log = LoggerFactory.getLogger(YugabyteAbyssStoreLike::class.java)
@@ -75,21 +77,21 @@ class YugabyteAbyssStoreLike(
     private val edgeSer = PolymorphicSerializer(EdgeLike::class)
 
     private val selectNodeYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_nodes WHERE id = ?")
+        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
     private val selectEdgeYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
+        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
     private val selectEdgesYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_edges WHERE from_id = ?")
+        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ?")
     private val selectInEdgesYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_reverse_edges WHERE to_id = ?")
+        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ?")
     private val deleteNodeYcql: PreparedStatement =
-        ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_nodes WHERE id = ?")
+        ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
     private val deleteEdgeYcql: PreparedStatement =
-        ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
+        ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
     private val insertReverseEdgeYcql: PreparedStatement =
-        ycql.prepare("INSERT INTO abyss_test_graph.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?")
+        ycql.prepare("INSERT INTO $ycqlKeyspace.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?")
     private val deleteReverseEdgeYcql: PreparedStatement =
-        ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_reverse_edges WHERE to_id = ? AND from_id = ? AND type = ?")
+        ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ? AND from_id = ? AND type = ?")
 
     override suspend fun loadNode(id: Uuid): Either<AbyssError, NodeLike?> =
         Either.catch {
@@ -144,7 +146,7 @@ class YugabyteAbyssStoreLike(
 
     private fun queryNodeYsql(id: Uuid): NodeLike? =
         ysql.connection.use { conn ->
-            conn.prepareStatement("SELECT data FROM abyss.nodes WHERE id = ?").use { stmt ->
+            conn.prepareStatement("SELECT data FROM $ysqlSchema.nodes WHERE id = ?").use { stmt ->
                 stmt.setObject(1, id.toJavaUuid())
                 val rs = stmt.executeQuery()
                 if (!rs.next()) return null
@@ -161,7 +163,7 @@ class YugabyteAbyssStoreLike(
     private fun queryEdgeYsql(fromId: Uuid, toId: Uuid, type: String): EdgeLike? =
         ysql.connection.use { conn ->
             conn.prepareStatement(
-                "SELECT data FROM abyss.edges WHERE from_id = ? AND to_id = ? AND type = ?"
+                "SELECT data FROM $ysqlSchema.edges WHERE from_id = ? AND to_id = ? AND type = ?"
             ).use { stmt ->
                 stmt.setObject(1, fromId.toJavaUuid())
                 stmt.setObject(2, toId.toJavaUuid())
@@ -180,7 +182,7 @@ class YugabyteAbyssStoreLike(
 
     private fun queryEdgesYsql(column: String, id: Uuid): List<EdgeLike> =
         ysql.connection.use { conn ->
-            conn.prepareStatement("SELECT data FROM abyss.edges WHERE $column = ?").use { stmt ->
+            conn.prepareStatement("SELECT data FROM $ysqlSchema.edges WHERE $column = ?").use { stmt ->
                 stmt.setObject(1, id.toJavaUuid())
                 val rs = stmt.executeQuery()
                 buildList { while (rs.next()) add(json.decodeFromString(edgeSer, rs.getString("data"))) }
@@ -212,15 +214,15 @@ class YugabyteAbyssStoreLike(
             conn.autoCommit = false
             try {
                 val upsertNode = conn.prepareStatement(
-                    "INSERT INTO abyss.nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+                    "INSERT INTO $ysqlSchema.nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
                     "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, tags = EXCLUDED.tags, updated_at = EXCLUDED.updated_at"
                 )
                 val upsertEdge = conn.prepareStatement(
-                    "INSERT INTO abyss.edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                    "INSERT INTO $ysqlSchema.edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
                     "ON CONFLICT (from_id, to_id, type) DO UPDATE SET data = EXCLUDED.data, tags = EXCLUDED.tags, updated_at = EXCLUDED.updated_at"
                 )
-                val delNode = conn.prepareStatement("DELETE FROM abyss.nodes WHERE id = ?")
-                val delEdge = conn.prepareStatement("DELETE FROM abyss.edges WHERE from_id = ? AND to_id = ? AND type = ?")
+                val delNode = conn.prepareStatement("DELETE FROM $ysqlSchema.nodes WHERE id = ?")
+                val delEdge = conn.prepareStatement("DELETE FROM $ysqlSchema.edges WHERE from_id = ? AND to_id = ? AND type = ?")
                 for (op in ops) when (op) {
                     is StoreOp.SaveNode -> {
                         val (type, data) = jsonPair(nodeSer, op.node)
@@ -265,7 +267,7 @@ class YugabyteAbyssStoreLike(
                 val (type, data) = jsonPair(nodeSer, op.node)
                 val ttl = op.ttl!!.inWholeSeconds
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO abyss_test_graph.ephemeral_nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) USING TTL $ttl",
+                    "INSERT INTO $ycqlKeyspace.ephemeral_nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     op.node.id.toJavaUuid(), type, data, op.node.tags, op.node.createdAt.toJavaInstant(), op.node.updatedAt.toJavaInstant()
                 ))
             }
@@ -275,7 +277,7 @@ class YugabyteAbyssStoreLike(
                 // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
                 ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId.toJavaUuid(), op.edge.fromId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), ttl))
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
+                    "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     op.edge.fromId.toJavaUuid(), op.edge.toId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant()
                 ))
             }
@@ -303,7 +305,9 @@ class YugabyteAbyssStoreLike(
             ycqlHost: String = "localhost",
             ycqlPort: Int = 9042,
             ycqlDatacenter: String = "datacenter1",
-            module: SerializersModule = EmptySerializersModule()
+            module: SerializersModule = EmptySerializersModule(),
+            ysqlSchema: String = "abyss",
+            ycqlKeyspace: String = "abyss_test_graph"
         ): YugabyteAbyssStoreLike {
             val dataSource = HikariDataSource(HikariConfig().apply {
                 jdbcUrl = ysqlUrl
@@ -315,7 +319,7 @@ class YugabyteAbyssStoreLike(
                 .addContactPoint(InetSocketAddress(ycqlHost, ycqlPort))
                 .withLocalDatacenter(ycqlDatacenter)
                 .build()
-            return YugabyteAbyssStoreLike(dataSource, session, module)
+            return YugabyteAbyssStoreLike(dataSource, session, module, ysqlSchema, ycqlKeyspace)
         }
     }
 }

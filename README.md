@@ -107,6 +107,33 @@ graph.transaction {
 
 Cache misses trigger automatic load from the store via Hazelcast `MapLoader`.
 
+#### Multiple graphs in one application
+
+Each graph needs its own YSQL schema and YCQL keyspace. Pass them to `create()`:
+
+```kotlin
+val socialStore = YugabyteAbyssStoreLike.create(
+    ysqlUrl = "jdbc:postgresql://localhost:5433/mydb",
+    ysqlUser = "app", ysqlPassword = "secret",
+    module = socialModule,
+    ysqlSchema  = "social",
+    ycqlKeyspace = "social_graph"
+)
+
+val productStore = YugabyteAbyssStoreLike.create(
+    ysqlUrl = "jdbc:postgresql://localhost:5433/mydb",
+    ysqlUser = "app", ysqlPassword = "secret",
+    module = productModule,
+    ysqlSchema  = "product",
+    ycqlKeyspace = "product_graph"
+)
+
+val socialGraph  = AbyssGraph(hz, "social-nodes",  "social-edges",  socialStore)
+val productGraph = AbyssGraph(hz, "product-nodes", "product-edges", productStore)
+```
+
+Hazelcast map names must also be distinct (the `nodesMapName` / `edgesMapName` arguments above).
+
 ---
 
 ### Add / remove nodes and edges
