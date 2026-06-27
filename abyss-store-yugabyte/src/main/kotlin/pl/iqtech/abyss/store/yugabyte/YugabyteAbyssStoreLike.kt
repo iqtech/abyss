@@ -307,13 +307,17 @@ class YugabyteAbyssStoreLike(
             ycqlDatacenter: String = "datacenter1",
             module: SerializersModule = EmptySerializersModule(),
             ysqlSchema: String = "abyss",
-            ycqlKeyspace: String = "abyss_test_graph"
+            ycqlKeyspace: String = "abyss_test_graph",
+            ysqlMaxPoolSize: Int = 20
         ): YugabyteAbyssStoreLike {
             val dataSource = HikariDataSource(HikariConfig().apply {
-                jdbcUrl = ysqlUrl
-                username = ysqlUser
-                password = ysqlPassword
+                jdbcUrl         = ysqlUrl
+                username        = ysqlUser
+                password        = ysqlPassword
                 driverClassName = "org.postgresql.Driver"
+                maximumPoolSize = ysqlMaxPoolSize
+                minimumIdle     = ysqlMaxPoolSize
+                addDataSourceProperty("prepareThreshold", "1")
             })
             val session = CqlSession.builder()
                 .addContactPoint(InetSocketAddress(ycqlHost, ycqlPort))

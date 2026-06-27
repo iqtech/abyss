@@ -34,4 +34,5 @@ interface AbyssTransactionLike {
 
     fun addEdge(edge: EdgeLike, ttl: Duration? = null)
     fun removeEdge(fromId: Uuid, toId: Uuid, type: String)
+    fun modifyEdge(old: EdgeLike, new: EdgeLike, ttl: Duration? = null)
 }

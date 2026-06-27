@@ -14,11 +14,17 @@
   After a traversal, callers need the full subgraph: all visited nodes as a list and all traversed
   edges as a list. Currently only the frontier nodes are accessible via `nodes<T>()`.
 
-- **1.3 Edge integrity check on creation**
+- **✅ 1.3 Edge integrity check on creation**
   When an edge is added, verify that both `fromId` and `toId` nodes exist in the graph. Return a
   new `AbyssError.IntegrityError` variant when either node is missing, rather than silently
   creating a dangling edge. Integrity checks should be disable-able (e.g. a flag on the builder)
   for bulk operations such as graph import, where node existence is guaranteed by the caller.
+
+- **✅ 1.4 Edge modification (retarget)**
+  Allow changing an existing edge's endpoint — e.g. A→B becomes A→C — without having to
+  `removeEdge` + `addEdge` manually. A `modifyEdge(edge, newFromId?, newToId?)` operation should
+  atomically replace the old edge with the new one (removing it from both the forward and reverse
+  maps). Integrity check must apply to the new `fromId`/`toId` when `checkIntegrity` is enabled.
 
 ## 2. Medium
 
@@ -38,7 +44,7 @@
 
 ## 3. Low
 
-- **3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
+- **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
   HikariCP pools connections but will queue under burst cold-cache misses.
 
 - **3.2 Dual parallel YSQL + YCQL query on every cache miss**

@@ -236,6 +236,59 @@ class GraphTest {
         }
     }
 
+    @Test fun `transaction modifyEdge retargets toId`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            val c = TestNode(id = Uuid.random(), name = "c")
+            val ab = TestEdge(fromId = a.id, toId = b.id, label = "ab")
+            val ac = ab.copy(toId = c.id, label = "ac")
+            graphTest.transaction { addNode(a); addNode(b); addNode(c); addEdge(ab) }
+            graphTest.transaction { modifyEdge(ab, ac) }
+            assertIs<Either.Right<EdgeLike>>(graphTest.edge(a.id, c.id, "test_edge"))
+            assertIs<Either.Left<AbyssError>>(graphTest.edge(a.id, b.id, "test_edge"))
+            assertEquals(1, graphTest.inEdges(c.id).toList().size)
+            assertEquals(0, graphTest.inEdges(b.id).toList().size)
+        }
+    }
+
+    @Test fun `transaction modifyEdge retargets fromId`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            val c = TestNode(id = Uuid.random(), name = "c")
+            val ac = TestEdge(fromId = a.id, toId = c.id, label = "ac")
+            val bc = ac.copy(fromId = b.id, label = "bc")
+            graphTest.transaction { addNode(a); addNode(b); addNode(c); addEdge(ac) }
+            graphTest.transaction { modifyEdge(ac, bc) }
+            assertIs<Either.Right<EdgeLike>>(graphTest.edge(b.id, c.id, "test_edge"))
+            assertIs<Either.Left<AbyssError>>(graphTest.edge(a.id, c.id, "test_edge"))
+        }
+    }
+
+    @Test fun `transaction modifyEdge returns IntegrityError when new endpoint absent`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            val ab = TestEdge(fromId = a.id, toId = b.id, label = "ab")
+            graphTest.transaction { addNode(a); addNode(b); addEdge(ab) }
+            val result = graphTest.transaction { modifyEdge(ab, ab.copy(toId = Uuid.random())) }
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.IntegrityError>(result.value)
+        }
+    }
+
+    @Test fun `transaction modifyEdge old endpoint not integrity-checked`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            val ghost = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "ghost")
+            graphTest.transaction(checkIntegrity = false) { addNode(a); addNode(b); addEdge(ghost) }
+            val result = graphTest.transaction { modifyEdge(ghost, TestEdge(fromId = a.id, toId = b.id, label = "real")) }
+            assertIs<Either.Right<Unit>>(result)
+        }
+    }
+
     @Test fun `transaction addEdge returns IntegrityError when fromId node absent`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "dangling")

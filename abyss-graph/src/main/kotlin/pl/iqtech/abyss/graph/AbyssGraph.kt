@@ -270,4 +270,8 @@ private class BufferedTransaction : AbyssTransactionLike {
     override fun removeNode(id: Uuid)                               { ops += Op.RemoveNode(id) }
     override fun addEdge(edge: EdgeLike, ttl: Duration?)            { ops += Op.AddEdge(edge, ttl) }
     override fun removeEdge(fromId: Uuid, toId: Uuid, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
+    override fun modifyEdge(old: EdgeLike, new: EdgeLike, ttl: Duration?) {
+        ops += Op.RemoveEdge(old.fromId, old.toId, old::class.findAnnotation<SerialName>()!!.value)
+        ops += Op.AddEdge(new, ttl)
+    }
 }
