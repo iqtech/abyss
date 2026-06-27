@@ -4,7 +4,7 @@ import com.hazelcast.nio.serialization.compact.CompactReader
 import com.hazelcast.nio.serialization.compact.CompactSerializer
 import com.hazelcast.nio.serialization.compact.CompactWriter
 import pl.iqtech.abyss.dsl.EdgeKey
-import java.util.UUID
+import kotlin.uuid.Uuid
 
 class EdgeKeySerializer : CompactSerializer<EdgeKey> {
     override fun getTypeName() = "EdgeKey"
@@ -17,8 +17,8 @@ class EdgeKeySerializer : CompactSerializer<EdgeKey> {
     }
 
     override fun read(reader: CompactReader) = EdgeKey(
-        fromId = UUID.fromString(reader.readString("fromId")),
-        toId   = UUID.fromString(reader.readString("toId")),
+        fromId = Uuid.parse(reader.readString("fromId")!!),
+        toId   = Uuid.parse(reader.readString("toId")!!),
         type   = reader.readString("type")!!
     )
 }

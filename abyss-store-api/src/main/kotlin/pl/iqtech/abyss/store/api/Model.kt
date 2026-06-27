@@ -1,23 +1,22 @@
 package pl.iqtech.abyss.store.api
 
-import kotlinx.serialization.Contextual
+import kotlinx.datetime.Instant
 import kotlinx.serialization.Polymorphic
-import java.time.Instant
-import java.util.UUID
+import kotlin.uuid.Uuid
 
 @Polymorphic
 interface NodeLike {
-    @Contextual val id: UUID
+    val id: Uuid
     val tags: List<String>
-    @Contextual val createdAt: Instant
-    @Contextual val updatedAt: Instant
+    val createdAt: Instant
+    val updatedAt: Instant
 }
 
 @Polymorphic
 interface EdgeLike {
-    @Contextual val fromId: UUID
-    @Contextual val toId: UUID
+    val fromId: Uuid
+    val toId: Uuid
     val tags: List<String>
-    @Contextual val createdAt: Instant
-    @Contextual val updatedAt: Instant
+    val createdAt: Instant
+    val updatedAt: Instant
 }

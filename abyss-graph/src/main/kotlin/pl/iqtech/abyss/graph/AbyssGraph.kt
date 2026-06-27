@@ -35,10 +35,12 @@ import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.full.findAnnotation
 import kotlin.time.Duration
+import kotlin.uuid.Uuid
+import kotlin.uuid.toJavaUuid
+import kotlin.uuid.toKotlinUuid
 
 private val log = LoggerFactory.getLogger(AbyssGraph::class.java)
 
@@ -49,7 +51,9 @@ class AbyssGraph(
     val store: AbyssStoreLike? = null
 ) : AbyssEngineLike {
 
-    private val nodesMap: IMap<UUID, NodeLike>
+    // Hazelcast IMap keys are java.util.UUID — natively supported by Hazelcast serialization.
+    // All public methods accept kotlin.uuid.Uuid and convert at the boundary.
+    private val nodesMap: IMap<java.util.UUID, NodeLike>
     private val edgesMap: IMap<EdgeKey, EdgeLike>
     private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit>
 
@@ -73,34 +77,34 @@ class AbyssGraph(
             nodesMapName, edgesMapName, store?.javaClass?.simpleName ?: "none")
     }
 
-    override suspend fun node(id: UUID): Either<AbyssError, NodeLike> =
-        Either.catch { withContext(Dispatchers.IO) { nodesMap[id] } }
+    override suspend fun node(id: Uuid): Either<AbyssError, NodeLike> =
+        Either.catch { withContext(Dispatchers.IO) { nodesMap[id.toJavaUuid()] } }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.NodeNotFound(id).left() }
 
-    override suspend fun edge(fromId: UUID, toId: UUID, type: String): Either<AbyssError, EdgeLike> =
+    override suspend fun edge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike> =
         Either.catch { withContext(Dispatchers.IO) { edgesMap[EdgeKey(fromId, toId, type)] } }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.EdgeNotFound(fromId, toId, type).left() }
 
-    override suspend fun nodeExists(id: UUID): Either<AbyssError, Boolean> =
-        Either.catch { withContext(Dispatchers.IO) { nodesMap.containsKey(id) } }
+    override suspend fun nodeExists(id: Uuid): Either<AbyssError, Boolean> =
+        Either.catch { withContext(Dispatchers.IO) { nodesMap.containsKey(id.toJavaUuid()) } }
             .mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun edgeExists(fromId: UUID, toId: UUID, type: String): Either<AbyssError, Boolean> =
+    override suspend fun edgeExists(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Boolean> =
         Either.catch { withContext(Dispatchers.IO) { edgesMap.containsKey(EdgeKey(fromId, toId, type)) } }
             .mapLeft { AbyssError.Unexpected(it) }
 
-    override fun outEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
+    override fun outEdges(nodeId: Uuid, pageSize: Int): Flow<EdgeLike> =
         outEdgeFlow(nodeId, eq("__key.fromId", nodeId.toString()))
 
-    override fun outEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
+    override fun outEdges(nodeId: Uuid, type: String, pageSize: Int): Flow<EdgeLike> =
         outEdgeFlow(nodeId, Predicates.and(eq("__key.fromId", nodeId.toString()), eq("__key.type", type)))
 
-    override fun inEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
+    override fun inEdges(nodeId: Uuid, pageSize: Int): Flow<EdgeLike> =
         inEdgeFlow(nodeId)
 
-    override fun inEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
+    override fun inEdges(nodeId: Uuid, type: String, pageSize: Int): Flow<EdgeLike> =
         inEdgeFlow(nodeId, type)
 
     private fun eq(attr: String, value: String): Predicate<EdgeKey, EdgeLike> = Predicates.equal(attr, value)
@@ -111,19 +115,19 @@ class AbyssGraph(
 
     // EdgeKey is PartitionAware on fromId, so all outgoing edges for a node land on the same
     // partition — partitionPredicate routes the query there without a cluster-wide scatter.
-    private fun outEdgeFlow(nodeId: UUID, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
+    private fun outEdgeFlow(nodeId: Uuid, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
             store?.loadEdges(nodeId)?.getOrNull()?.forEach { edge ->
                 edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, edgeType(edge)), edge)
             }
         }
-        val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike>(nodeId, predicate)
+        val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike>(nodeId.toJavaUuid(), predicate)
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
     }
 
     // ReverseEdgeKey is PartitionAware on toId — all incoming-edge index entries for a node land on
     // the same partition, making this a single-partition key-set query followed by point-lookups.
-    private fun inEdgeFlow(nodeId: UUID, typeFilter: String? = null): Flow<EdgeLike> = flow {
+    private fun inEdgeFlow(nodeId: Uuid, typeFilter: String? = null): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
             store?.loadInEdges(nodeId)?.getOrNull()?.forEach { edge ->
                 val type = edgeType(edge)
@@ -132,7 +136,7 @@ class AbyssGraph(
             }
         }
         val revPredicate = Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
-            nodeId, Predicates.equal("__key.toId", nodeId.toString())
+            nodeId.toJavaUuid(), Predicates.equal("__key.toId", nodeId.toString())
         )
         val revKeys = withContext(Dispatchers.IO) { reverseEdgesMap.keySet(revPredicate) }
         val filtered = if (typeFilter != null) revKeys.filter { it.type == typeFilter } else revKeys
@@ -152,7 +156,7 @@ class AbyssGraph(
         }
     }
 
-    override suspend fun <T> from(nodeId: UUID, block: suspend TraversalBuilderLike.() -> T): Either<AbyssError, T> =
+    override suspend fun <T> from(nodeId: Uuid, block: suspend TraversalBuilderLike.() -> T): Either<AbyssError, T> =
         Either.catch { TraversalBuilder(this, setOf(nodeId)).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
@@ -184,11 +188,11 @@ class AbyssGraph(
         return Unit.right()
     }
 
-    private fun cascadeEdgeRemovals(nodeId: UUID): List<Op.RemoveEdge> {
-        val out = edgesMap.entrySet(Predicates.partitionPredicate(nodeId, eq("__key.fromId", nodeId.toString())))
+    private fun cascadeEdgeRemovals(nodeId: Uuid): List<Op.RemoveEdge> {
+        val out = edgesMap.entrySet(Predicates.partitionPredicate(nodeId.toJavaUuid(), eq("__key.fromId", nodeId.toString())))
             .map { Op.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
         val inc = reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
-            nodeId, Predicates.equal("__key.toId", nodeId.toString())
+            nodeId.toJavaUuid(), Predicates.equal("__key.toId", nodeId.toString())
         )).map { Op.RemoveEdge(it.fromId, it.toId, it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
@@ -202,10 +206,10 @@ class AbyssGraph(
 
     private fun applyToCache(op: Op) = when (op) {
         is Op.AddNode -> if (op.ttl != null)
-            nodesMap.set(op.node.id, op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
+            nodesMap.set(op.node.id.toJavaUuid(), op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
         else
-            nodesMap.set(op.node.id, op.node)
-        is Op.RemoveNode -> nodesMap.delete(op.id)
+            nodesMap.set(op.node.id.toJavaUuid(), op.node)
+        is Op.RemoveNode -> nodesMap.delete(op.id.toJavaUuid())
         is Op.AddEdge -> {
             val key    = EdgeKey(op.edge.fromId, op.edge.toId, edgeType(op.edge))
             val revKey = ReverseEdgeKey(op.edge.toId, op.edge.fromId, edgeType(op.edge))
@@ -239,15 +243,15 @@ fun Config.registerAbyssSerializers(module: SerializersModule = EmptySerializers
 
 private sealed interface Op {
     data class AddNode(val node: NodeLike, val ttl: Duration?) : Op
-    data class RemoveNode(val id: UUID) : Op
+    data class RemoveNode(val id: Uuid) : Op
     data class AddEdge(val edge: EdgeLike, val ttl: Duration?) : Op
-    data class RemoveEdge(val fromId: UUID, val toId: UUID, val type: String) : Op
+    data class RemoveEdge(val fromId: Uuid, val toId: Uuid, val type: String) : Op
 }
 
 private class BufferedTransaction : AbyssTransactionLike {
     val ops = mutableListOf<Op>()
-    override fun addNode(node: NodeLike, ttl: Duration?)          { ops += Op.AddNode(node, ttl) }
-    override fun removeNode(id: UUID)                              { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike, ttl: Duration?)           { ops += Op.AddEdge(edge, ttl) }
-    override fun removeEdge(fromId: UUID, toId: UUID, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
+    override fun addNode(node: NodeLike, ttl: Duration?)           { ops += Op.AddNode(node, ttl) }
+    override fun removeNode(id: Uuid)                               { ops += Op.RemoveNode(id) }
+    override fun addEdge(edge: EdgeLike, ttl: Duration?)            { ops += Op.AddEdge(edge, ttl) }
+    override fun removeEdge(fromId: Uuid, toId: Uuid, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
 }

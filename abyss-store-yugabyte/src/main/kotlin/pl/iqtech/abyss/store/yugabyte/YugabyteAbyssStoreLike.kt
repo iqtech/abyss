@@ -11,6 +11,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.toJavaInstant
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.Json
@@ -31,15 +32,16 @@ import java.io.Closeable
 import java.net.InetSocketAddress
 import java.sql.Timestamp
 import java.sql.Types
-import java.util.UUID
 import javax.sql.DataSource
 import kotlin.time.Duration
+import kotlin.uuid.Uuid
+import kotlin.uuid.toJavaUuid
 
 private sealed interface StoreOp {
     data class SaveNode(val node: NodeLike, val ttl: Duration?) : StoreOp
     data class SaveEdge(val edge: EdgeLike, val ttl: Duration?) : StoreOp
-    data class DeleteNode(val id: UUID) : StoreOp
-    data class DeleteEdge(val fromId: UUID, val toId: UUID, val type: String) : StoreOp
+    data class DeleteNode(val id: Uuid) : StoreOp
+    data class DeleteEdge(val fromId: Uuid, val toId: Uuid, val type: String) : StoreOp
 }
 
 private fun StoreOp.goesYsql() = when (this) {
@@ -89,7 +91,7 @@ class YugabyteAbyssStoreLike(
     private val deleteReverseEdgeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_reverse_edges WHERE to_id = ? AND from_id = ? AND type = ?")
 
-    override suspend fun loadNode(id: UUID): Either<AbyssError, NodeLike?> =
+    override suspend fun loadNode(id: Uuid): Either<AbyssError, NodeLike?> =
         Either.catch {
             coroutineScope {
                 val fromYsql = async(Dispatchers.IO) { queryNodeYsql(id) }
@@ -98,7 +100,7 @@ class YugabyteAbyssStoreLike(
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdge(fromId: UUID, toId: UUID, type: String): Either<AbyssError, EdgeLike?> =
+    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike?> =
         Either.catch {
             coroutineScope {
                 val fromYsql = async(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type) }
@@ -107,7 +109,7 @@ class YugabyteAbyssStoreLike(
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdges(fromId: UUID): Either<AbyssError, List<EdgeLike>> =
+    override suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<EdgeLike>> =
         Either.catch {
             coroutineScope {
                 val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("from_id", fromId) }
@@ -116,7 +118,7 @@ class YugabyteAbyssStoreLike(
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadInEdges(toId: UUID): Either<AbyssError, List<EdgeLike>> =
+    override suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<EdgeLike>> =
         Either.catch {
             coroutineScope {
                 val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("to_id", toId) }
@@ -140,29 +142,29 @@ class YugabyteAbyssStoreLike(
         runCatching { (ysql as? Closeable)?.close() }.onFailure { log.warn("Failed to close YSQL DataSource", it) }
     }
 
-    private fun queryNodeYsql(id: UUID): NodeLike? =
+    private fun queryNodeYsql(id: Uuid): NodeLike? =
         ysql.connection.use { conn ->
             conn.prepareStatement("SELECT data FROM abyss.nodes WHERE id = ?").use { stmt ->
-                stmt.setObject(1, id)
+                stmt.setObject(1, id.toJavaUuid())
                 val rs = stmt.executeQuery()
                 if (!rs.next()) return null
                 json.decodeFromString(nodeSer, rs.getString("data"))
             }
         }
 
-    private fun queryNodeYcql(id: UUID): NodeLike? {
-        val row = ycql.execute(selectNodeYcql.bind(id)).one() ?: return null
+    private fun queryNodeYcql(id: Uuid): NodeLike? {
+        val row = ycql.execute(selectNodeYcql.bind(id.toJavaUuid())).one() ?: return null
         val data = row.getString("data") ?: return null
         return json.decodeFromString(nodeSer, data)
     }
 
-    private fun queryEdgeYsql(fromId: UUID, toId: UUID, type: String): EdgeLike? =
+    private fun queryEdgeYsql(fromId: Uuid, toId: Uuid, type: String): EdgeLike? =
         ysql.connection.use { conn ->
             conn.prepareStatement(
                 "SELECT data FROM abyss.edges WHERE from_id = ? AND to_id = ? AND type = ?"
             ).use { stmt ->
-                stmt.setObject(1, fromId)
-                stmt.setObject(2, toId)
+                stmt.setObject(1, fromId.toJavaUuid())
+                stmt.setObject(2, toId.toJavaUuid())
                 stmt.setString(3, type)
                 val rs = stmt.executeQuery()
                 if (!rs.next()) return null
@@ -170,28 +172,28 @@ class YugabyteAbyssStoreLike(
             }
         }
 
-    private fun queryEdgeYcql(fromId: UUID, toId: UUID, type: String): EdgeLike? {
-        val row = ycql.execute(selectEdgeYcql.bind(fromId, toId, type)).one() ?: return null
+    private fun queryEdgeYcql(fromId: Uuid, toId: Uuid, type: String): EdgeLike? {
+        val row = ycql.execute(selectEdgeYcql.bind(fromId.toJavaUuid(), toId.toJavaUuid(), type)).one() ?: return null
         val data = row.getString("data") ?: return null
         return json.decodeFromString(edgeSer, data)
     }
 
-    private fun queryEdgesYsql(column: String, id: UUID): List<EdgeLike> =
+    private fun queryEdgesYsql(column: String, id: Uuid): List<EdgeLike> =
         ysql.connection.use { conn ->
             conn.prepareStatement("SELECT data FROM abyss.edges WHERE $column = ?").use { stmt ->
-                stmt.setObject(1, id)
+                stmt.setObject(1, id.toJavaUuid())
                 val rs = stmt.executeQuery()
                 buildList { while (rs.next()) add(json.decodeFromString(edgeSer, rs.getString("data"))) }
             }
         }
 
-    private fun queryEdgesYcql(stmt: PreparedStatement, id: UUID): List<EdgeLike> =
-        ycql.execute(stmt.bind(id))
+    private fun queryEdgesYcql(stmt: PreparedStatement, id: Uuid): List<EdgeLike> =
+        ycql.execute(stmt.bind(id.toJavaUuid()))
             .mapNotNull { row -> row.getString("data")?.let { json.decodeFromString(edgeSer, it) } }
 
     // YSQL wins on key conflict — durable store takes precedence over ephemeral.
     private fun mergeEdgeLists(ysql: List<EdgeLike>, ycql: List<EdgeLike>): List<EdgeLike> {
-        val map = LinkedHashMap<Triple<UUID, UUID, String>, EdgeLike>()
+        val map = LinkedHashMap<Triple<Uuid, Uuid, String>, EdgeLike>()
         ycql.forEach { map[Triple(it.fromId, it.toId, edgeTypeOf(it))] = it }
         ysql.forEach { map[Triple(it.fromId, it.toId, edgeTypeOf(it))] = it }
         return map.values.toList()
@@ -222,28 +224,30 @@ class YugabyteAbyssStoreLike(
                 for (op in ops) when (op) {
                     is StoreOp.SaveNode -> {
                         val (type, data) = jsonPair(nodeSer, op.node)
-                        upsertNode.setObject(1, op.node.id)
+                        upsertNode.setObject(1, op.node.id.toJavaUuid())
                         upsertNode.setString(2, type)
                         upsertNode.setObject(3, data, Types.OTHER)
                         upsertNode.setArray(4, conn.createArrayOf("text", op.node.tags.toTypedArray()))
-                        upsertNode.setTimestamp(5, Timestamp.from(op.node.createdAt))
-                        upsertNode.setTimestamp(6, Timestamp.from(op.node.updatedAt))
+                        upsertNode.setTimestamp(5, Timestamp.from(op.node.createdAt.toJavaInstant()))
+                        upsertNode.setTimestamp(6, Timestamp.from(op.node.updatedAt.toJavaInstant()))
                         upsertNode.executeUpdate()
                     }
                     is StoreOp.SaveEdge -> {
                         val (type, data) = jsonPair(edgeSer, op.edge)
-                        upsertEdge.setObject(1, op.edge.fromId)
-                        upsertEdge.setObject(2, op.edge.toId)
+                        upsertEdge.setObject(1, op.edge.fromId.toJavaUuid())
+                        upsertEdge.setObject(2, op.edge.toId.toJavaUuid())
                         upsertEdge.setString(3, type)
                         upsertEdge.setObject(4, data, Types.OTHER)
                         upsertEdge.setArray(5, conn.createArrayOf("text", op.edge.tags.toTypedArray()))
-                        upsertEdge.setTimestamp(6, Timestamp.from(op.edge.createdAt))
-                        upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt))
+                        upsertEdge.setTimestamp(6, Timestamp.from(op.edge.createdAt.toJavaInstant()))
+                        upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt.toJavaInstant()))
                         upsertEdge.executeUpdate()
                     }
-                    is StoreOp.DeleteNode -> { delNode.setObject(1, op.id); delNode.executeUpdate() }
+                    is StoreOp.DeleteNode -> { delNode.setObject(1, op.id.toJavaUuid()); delNode.executeUpdate() }
                     is StoreOp.DeleteEdge -> {
-                        delEdge.setObject(1, op.fromId); delEdge.setObject(2, op.toId); delEdge.setString(3, op.type)
+                        delEdge.setObject(1, op.fromId.toJavaUuid())
+                        delEdge.setObject(2, op.toId.toJavaUuid())
+                        delEdge.setString(3, op.type)
                         delEdge.executeUpdate()
                     }
                 }
@@ -262,23 +266,23 @@ class YugabyteAbyssStoreLike(
                 val ttl = op.ttl!!.inWholeSeconds
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO abyss_test_graph.ephemeral_nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    op.node.id, type, data, op.node.tags, op.node.createdAt, op.node.updatedAt
+                    op.node.id.toJavaUuid(), type, data, op.node.tags, op.node.createdAt.toJavaInstant(), op.node.updatedAt.toJavaInstant()
                 ))
             }
             is StoreOp.SaveEdge -> {
                 val (type, data) = jsonPair(edgeSer, op.edge)
                 val ttl = op.ttl!!.inWholeSeconds.toInt()
                 // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
-                ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId, op.edge.fromId, type, data, op.edge.tags, op.edge.createdAt, op.edge.updatedAt, ttl))
+                ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId.toJavaUuid(), op.edge.fromId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), ttl))
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    op.edge.fromId, op.edge.toId, type, data, op.edge.tags, op.edge.createdAt, op.edge.updatedAt
+                    op.edge.fromId.toJavaUuid(), op.edge.toId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant()
                 ))
             }
-            is StoreOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(op.id))
+            is StoreOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(op.id.toJavaUuid()))
             is StoreOp.DeleteEdge -> {
-                ycql.execute(deleteReverseEdgeYcql.bind(op.toId, op.fromId, op.type))
-                ycql.execute(deleteEdgeYcql.bind(op.fromId, op.toId, op.type))
+                ycql.execute(deleteReverseEdgeYcql.bind(op.toId.toJavaUuid(), op.fromId.toJavaUuid(), op.type))
+                ycql.execute(deleteEdgeYcql.bind(op.fromId.toJavaUuid(), op.toId.toJavaUuid(), op.type))
             }
         }
     }
@@ -287,8 +291,8 @@ class YugabyteAbyssStoreLike(
         val ops = mutableListOf<StoreOp>()
         override fun saveNode(node: NodeLike, ttl: Duration?) { ops += StoreOp.SaveNode(node, ttl) }
         override fun saveEdge(edge: EdgeLike, ttl: Duration?) { ops += StoreOp.SaveEdge(edge, ttl) }
-        override fun deleteNode(id: UUID) { ops += StoreOp.DeleteNode(id) }
-        override fun deleteEdge(fromId: UUID, toId: UUID, type: String) { ops += StoreOp.DeleteEdge(fromId, toId, type) }
+        override fun deleteNode(id: Uuid) { ops += StoreOp.DeleteNode(id) }
+        override fun deleteEdge(fromId: Uuid, toId: Uuid, type: String) { ops += StoreOp.DeleteEdge(fromId, toId, type) }
     }
 
     companion object {

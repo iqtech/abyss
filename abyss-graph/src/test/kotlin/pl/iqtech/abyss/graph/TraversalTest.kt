@@ -10,11 +10,12 @@ import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.reaches
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import java.util.UUID
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.uuid.Uuid
+import kotlin.uuid.toJavaUuid
 
 class TraversalTest {
 
@@ -27,12 +28,12 @@ class TraversalTest {
     // helpers
 
     private fun putNode(name: String): TestNode {
-        val node = TestNode(id = UUID.randomUUID(), name = name)
-        graphTestHz.getMap<UUID, NodeLike>("g-nodes")[node.id] = node
+        val node = TestNode(id = Uuid.random(), name = name)
+        graphTestHz.getMap<java.util.UUID, NodeLike>("g-nodes")[node.id.toJavaUuid()] = node
         return node
     }
 
-    private fun putEdge(from: UUID, to: UUID): TestEdge {
+    private fun putEdge(from: Uuid, to: Uuid): TestEdge {
         val edge = TestEdge(fromId = from, toId = to, label = "$from→$to")
         runBlocking { graphTest.transaction { addEdge(edge) } }
         return edge

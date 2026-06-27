@@ -1,9 +1,9 @@
 package pl.iqtech.abyss.graph
 
+import kotlinx.datetime.Instant
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.Contextual
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
@@ -13,35 +13,33 @@ import pl.iqtech.abyss.graph.serialization.UnknownEdge
 import pl.iqtech.abyss.graph.serialization.UnknownNode
 import pl.iqtech.abyss.graph.serialization.createPolymorphicJsonSerializer
 import pl.iqtech.abyss.graph.serialization.customJsonSerializer
-import pl.iqtech.abyss.store.api.InstantSerializer
-import pl.iqtech.abyss.store.api.UuidSerializer
 import pl.iqtech.abyss.store.api.abyssSerializersModule
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import java.time.Instant
-import java.util.UUID
+import kotlinx.serialization.serializer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.uuid.Uuid
 
 // ── test-local domain types ──────────────────────────────────────────────────
 
 @Serializable @SerialName("test_node")
 data class TestNode(
-    @Contextual override val id: UUID,
+    override val id: Uuid,
     override val tags: List<String> = emptyList(),
-    @Contextual override val createdAt: Instant = Instant.EPOCH,
-    @Contextual override val updatedAt: Instant = Instant.EPOCH,
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val name: String
 ) : NodeLike
 
 @Serializable @SerialName("test_edge")
 data class TestEdge(
-    @Contextual override val fromId: UUID,
-    @Contextual override val toId: UUID,
+    override val fromId: Uuid,
+    override val toId: Uuid,
     override val tags: List<String> = emptyList(),
-    @Contextual override val createdAt: Instant = Instant.EPOCH,
-    @Contextual override val updatedAt: Instant = Instant.EPOCH,
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
 ) : EdgeLike
 
@@ -65,44 +63,45 @@ private val edgeSer  = PolymorphicSerializer(EdgeLike::class)
 
 class SerializationTest {
 
-    @Test fun `UuidSerializer round-trip`() {
-        val id = UUID.randomUUID()
-        val json = customJsonSerializer.encodeToString(UuidSerializer, id)
-        assertEquals(id, customJsonSerializer.decodeFromString(UuidSerializer, json))
+    @Test fun `Uuid round-trips through JSON as string`() {
+        val id = Uuid.random()
+        val encoded = customJsonSerializer.encodeToString(serializer<Uuid>(), id)
+        assertEquals(id, customJsonSerializer.decodeFromString(serializer<Uuid>(), encoded))
+        assertEquals("\"${id}\"", encoded)
     }
 
-    @Test fun `InstantSerializer round-trip`() {
-        val now = Instant.now()
-        val json = customJsonSerializer.encodeToString(InstantSerializer, now)
-        assertEquals(now, customJsonSerializer.decodeFromString(InstantSerializer, json))
+    @Test fun `Instant round-trips through JSON as ISO-8601`() {
+        val now = Instant.fromEpochSeconds(1_700_000_000)
+        val encoded = customJsonSerializer.encodeToString(serializer<Instant>(), now)
+        assertEquals(now, customJsonSerializer.decodeFromString(serializer<Instant>(), encoded))
     }
 
     @Test fun `TestNode round-trips through polymorphic JSON`() {
-        val node = TestNode(id = UUID.randomUUID(), name = "sniper")
+        val node = TestNode(id = Uuid.random(), name = "sniper")
         val encoded = nodeJson.encodeToString(nodeSer, node)
         assertEquals(node, nodeJson.decodeFromString(nodeSer, encoded))
     }
 
     @Test fun `TestEdge round-trips through polymorphic JSON`() {
-        val edge = TestEdge(fromId = UUID.randomUUID(), toId = UUID.randomUUID(), label = "has_rifle")
+        val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "has_rifle")
         val encoded = edgeJson.encodeToString(edgeSer, edge)
         assertEquals(edge, edgeJson.decodeFromString(edgeSer, encoded))
     }
 
     @Test fun `unknown node type falls back to UnknownNode`() {
-        val node = TestNode(id = UUID.randomUUID(), name = "sniper")
+        val node = TestNode(id = Uuid.random(), name = "sniper")
         val withUnknownType = nodeJson.encodeToString(nodeSer, node).replace("\"test_node\"", "\"future_type\"")
         assertIs<UnknownNode>(nodeJson.decodeFromString(nodeSer, withUnknownType))
     }
 
     @Test fun `unknown edge type falls back to UnknownEdge`() {
-        val edge = TestEdge(fromId = UUID.randomUUID(), toId = UUID.randomUUID(), label = "has_rifle")
+        val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "has_rifle")
         val withUnknownType = edgeJson.encodeToString(edgeSer, edge).replace("\"test_edge\"", "\"future_type\"")
         assertIs<UnknownEdge>(edgeJson.decodeFromString(edgeSer, withUnknownType))
     }
 
     @Test fun `UnknownNode preserves id from raw JSON`() {
-        val id = UUID.randomUUID()
+        val id = Uuid.random()
         val node = TestNode(id = id, name = "sniper")
         val withUnknownType = nodeJson.encodeToString(nodeSer, node).replace("\"test_node\"", "\"future_type\"")
         val result = nodeJson.decodeFromString(nodeSer, withUnknownType) as UnknownNode

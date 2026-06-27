@@ -14,15 +14,15 @@ import pl.iqtech.abyss.dsl.HopDirection
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import java.util.UUID
 import kotlin.reflect.full.findAnnotation
+import kotlin.uuid.Uuid
 
 class TraversalBuilder(
     private val engine: AbyssEngineLike,
-    startFrontier: Set<UUID>
+    startFrontier: Set<Uuid>
 ) : TraversalBuilderLike {
 
-    var frontier: Set<UUID> = startFrontier
+    var frontier: Set<Uuid> = startFrontier
         private set
 
     override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
@@ -83,8 +83,8 @@ class TraversalBuilder(
         }
     }
 
-    override suspend fun checkReaches(targetId: UUID, block: suspend TraversalBuilderLike.() -> Unit): Boolean {
-        val visited = mutableSetOf<UUID>()
+    override suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean {
+        val visited = mutableSetOf<Uuid>()
         visited += frontier
         var current = frontier.toSet()
         while (current.isNotEmpty()) {

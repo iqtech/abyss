@@ -3,7 +3,7 @@ package pl.iqtech.abyss.dsl
 import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import java.util.UUID
+import kotlin.uuid.Uuid
 
 enum class HopDirection { OUTGOING, INCOMING }
 
@@ -12,5 +12,5 @@ interface TraversalBuilderLike {
     suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)? = null)
     suspend fun collectNodes(nodeType: String): Flow<NodeLike>
     suspend fun collectNodes(nodeType: String, filter: (NodeLike) -> Boolean): Flow<NodeLike>
-    suspend fun checkReaches(targetId: UUID, block: suspend TraversalBuilderLike.() -> Unit): Boolean
+    suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean
 }

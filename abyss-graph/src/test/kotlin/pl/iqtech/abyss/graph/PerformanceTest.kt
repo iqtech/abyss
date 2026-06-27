@@ -7,10 +7,11 @@ import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.measureTime
+import kotlin.uuid.Uuid
+import kotlin.uuid.toJavaUuid
 
 class PerformanceTest {
 
@@ -22,12 +23,12 @@ class PerformanceTest {
             AbyssGraph(graphTestHz, "perf-nodes", "perf-edges")
         }
 
-        private val nodeIds: List<UUID> by lazy {
-            val ids = (1..NODE_COUNT).map { UUID.randomUUID() }
-            val nodesMap = graphTestHz.getMap<UUID, NodeLike>("perf-nodes")
+        private val nodeIds: List<Uuid> by lazy {
+            val ids = (1..NODE_COUNT).map { Uuid.random() }
+            val nodesMap = graphTestHz.getMap<java.util.UUID, NodeLike>("perf-nodes")
             val edgesMap = graphTestHz.getMap<Any, EdgeLike>("perf-edges")
             val reverseMap = graphTestHz.getMap<ReverseEdgeKey, Unit>("perf-edges-reverse")
-            ids.forEach { id -> nodesMap[id] = TestNode(id = id, name = id.toString()) }
+            ids.forEach { id -> nodesMap[id.toJavaUuid()] = TestNode(id = id, name = id.toString()) }
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
