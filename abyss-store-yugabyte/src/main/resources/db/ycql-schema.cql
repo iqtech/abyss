@@ -35,3 +35,19 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
     updated_at  TIMESTAMP,
     PRIMARY KEY ((from_id), to_id, type)
 );
+
+-- ── ephemeral_reverse_edges ──────────────────────────────────────────────────
+-- Reverse index for inEdges cold-restart warming. Partition key: to_id.
+-- Mirrors ephemeral_edges; written/deleted together with same TTL (non-atomic).
+-- Secondary indexes can't be used: transactions=true blocks per-row USING TTL.
+
+CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_reverse_edges (
+    to_id       UUID,
+    from_id     UUID,
+    type        TEXT,
+    data        TEXT,
+    tags        LIST<TEXT>,
+    created_at  TIMESTAMP,
+    updated_at  TIMESTAMP,
+    PRIMARY KEY ((to_id), from_id, type)
+);

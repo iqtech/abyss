@@ -95,10 +95,10 @@ class AbyssGraph(
         outEdgeFlow(nodeId, Predicates.and(eq("__key.fromId", nodeId.toString()), eq("__key.type", type)))
 
     override fun inEdges(nodeId: UUID, pageSize: Int): Flow<EdgeLike> =
-        edgeFlow(eq("__key.toId", nodeId.toString()), pageSize)
+        inEdgeFlow(nodeId, eq("__key.toId", nodeId.toString()), pageSize)
 
     override fun inEdges(nodeId: UUID, type: String, pageSize: Int): Flow<EdgeLike> =
-        edgeFlow(Predicates.and(eq("__key.toId", nodeId.toString()), eq("__key.type", type)), pageSize)
+        inEdgeFlow(nodeId, Predicates.and(eq("__key.toId", nodeId.toString()), eq("__key.type", type)), pageSize)
 
     private fun eq(attr: String, value: String): Predicate<EdgeKey, EdgeLike> = Predicates.equal(attr, value)
 
@@ -109,8 +109,22 @@ class AbyssGraph(
     // EdgeKey is PartitionAware on fromId, so all outgoing edges for a node land on the same
     // partition — partitionPredicate routes the query there without a cluster-wide scatter.
     private fun outEdgeFlow(nodeId: UUID, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
+        withContext(Dispatchers.IO) {
+            store?.loadEdges(nodeId)?.getOrNull()?.forEach { edge ->
+                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, edgeType(edge)), edge)
+            }
+        }
         val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike>(nodeId, predicate)
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
+    }
+
+    private fun inEdgeFlow(nodeId: UUID, predicate: Predicate<EdgeKey, EdgeLike>, pageSize: Int): Flow<EdgeLike> = flow {
+        withContext(Dispatchers.IO) {
+            store?.loadInEdges(nodeId)?.getOrNull()?.forEach { edge ->
+                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, edgeType(edge)), edge)
+            }
+        }
+        edgeFlow(predicate, pageSize).collect { emit(it) }
     }
 
     private fun edgeFlow(predicate: Predicate<EdgeKey, EdgeLike>, pageSize: Int): Flow<EdgeLike> = flow {

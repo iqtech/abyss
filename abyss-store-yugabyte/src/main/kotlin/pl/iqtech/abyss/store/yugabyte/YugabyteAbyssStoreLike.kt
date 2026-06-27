@@ -76,10 +76,18 @@ class YugabyteAbyssStoreLike(
         ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_nodes WHERE id = ?")
     private val selectEdgeYcql: PreparedStatement =
         ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
+    private val selectEdgesYcql: PreparedStatement =
+        ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_edges WHERE from_id = ?")
+    private val selectInEdgesYcql: PreparedStatement =
+        ycql.prepare("SELECT data FROM abyss_test_graph.ephemeral_reverse_edges WHERE to_id = ?")
     private val deleteNodeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_nodes WHERE id = ?")
     private val deleteEdgeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
+    private val insertReverseEdgeYcql: PreparedStatement =
+        ycql.prepare("INSERT INTO abyss_test_graph.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?")
+    private val deleteReverseEdgeYcql: PreparedStatement =
+        ycql.prepare("DELETE FROM abyss_test_graph.ephemeral_reverse_edges WHERE to_id = ? AND from_id = ? AND type = ?")
 
     override suspend fun loadNode(id: UUID): Either<AbyssError, NodeLike?> =
         Either.catch {
@@ -96,6 +104,24 @@ class YugabyteAbyssStoreLike(
                 val fromYsql = async(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type) }
                 val fromYcql = async(Dispatchers.IO) { queryEdgeYcql(fromId, toId, type) }
                 awaitAll(fromYsql, fromYcql).firstOrNull { it != null }
+            }
+        }.mapLeft { AbyssError.Unexpected(it) }
+
+    override suspend fun loadEdges(fromId: UUID): Either<AbyssError, List<EdgeLike>> =
+        Either.catch {
+            coroutineScope {
+                val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("from_id", fromId) }
+                val fromYcql = async(Dispatchers.IO) { queryEdgesYcql(selectEdgesYcql, fromId) }
+                mergeEdgeLists(fromYsql.await(), fromYcql.await())
+            }
+        }.mapLeft { AbyssError.Unexpected(it) }
+
+    override suspend fun loadInEdges(toId: UUID): Either<AbyssError, List<EdgeLike>> =
+        Either.catch {
+            coroutineScope {
+                val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("to_id", toId) }
+                val fromYcql = async(Dispatchers.IO) { queryEdgesYcql(selectInEdgesYcql, toId) }
+                mergeEdgeLists(fromYsql.await(), fromYcql.await())
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
@@ -149,6 +175,30 @@ class YugabyteAbyssStoreLike(
         val data = row.getString("data") ?: return null
         return json.decodeFromString(edgeSer, data)
     }
+
+    private fun queryEdgesYsql(column: String, id: UUID): List<EdgeLike> =
+        ysql.connection.use { conn ->
+            conn.prepareStatement("SELECT data FROM abyss.edges WHERE $column = ?").use { stmt ->
+                stmt.setObject(1, id)
+                val rs = stmt.executeQuery()
+                buildList { while (rs.next()) add(json.decodeFromString(edgeSer, rs.getString("data"))) }
+            }
+        }
+
+    private fun queryEdgesYcql(stmt: PreparedStatement, id: UUID): List<EdgeLike> =
+        ycql.execute(stmt.bind(id))
+            .mapNotNull { row -> row.getString("data")?.let { json.decodeFromString(edgeSer, it) } }
+
+    // YSQL wins on key conflict — durable store takes precedence over ephemeral.
+    private fun mergeEdgeLists(ysql: List<EdgeLike>, ycql: List<EdgeLike>): List<EdgeLike> {
+        val map = LinkedHashMap<Triple<UUID, UUID, String>, EdgeLike>()
+        ycql.forEach { map[Triple(it.fromId, it.toId, edgeTypeOf(it))] = it }
+        ysql.forEach { map[Triple(it.fromId, it.toId, edgeTypeOf(it))] = it }
+        return map.values.toList()
+    }
+
+    private fun edgeTypeOf(edge: EdgeLike): String =
+        json.encodeToJsonElement(edgeSer, edge).jsonObject["type"]!!.jsonPrimitive.content
 
     private fun <T> jsonPair(ser: SerializationStrategy<T>, value: T): Pair<String, String> {
         val el = json.encodeToJsonElement(ser, value)
@@ -217,14 +267,19 @@ class YugabyteAbyssStoreLike(
             }
             is StoreOp.SaveEdge -> {
                 val (type, data) = jsonPair(edgeSer, op.edge)
-                val ttl = op.ttl!!.inWholeSeconds
+                val ttl = op.ttl!!.inWholeSeconds.toInt()
+                // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
+                ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId, op.edge.fromId, type, data, op.edge.tags, op.edge.createdAt, op.edge.updatedAt, ttl))
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     op.edge.fromId, op.edge.toId, type, data, op.edge.tags, op.edge.createdAt, op.edge.updatedAt
                 ))
             }
             is StoreOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(op.id))
-            is StoreOp.DeleteEdge -> ycql.execute(deleteEdgeYcql.bind(op.fromId, op.toId, op.type))
+            is StoreOp.DeleteEdge -> {
+                ycql.execute(deleteReverseEdgeYcql.bind(op.toId, op.fromId, op.type))
+                ycql.execute(deleteEdgeYcql.bind(op.fromId, op.toId, op.type))
+            }
         }
     }
 

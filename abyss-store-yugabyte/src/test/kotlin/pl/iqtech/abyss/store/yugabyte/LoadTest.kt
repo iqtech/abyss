@@ -154,6 +154,65 @@ class LoadTest {
         assertIs<Either.Right<EdgeLike?>>(result)
         assertEquals("ycql-edge", assertIs<YbTestEdge>(result.value).label)
     }
+
+    @Test fun `loadEdges returns edges by fromId from ysql`() {
+        val fromId = UUID.randomUUID()
+        val toId1 = UUID.randomUUID()
+        val toId2 = UUID.randomUUID()
+        insertYsqlEdge(fromId, toId1, edgeJson(fromId, toId1, "edge-1"))
+        insertYsqlEdge(fromId, toId2, edgeJson(fromId, toId2, "edge-2"))
+
+        val result = runBlocking { ybStore.loadEdges(fromId) }
+        assertIs<Either.Right<List<EdgeLike>>>(result)
+        assertEquals(2, result.value.size)
+    }
+
+    @Test fun `loadEdges returns edges by fromId from ycql`() {
+        val fromId = UUID.randomUUID()
+        val toId1 = UUID.randomUUID()
+        val toId2 = UUID.randomUUID()
+        insertYcqlEdge(fromId, toId1, edgeJson(fromId, toId1, "ycql-1"))
+        insertYcqlEdge(fromId, toId2, edgeJson(fromId, toId2, "ycql-2"))
+
+        val result = runBlocking { ybStore.loadEdges(fromId) }
+        assertIs<Either.Right<List<EdgeLike>>>(result)
+        assertEquals(2, result.value.size)
+    }
+
+    @Test fun `loadInEdges returns edges by toId from ysql`() {
+        val toId = UUID.randomUUID()
+        val fromId1 = UUID.randomUUID()
+        val fromId2 = UUID.randomUUID()
+        insertYsqlEdge(fromId1, toId, edgeJson(fromId1, toId, "in-1"))
+        insertYsqlEdge(fromId2, toId, edgeJson(fromId2, toId, "in-2"))
+
+        val result = runBlocking { ybStore.loadInEdges(toId) }
+        assertIs<Either.Right<List<EdgeLike>>>(result)
+        assertEquals(2, result.value.size)
+    }
+
+    @Test fun `loadInEdges returns edges by toId from ycql`() {
+        val toId = UUID.randomUUID()
+        val fromId1 = UUID.randomUUID()
+        val fromId2 = UUID.randomUUID()
+        insertYcqlReverseEdge(fromId1, toId, edgeJson(fromId1, toId, "rev-1"))
+        insertYcqlReverseEdge(fromId2, toId, edgeJson(fromId2, toId, "rev-2"))
+
+        val result = runBlocking { ybStore.loadInEdges(toId) }
+        assertIs<Either.Right<List<EdgeLike>>>(result)
+        assertEquals(2, result.value.size)
+    }
+
+    @Test fun `transaction saveEdge with ttl writes to both ycql tables`() {
+        val edge = YbTestEdge(fromId = UUID.randomUUID(), toId = UUID.randomUUID(), label = "dual-write")
+        assertIs<Either.Right<Unit>>(runBlocking { ybStore.transaction { saveEdge(edge, 3600.seconds) } })
+
+        val outResult = runBlocking { ybStore.loadEdges(edge.fromId) }
+        assertEquals(1, (outResult as Either.Right).value.size)
+
+        val inResult = runBlocking { ybStore.loadInEdges(edge.toId) }
+        assertEquals(1, (inResult as Either.Right).value.size)
+    }
 }
 
 private fun nodeJson(id: UUID, name: String) =
@@ -214,6 +273,21 @@ private fun insertYcqlEdge(fromId: UUID, toId: UUID, json: String) {
                 SimpleStatement.newInstance(
                     "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     fromId, toId, "yb_test_edge", json, emptyList<String>(), Instant.EPOCH, Instant.EPOCH
+                )
+            )
+        }
+}
+
+private fun insertYcqlReverseEdge(fromId: UUID, toId: UUID, json: String) {
+    CqlSession.builder()
+        .addContactPoint(InetSocketAddress("localhost", 9042))
+        .withLocalDatacenter("datacenter1")
+        .build()
+        .use { session ->
+            session.execute(
+                SimpleStatement.newInstance(
+                    "INSERT INTO abyss_test_graph.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    toId, fromId, "yb_test_edge", json, emptyList<String>(), Instant.EPOCH, Instant.EPOCH
                 )
             )
         }

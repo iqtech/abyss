@@ -2,18 +2,10 @@
 
 ## High
 
-- **Cold restart kills traversal** (`loadAllKeys() = null`)
-  After a Hazelcast restart, `outEdges` predicates run on in-memory data only — edges not yet
-  individually re-hydrated are invisible. No preload strategy, no "warm the cache" API exists.
-  Blocked by missing `loadEdges(fromId)` on `AbyssStoreLike` (see below).
-
-- **No `loadEdges(fromId)` on `AbyssStoreLike`**
-  Store interface only has point-lookup `loadEdge(from, to, type)`. Cannot bulk-fetch edges by
-  source node from YugabyteDB, making store-miss recovery for `outEdges` structurally impossible.
-
 - **`inEdges` still scans all partitions**
-  `PartitionAware` only benefits `outEdges`. Reverse traversal fans out to every partition.
-  Needs a second index or a separate reverse-edge structure.
+  `PartitionAware` only benefits `outEdges`. Reverse traversal fans out to every partition on every
+  call — warming fixes the cold-restart problem but not the per-call fan-out cost.
+  Needs a structural fix: separate reverse-edge Hazelcast map keyed by `toId`.
 
 - **Transaction not atomic across YSQL and YCQL**
   If YSQL commit succeeds and YCQL fails, the graph is silently inconsistent. Currently logs a
