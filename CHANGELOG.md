@@ -1,3 +1,7 @@
+## [0.10.0] - 2026-06-27
+
+- Add `@EdgeConstraint` annotation for opt-in edge endpoint type enforcement; `AbyssError.SchemaError` distinguishes schema violations from referential integrity errors
+
 ## [0.9.0] - 2026-06-27
 
 - Add `ephemeral { }` builder for TTL-bound YCQL writes; `transaction { }` is now exclusively persistent (YSQL); TTL removed from per-operation signatures
