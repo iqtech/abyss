@@ -64,7 +64,10 @@ suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilder
 suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.incoming(noinline predicate: (N) -> Boolean) =
     addNodeHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
-suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline filter: ((N) -> Boolean)? = null): Flow<N> =
-    collectNodes(N::class.findAnnotation<SerialName>()!!.value, filter?.let { f -> { f(it as N) } }).filterIsInstance<N>()
+suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(): Flow<N> =
+    collectNodes(N::class.findAnnotation<SerialName>()!!.value).filterIsInstance<N>()
+
+suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline filter: (N) -> Boolean): Flow<N> =
+    collectNodes(N::class.findAnnotation<SerialName>()!!.value) { filter(it as N) }.filterIsInstance<N>()
 
 suspend fun TraversalBuilderLike.reaches(targetId: UUID, block: suspend TraversalBuilderLike.() -> Unit): Boolean = checkReaches(targetId, block)

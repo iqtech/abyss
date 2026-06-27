@@ -68,7 +68,8 @@ val alice: Either<AbyssError, Person> = graph.node<Person>(alice.id)
 // traverse
 graph.from(alice.id) {
     outgoing<Knows>()
-    nodes<Person>().collect { println(it.name) }   // prints "Bob"
+    nodes<Person>().collect { println(it.name) }            // prints "Bob" — parallel fetch
+    nodes<Person> { it.name == "Bob" }.collect { println(it.name) }  // filtered — sequential fetch
 }
 ```
 
@@ -174,6 +175,14 @@ Both directions are partition-local:
 - **`inEdges`** — a mirrored `IMap<ReverseEdgeKey, Unit>` is maintained in sync with the edge map. `ReverseEdgeKey` is `PartitionAware` on `toId`, so the reverse lookup is also single-partition. The reverse map holds only keys; actual edge data is fetched via `IMap.getAll` point-lookups on the primary map.
 
 Both maps are kept consistent by every `addEdge` / `removeEdge` transaction, including TTL expiry (same TTL is applied to both entries).
+
+#### Node collection
+
+`nodes<T>()` (no filter) fetches all frontier nodes in parallel — all Hazelcast point-lookups
+fire concurrently and results are emitted after all complete.
+
+`nodes<T> { predicate }` (with filter) fetches sequentially and emits on the fly, so the caller
+can short-circuit (`.first()`, `.take(n)`) without fetching nodes it will never use.
 
 #### Cold-restart behaviour
 

@@ -61,15 +61,25 @@ class TraversalBuilder(
         }
     }
 
-    override suspend fun collectNodes(nodeType: String, filter: ((NodeLike) -> Boolean)?): Flow<NodeLike> {
-        val snapshot = frontier.toSet()
+    override suspend fun collectNodes(nodeType: String): Flow<NodeLike> {
+        val nodes = coroutineScope {
+            frontier.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
+        }
         return flow {
-            for (id in snapshot) {
-                val node = withContext(Dispatchers.IO) { engine.node(id).getOrNull() } ?: continue
+            for (node in nodes) {
+                if (node == null) continue
                 if (node::class.findAnnotation<SerialName>()?.value != nodeType) continue
-                if (filter != null && !filter(node)) continue
                 emit(node)
             }
+        }
+    }
+
+    override suspend fun collectNodes(nodeType: String, filter: (NodeLike) -> Boolean): Flow<NodeLike> = flow {
+        for (id in frontier) {
+            val node = withContext(Dispatchers.IO) { engine.node(id).getOrNull() } ?: continue
+            if (node::class.findAnnotation<SerialName>()?.value != nodeType) continue
+            if (!filter(node)) continue
+            emit(node)
         }
     }
 

@@ -8,10 +8,6 @@
 
 ## Medium
 
-- **`collectNodes` is sequential**
-  Node collection after the final hop is a serial loop. Same `coroutineScope + async` fix as
-  was applied to `addHop`.
-
 - **Single Hazelcast node**
   `PartitionAware` and partition-predicate routing only matter in a cluster. On one node it
   degrades to a smaller in-memory scan. No cluster topology awareness, near-cache, or partition
