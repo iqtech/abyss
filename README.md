@@ -152,6 +152,35 @@ This cascade is resolved against the current cache state at commit time. Edges a
 
 ---
 
+### Edge queries
+
+`outEdges` and `inEdges` are available both as raw flows and via the traversal DSL.
+
+```kotlin
+// all outgoing edges from a node
+graph.outEdges(alice.id).collect { edge -> println(edge) }
+graph.outEdges<Knows>(alice.id).collect { knows -> println(knows) }   // typed + type-filtered
+
+// all incoming edges to a node
+graph.inEdges(bob.id).collect { edge -> println(edge) }
+graph.inEdges<Knows>(bob.id).collect { knows -> println(knows) }
+```
+
+#### Partition layout
+
+Both directions are partition-local:
+
+- **`outEdges`** — `EdgeKey` is `PartitionAware` on `fromId`, so all outgoing edges of a node live on one partition. The query never scatters.
+- **`inEdges`** — a mirrored `IMap<ReverseEdgeKey, Unit>` is maintained in sync with the edge map. `ReverseEdgeKey` is `PartitionAware` on `toId`, so the reverse lookup is also single-partition. The reverse map holds only keys; actual edge data is fetched via `IMap.getAll` point-lookups on the primary map.
+
+Both maps are kept consistent by every `addEdge` / `removeEdge` transaction, including TTL expiry (same TTL is applied to both entries).
+
+#### Cold-restart behaviour
+
+After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or `inEdges(nodeId)` call, Abyss loads the relevant edges from the store (if configured) and warms both `edgesMap` and `reverseEdgesMap` before executing the query. Subsequent calls for the same node are served from the warm cache.
+
+---
+
 ## Building
 
 ```
