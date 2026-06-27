@@ -7,9 +7,12 @@ import com.hazelcast.config.Config
 import com.hazelcast.core.Hazelcast
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
+import pl.iqtech.abyss.store.api.EdgeConstraint
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.edge
 import pl.iqtech.abyss.dsl.edgeExists
@@ -29,12 +32,31 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
+@Serializable @SerialName("other_node")
+data class OtherNode(
+    override val id: Uuid,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : NodeLike
+
+@Serializable @SerialName("typed_edge")
+@EdgeConstraint(fromTypes = [TestNode::class], toTypes = [TestNode::class])
+data class TypedEdge(
+    override val fromId: Uuid,
+    override val toId: Uuid,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : EdgeLike
+
 val graphTestModule = SerializersModule {
-    polymorphic(NodeLike::class) { subclass(TestNode::class) }
-    polymorphic(EdgeLike::class) { subclass(TestEdge::class) }
+    polymorphic(NodeLike::class) { subclass(TestNode::class); subclass(OtherNode::class) }
+    polymorphic(EdgeLike::class) { subclass(TestEdge::class); subclass(TypedEdge::class) }
 }
 
 val graphTestHz by lazy {
@@ -419,6 +441,65 @@ class GraphTest {
 
             graphTestHz.getMap<Any, Any>("eph-s-nodes").clear()
             graphTestHz.getMap<Any, Any>("eph-s-edges").clear()
+        }
+    }
+
+    // ── schema enforcement ────────────────────────────────────────────────────
+
+    @Test fun `transaction addEdge with constrained edge and correct node types succeeds`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            graphTest.transaction { addNode(a); addNode(b) }
+            val result = graphTest.transaction { addEdge(TypedEdge(fromId = a.id, toId = b.id)) }
+            assertIs<Either.Right<Unit>>(result)
+        }
+    }
+
+    @Test fun `transaction addEdge returns SchemaError when fromId has wrong node type`() {
+        runBlocking {
+            val bad  = OtherNode(id = Uuid.random())
+            val good = TestNode(id = Uuid.random(), name = "good")
+            graphTest.transaction(checkIntegrity = false) { addNode(bad); addNode(good) }
+            val result = graphTest.transaction { addEdge(TypedEdge(fromId = bad.id, toId = good.id)) }
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.SchemaError>(result.value)
+        }
+    }
+
+    @Test fun `transaction addEdge returns SchemaError when toId has wrong node type`() {
+        runBlocking {
+            val good = TestNode(id = Uuid.random(), name = "good")
+            val bad  = OtherNode(id = Uuid.random())
+            graphTest.transaction(checkIntegrity = false) { addNode(good); addNode(bad) }
+            val result = graphTest.transaction { addEdge(TypedEdge(fromId = good.id, toId = bad.id)) }
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.SchemaError>(result.value)
+        }
+    }
+
+    @Test fun `transaction addEdge with constrained edge and in-tx nodes passes schema check`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "inline-a")
+            val b = TestNode(id = Uuid.random(), name = "inline-b")
+            val result = graphTest.transaction {
+                addNode(a)
+                addNode(b)
+                addEdge(TypedEdge(fromId = a.id, toId = b.id))
+            }
+            assertIs<Either.Right<Unit>>(result)
+        }
+    }
+
+    @Test fun `transaction addEdge with checkIntegrity=false bypasses schema check`() {
+        runBlocking {
+            val bad  = OtherNode(id = Uuid.random())
+            val good = TestNode(id = Uuid.random(), name = "good")
+            graphTest.transaction(checkIntegrity = false) { addNode(bad); addNode(good) }
+            val result = graphTest.transaction(checkIntegrity = false) {
+                addEdge(TypedEdge(fromId = bad.id, toId = good.id))
+            }
+            assertIs<Either.Right<Unit>>(result)
         }
     }
 

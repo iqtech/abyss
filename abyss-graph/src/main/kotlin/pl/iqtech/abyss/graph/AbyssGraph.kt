@@ -22,6 +22,8 @@ import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.AbyssEphemeralTransactionLike
 import pl.iqtech.abyss.dsl.AbyssTransactionLike
+import pl.iqtech.abyss.graph.serialization.UnknownNode
+import pl.iqtech.abyss.store.api.EdgeConstraint
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
@@ -173,15 +175,15 @@ class AbyssGraph(
         }
 
         if (checkIntegrity) {
-            val addedInTx = ops.filterIsInstance<Op.AddNode>().mapTo(mutableSetOf()) { it.node.id }
+            val addedInTx = ops.filterIsInstance<Op.AddNode>().associate { it.node.id to it.node }
             val error = withContext(Dispatchers.IO) {
                 ops.filterIsInstance<Op.AddEdge>().firstNotNullOfOrNull { op ->
+                    val fromNode = addedInTx[op.edge.fromId] ?: nodesMap[op.edge.fromId.toJavaUuid()]
+                    val toNode   = addedInTx[op.edge.toId]   ?: nodesMap[op.edge.toId.toJavaUuid()]
                     when {
-                        op.edge.fromId !in addedInTx && nodesMap[op.edge.fromId.toJavaUuid()] == null ->
-                            AbyssError.IntegrityError("Node ${op.edge.fromId} (fromId) not found")
-                        op.edge.toId !in addedInTx && nodesMap[op.edge.toId.toJavaUuid()] == null ->
-                            AbyssError.IntegrityError("Node ${op.edge.toId} (toId) not found")
-                        else -> null
+                        fromNode == null -> AbyssError.IntegrityError("Node ${op.edge.fromId} (fromId) not found")
+                        toNode   == null -> AbyssError.IntegrityError("Node ${op.edge.toId} (toId) not found")
+                        else             -> schemaCheck(op.edge, fromNode, toNode)
                     }
                 }
             }
@@ -215,15 +217,15 @@ class AbyssGraph(
         }
 
         if (checkIntegrity) {
-            val addedInTx = ops.filterIsInstance<Op.AddNode>().mapTo(mutableSetOf()) { it.node.id }
+            val addedInTx = ops.filterIsInstance<Op.AddNode>().associate { it.node.id to it.node }
             val error = withContext(Dispatchers.IO) {
                 ops.filterIsInstance<Op.AddEdge>().firstNotNullOfOrNull { op ->
+                    val fromNode = addedInTx[op.edge.fromId] ?: nodesMap[op.edge.fromId.toJavaUuid()]
+                    val toNode   = addedInTx[op.edge.toId]   ?: nodesMap[op.edge.toId.toJavaUuid()]
                     when {
-                        op.edge.fromId !in addedInTx && nodesMap[op.edge.fromId.toJavaUuid()] == null ->
-                            AbyssError.IntegrityError("Node ${op.edge.fromId} (fromId) not found")
-                        op.edge.toId !in addedInTx && nodesMap[op.edge.toId.toJavaUuid()] == null ->
-                            AbyssError.IntegrityError("Node ${op.edge.toId} (toId) not found")
-                        else -> null
+                        fromNode == null -> AbyssError.IntegrityError("Node ${op.edge.fromId} (fromId) not found")
+                        toNode   == null -> AbyssError.IntegrityError("Node ${op.edge.toId} (toId) not found")
+                        else             -> schemaCheck(op.edge, fromNode, toNode)
                     }
                 }
             }
@@ -288,6 +290,15 @@ class AbyssGraph(
 
     private fun edgeType(edge: EdgeLike): String =
         edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
+
+    private fun schemaCheck(edge: EdgeLike, from: NodeLike, to: NodeLike): AbyssError? {
+        val c = edge::class.findAnnotation<EdgeConstraint>() ?: return null
+        if (c.fromTypes.isNotEmpty() && from !is UnknownNode && from::class !in c.fromTypes)
+            return AbyssError.SchemaError("Edge ${edgeType(edge)}: fromId is ${from::class.simpleName}, expected ${c.fromTypes.map { it.simpleName }}")
+        if (c.toTypes.isNotEmpty() && to !is UnknownNode && to::class !in c.toTypes)
+            return AbyssError.SchemaError("Edge ${edgeType(edge)}: toId is ${to::class.simpleName}, expected ${c.toTypes.map { it.simpleName }}")
+        return null
+    }
 }
 
 // Call before creating the HazelcastInstance — serialization config is immutable after startup.

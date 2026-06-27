@@ -2,7 +2,7 @@
 
 ## 1. High
 
-- **1.1 Ephemeral and persistent elements cannot share a transaction**
+- **✅ 1.1 Ephemeral and persistent elements cannot share a transaction**
   Elements with a TTL go to YCQL; elements without go to YSQL. A single `transaction { }` block
   that mixes both is not atomic — if YSQL commits and YCQL fails (or vice versa), the graph is
   silently inconsistent. Currently logs a warning and continues.
@@ -33,7 +33,7 @@
   degrades to a smaller in-memory scan. No cluster topology awareness, near-cache, or partition
   migration hooks.
 
-- **2.2 No schema enforcement**
+- **✅ 2.2 No schema enforcement**
   `@SerialName` type strings are unchecked. Nothing prevents a `Knows` edge connecting two
   non-`Person` nodes. Invalid graphs are silently possible.
 

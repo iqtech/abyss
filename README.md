@@ -199,9 +199,33 @@ graph.transaction { removeNode(alice.id) }
 
 This cascade is resolved against the current cache state at commit time. Edges added *within the same transaction* as the `removeNode` are not included in the cascade — avoid that combination.
 
-#### No referential integrity on `addEdge`
+#### Referential integrity
 
-`addEdge` does **not** verify that `fromId` or `toId` refer to existing nodes. If you need that guarantee, check `nodeExists` before the transaction.
+By default, `addEdge` verifies that both `fromId` and `toId` refer to existing nodes and returns
+`AbyssError.IntegrityError` if either is missing. Pass `checkIntegrity = false` to skip this
+check for bulk operations (e.g. graph import) where node existence is guaranteed by the caller.
+
+#### Schema enforcement
+
+Annotate an edge class with `@EdgeConstraint` to declare which node types each endpoint must be:
+
+```kotlin
+@Serializable
+@SerialName("knows")
+@EdgeConstraint(fromTypes = [Person::class], toTypes = [Person::class])
+data class Knows(override val fromId: Uuid, override val toId: Uuid, ...) : EdgeLike
+```
+
+When `checkIntegrity = true` (the default), `addEdge` checks that the actual node types of both
+endpoints match the constraint and returns `AbyssError.SchemaError` on a mismatch.
+
+`@EdgeConstraint` is opt-in — edge types without the annotation are unconstrained. Empty arrays
+(`fromTypes = []`) also mean unconstrained, so adding a constraint to an existing edge type is
+always a non-breaking change for old data already in storage (only new writes are checked).
+
+For schema evolution: `UnknownNode` endpoints (nodes from a schema version not known to the
+current application) are always permitted, so a rolling deployment with mixed schema versions
+will not produce false `SchemaError`s.
 
 ---
 
