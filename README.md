@@ -65,12 +65,23 @@ graph.transaction {
 // read
 val alice: Either<AbyssError, Person> = graph.node<Person>(alice.id)
 
-// traverse
+// traverse — frontier nodes only
 graph.from(alice.id) {
     outgoing<Knows>()
     nodes<Person>().collect { println(it.name) }            // prints "Bob" — parallel fetch
     nodes<Person> { it.name == "Bob" }.collect { println(it.name) }  // filtered — sequential fetch
 }
+
+// traverse — full subgraph (all visited nodes + all traversed edges)
+val result: Either<AbyssError, Subgraph> = graph.from(alice.id) {
+    outgoing<Knows>()         // hop 1: alice → bob, alice → charlie
+    outgoing<Knows>()         // hop 2: bob → dave
+    subgraph<Person>()        // Person nodes only + all 3 Knows edges
+    // subgraph()             // all visited nodes regardless of type + all 3 Knows edges
+}
+val (persons, edges) = result.getOrNull()!!
+persons.forEach { println((it as Person).name) }
+edges.forEach { println("${it.fromId} → ${it.toId}") }
 ```
 
 ---
@@ -210,6 +221,11 @@ fire concurrently and results are emitted after all complete.
 
 `nodes<T> { predicate }` (with filter) fetches sequentially and emits on the fly, so the caller
 can short-circuit (`.first()`, `.take(n)`) without fetching nodes it will never use.
+
+`subgraph<T>()` returns a `Subgraph(nodes, edges)` containing every node visited across **all hops**
+(including the start node) and every edge traversed. Nodes are filtered to type `T`; use the
+no-arg `subgraph()` to get all visited nodes regardless of type. Nodes are resolved in parallel;
+edges are already in memory from the hop results.
 
 #### Cold-restart behaviour
 

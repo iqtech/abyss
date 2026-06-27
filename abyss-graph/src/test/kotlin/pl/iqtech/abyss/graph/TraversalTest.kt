@@ -4,10 +4,12 @@ import arrow.core.Either
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.reaches
+import pl.iqtech.abyss.dsl.subgraph
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.test.BeforeTest
@@ -172,6 +174,54 @@ class TraversalTest {
                 reaches(unreachable.id) { outgoing<TestEdge>() }
             }
             assertEquals(Either.Right(false), result)
+        }
+    }
+
+    // ── subgraph ──────────────────────────────────────────────────────────────
+
+    @Test fun `subgraph with no hops returns start node and no edges`() {
+        runBlocking {
+            val a = putNode("a")
+            val sg = assertIs<Either.Right<Subgraph>>(
+                graphTest.from(a.id) { subgraph<TestNode>() }
+            ).value
+            assertEquals(listOf(a), sg.nodes)
+            assertEquals(emptyList<EdgeLike>(), sg.edges)
+        }
+    }
+
+    @Test fun `subgraph returns all nodes across two hops`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            putEdge(a.id, b.id)
+            putEdge(b.id, c.id)
+
+            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                outgoing<TestEdge>()
+                subgraph<TestNode>()
+            }).value
+            assertEquals(setOf(a, b, c), sg.nodes.toSet())
+        }
+    }
+
+    @Test fun `subgraph returns all traversed edges across two hops`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            val ab = putEdge(a.id, b.id)
+            val bc = putEdge(b.id, c.id)
+
+            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                outgoing<TestEdge>()
+                subgraph<TestNode>()
+            }).value
+            assertEquals(setOf(ab.fromId to ab.toId, bc.fromId to bc.toId),
+                sg.edges.map { it.fromId to it.toId }.toSet())
         }
     }
 

@@ -10,7 +10,7 @@
   `transaction { }`), which accepts a TTL and routes exclusively to YCQL. The two builders are
   intentionally separate and cannot be combined into one atomic operation.
 
-- **1.2 Traversal subgraph extraction**
+- **✅ 1.2 Traversal subgraph extraction**
   After a traversal, callers need the full subgraph: all visited nodes as a list and all traversed
   edges as a list. Currently only the frontier nodes are accessible via `nodes<T>()`.
 

@@ -10,8 +10,8 @@ import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import kotlin.uuid.Uuid
 import kotlin.reflect.full.findAnnotation
+import kotlin.uuid.Uuid
 
 // AbyssEngineLike
 
@@ -71,3 +71,9 @@ suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline fi
     collectNodes(N::class.findAnnotation<SerialName>()!!.value) { filter(it as N) }.filterIsInstance<N>()
 
 suspend fun TraversalBuilderLike.reaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean = checkReaches(targetId, block)
+
+@JvmName("subgraphAll")
+suspend fun TraversalBuilderLike.subgraph(): Subgraph = collectSubgraph()
+
+suspend inline fun <reified N : NodeLike> TraversalBuilderLike.subgraph(): Subgraph =
+    collectSubgraph(N::class.findAnnotation<SerialName>()!!.value)

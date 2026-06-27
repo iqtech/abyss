@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.HopDirection
+import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
@@ -25,40 +26,46 @@ class TraversalBuilder(
     var frontier: Set<Uuid> = startFrontier
         private set
 
+    private val allVisitedIds: MutableSet<Uuid> = startFrontier.toMutableSet()
+    private val allTraversedEdges: MutableList<EdgeLike> = mutableListOf()
+
     override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
-        frontier = coroutineScope {
+        val hopEdges = coroutineScope {
             frontier.map { nodeId ->
                 async {
                     val edges = when (direction) {
                         HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
                         HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
                     }
-                    edges
-                        .filter { edgePredicate == null || edgePredicate(it) }
-                        .map { if (direction == HopDirection.OUTGOING) it.toId else it.fromId }
+                    edges.filter { edgePredicate == null || edgePredicate(it) }
                 }
-            }.awaitAll().flatten().toSet()
+            }.awaitAll().flatten()
         }
+        allTraversedEdges += hopEdges
+        frontier = hopEdges.map { if (direction == HopDirection.OUTGOING) it.toId else it.fromId }.toSet()
+        allVisitedIds += frontier
     }
 
     override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)?) {
-        frontier = coroutineScope {
+        val hopEdges = coroutineScope {
             frontier.map { nodeId ->
                 async {
                     val edges = when (direction) {
                         HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
                         HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
                     }
-                    edges.mapNotNull { edge ->
+                    edges.filter { edge ->
                         val endId = if (direction == HopDirection.OUTGOING) edge.toId else edge.fromId
-                        val node = engine.node(endId).getOrNull() ?: return@mapNotNull null
-                        if (node::class.findAnnotation<SerialName>()?.value != nodeType) return@mapNotNull null
-                        if (nodePredicate != null && !nodePredicate(node)) return@mapNotNull null
-                        endId
+                        val node = engine.node(endId).getOrNull() ?: return@filter false
+                        if (node::class.findAnnotation<SerialName>()?.value != nodeType) return@filter false
+                        nodePredicate == null || nodePredicate(node)
                     }
                 }
-            }.awaitAll().flatten().toSet()
+            }.awaitAll().flatten()
         }
+        allTraversedEdges += hopEdges
+        frontier = hopEdges.map { if (direction == HopDirection.OUTGOING) it.toId else it.fromId }.toSet()
+        allVisitedIds += frontier
     }
 
     override suspend fun collectNodes(nodeType: String): Flow<NodeLike> {
@@ -81,6 +88,16 @@ class TraversalBuilder(
             if (!filter(node)) continue
             emit(node)
         }
+    }
+
+    override suspend fun collectSubgraph(nodeType: String?): Subgraph {
+        val nodes = coroutineScope {
+            allVisitedIds.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
+        }.filterNotNull().let { all ->
+            if (nodeType == null) all
+            else all.filter { it::class.findAnnotation<SerialName>()?.value == nodeType }
+        }
+        return Subgraph(nodes, allTraversedEdges.toList())
     }
 
     override suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean {
