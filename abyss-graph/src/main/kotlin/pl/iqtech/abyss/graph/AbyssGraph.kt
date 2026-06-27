@@ -106,6 +106,8 @@ class AbyssGraph(
         compareValuesBy(a.key, b.key, { it.fromId.toString() }, { it.toId.toString() }, { it.type })
     }
 
+    // EdgeKey is PartitionAware on fromId, so all outgoing edges for a node land on the same
+    // partition — partitionPredicate routes the query there without a cluster-wide scatter.
     private fun outEdgeFlow(nodeId: UUID, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
         val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike>(nodeId, predicate)
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
@@ -144,6 +146,8 @@ class AbyssGraph(
             }
         }
 
+        // Cache failure after a successful store commit is logged but not propagated: the store is
+        // the source of truth and the cache self-heals on the next miss via MapLoader.
         Either.catch { withContext(Dispatchers.IO) { ops.forEach { applyToCache(it) } } }
             .fold(ifLeft = { log.warn("Cache update failed after store commit; cache may be stale", it) }, ifRight = {})
 
@@ -152,6 +156,8 @@ class AbyssGraph(
     }
 
     private fun cascadeEdgeRemovals(nodeId: UUID): List<Op.RemoveEdge> {
+        // out: partition-local query (fromId co-located); inc: full scan — incoming edges are keyed
+        // by their own fromId and are scattered across partitions (see TODO: inEdges partition fix).
         val out = edgesMap.entrySet(Predicates.partitionPredicate(nodeId, eq("__key.fromId", nodeId.toString())))
         val inc = edgesMap.entrySet(eq("__key.toId", nodeId.toString()))
         return (out + inc).distinctBy { it.key }.map { Op.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
