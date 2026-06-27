@@ -1,6 +1,6 @@
 package pl.iqtech.abyss.graph
 
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable

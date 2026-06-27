@@ -11,7 +11,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlinx.datetime.toJavaInstant
+import kotlin.time.toJavaInstant
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.Json

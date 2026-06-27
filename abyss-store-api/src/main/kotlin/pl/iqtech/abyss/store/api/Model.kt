@@ -1,6 +1,6 @@
 package pl.iqtech.abyss.store.api
 
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.serialization.Polymorphic
 import kotlin.uuid.Uuid
 

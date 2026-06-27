@@ -27,12 +27,11 @@ subprojects {
 
     dependencies {
         "implementation"(rootProject.libs.kotlinx.coroutines)
-        "implementation"(rootProject.libs.kotlinx.datetime)
     }
 
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-        kotlinOptions {
-            freeCompilerArgs = freeCompilerArgs + "-opt-in=kotlin.uuid.ExperimentalUuidApi"
+        compilerOptions {
+            optIn.addAll("kotlin.uuid.ExperimentalUuidApi", "kotlin.time.ExperimentalTime")
         }
     }
 

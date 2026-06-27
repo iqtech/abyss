@@ -3,7 +3,7 @@ package pl.iqtech.abyss.graph.serialization
 import com.hazelcast.nio.ObjectDataInput
 import com.hazelcast.nio.ObjectDataOutput
 import com.hazelcast.nio.serialization.StreamSerializer
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
