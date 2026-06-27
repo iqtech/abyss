@@ -22,7 +22,10 @@ interface AbyssEngineLike {
 
     suspend fun <T> from(nodeId: Uuid, block: suspend TraversalBuilderLike.() -> T): Either<AbyssError, T>
 
-    suspend fun transaction(block: suspend AbyssTransactionLike.() -> Unit): Either<AbyssError, Unit>
+    suspend fun transaction(
+        checkIntegrity: Boolean = true,
+        block: suspend AbyssTransactionLike.() -> Unit
+    ): Either<AbyssError, Unit>
 }
 
 interface AbyssTransactionLike {

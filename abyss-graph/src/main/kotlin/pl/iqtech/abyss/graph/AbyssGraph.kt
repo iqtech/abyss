@@ -160,7 +160,7 @@ class AbyssGraph(
         Either.catch { TraversalBuilder(this, setOf(nodeId)).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun transaction(block: suspend AbyssTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+    override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val buffer = BufferedTransaction()
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
 
@@ -169,6 +169,22 @@ class AbyssGraph(
                 if (op is Op.RemoveNode) listOf(op) + cascadeEdgeRemovals(op.id)
                 else listOf(op)
             }
+        }
+
+        if (checkIntegrity) {
+            val addedInTx = ops.filterIsInstance<Op.AddNode>().mapTo(mutableSetOf()) { it.node.id }
+            val error = withContext(Dispatchers.IO) {
+                ops.filterIsInstance<Op.AddEdge>().firstNotNullOfOrNull { op ->
+                    when {
+                        op.edge.fromId !in addedInTx && nodesMap[op.edge.fromId.toJavaUuid()] == null ->
+                            AbyssError.IntegrityError("Node ${op.edge.fromId} (fromId) not found")
+                        op.edge.toId !in addedInTx && nodesMap[op.edge.toId.toJavaUuid()] == null ->
+                            AbyssError.IntegrityError("Node ${op.edge.toId} (toId) not found")
+                        else -> null
+                    }
+                }
+            }
+            if (error != null) return error.left()
         }
 
         if (store != null) {

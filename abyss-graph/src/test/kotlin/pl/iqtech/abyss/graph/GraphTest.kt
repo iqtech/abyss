@@ -199,7 +199,7 @@ class GraphTest {
         runBlocking {
             val to = Uuid.random()
             val edges = (1..3).map { TestEdge(fromId = Uuid.random(), toId = to, label = "e$it") }
-            edges.forEach { graphTest.transaction { addEdge(it) } }
+            edges.forEach { graphTest.transaction(checkIntegrity = false) { addEdge(it) } }
 
             val result = graphTest.inEdges(to).toList()
             assertEquals(3, result.size)
@@ -210,7 +210,7 @@ class GraphTest {
         runBlocking {
             val to = Uuid.random()
             val edges = (1..2).map { TestEdge(fromId = Uuid.random(), toId = to, label = "e$it") }
-            edges.forEach { graphTest.transaction { addEdge(it) } }
+            edges.forEach { graphTest.transaction(checkIntegrity = false) { addEdge(it) } }
 
             val result = graphTest.inEdges<TestEdge>(to).toList()
             assertEquals(2, result.size)
@@ -231,8 +231,36 @@ class GraphTest {
     @Test fun `transaction addEdge makes edge retrievable`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tx-edge")
-            graphTest.transaction { addEdge(edge) }
+            graphTest.transaction(checkIntegrity = false) { addEdge(edge) }
             assertIs<Either.Right<EdgeLike>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+        }
+    }
+
+    @Test fun `transaction addEdge returns IntegrityError when fromId node absent`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "dangling")
+            val result = graphTest.transaction { addEdge(edge) }
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.IntegrityError>(result.value)
+        }
+    }
+
+    @Test fun `transaction addEdge returns IntegrityError when toId node absent`() {
+        runBlocking {
+            val from = TestNode(id = Uuid.random(), name = "from")
+            graphTest.transaction(checkIntegrity = false) { addNode(from) }
+            val edge = TestEdge(fromId = from.id, toId = Uuid.random(), label = "dangling")
+            val result = graphTest.transaction { addEdge(edge) }
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.IntegrityError>(result.value)
+        }
+    }
+
+    @Test fun `transaction addEdge with checkIntegrity=false skips node existence check`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "bulk")
+            val result = graphTest.transaction(checkIntegrity = false) { addEdge(edge) }
+            assertIs<Either.Right<Unit>>(result)
         }
     }
 
@@ -258,7 +286,7 @@ class GraphTest {
     @Test fun `transaction removeEdge removes from cache`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "bye")
-            graphTest.transaction { addEdge(edge) }
+            graphTest.transaction(checkIntegrity = false) { addEdge(edge) }
             graphTest.transaction { removeEdge(edge.fromId, edge.toId, "test_edge") }
             assertIs<Either.Left<AbyssError>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
         }
@@ -267,7 +295,7 @@ class GraphTest {
     @Test fun `transaction removeEdge with edge instance removes edge`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "bye")
-            graphTest.transaction { addEdge(edge) }
+            graphTest.transaction(checkIntegrity = false) { addEdge(edge) }
             graphTest.transaction { removeEdge(edge) }
             assertIs<Either.Left<AbyssError>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
         }

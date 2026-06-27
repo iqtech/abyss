@@ -1,31 +1,45 @@
 # TODO
 
-## High
+## 1. High
 
-- **Transaction not atomic across YSQL and YCQL**
-  If YSQL commit succeeds and YCQL fails, the graph is silently inconsistent. Currently logs a
-  warning and continues.
+- **1.1 Ephemeral and persistent elements cannot share a transaction**
+  Elements with a TTL go to YCQL; elements without go to YSQL. A single `transaction { }` block
+  that mixes both is not atomic — if YSQL commits and YCQL fails (or vice versa), the graph is
+  silently inconsistent. Currently logs a warning and continues.
+  Ephemeral elements are created via a separate `ephemeral { }` builder (analogous to
+  `transaction { }`), which accepts a TTL and routes exclusively to YCQL. The two builders are
+  intentionally separate and cannot be combined into one atomic operation.
 
-## Medium
+- **1.2 Traversal subgraph extraction**
+  After a traversal, callers need the full subgraph: all visited nodes as a list and all traversed
+  edges as a list. Currently only the frontier nodes are accessible via `nodes<T>()`.
 
-- **Single Hazelcast node**
+- **1.3 Edge integrity check on creation**
+  When an edge is added, verify that both `fromId` and `toId` nodes exist in the graph. Return a
+  new `AbyssError.IntegrityError` variant when either node is missing, rather than silently
+  creating a dangling edge. Integrity checks should be disable-able (e.g. a flag on the builder)
+  for bulk operations such as graph import, where node existence is guaranteed by the caller.
+
+## 2. Medium
+
+- **2.1 Single Hazelcast node**
   `PartitionAware` and partition-predicate routing only matter in a cluster. On one node it
   degrades to a smaller in-memory scan. No cluster topology awareness, near-cache, or partition
   migration hooks.
 
-- **No schema enforcement**
+- **2.2 No schema enforcement**
   `@SerialName` type strings are unchecked. Nothing prevents a `Knows` edge connecting two
   non-`Person` nodes. Invalid graphs are silently possible.
 
-- **Graph export / import (property graph JSON)**
+- **2.3 Graph export / import (property graph JSON)**
   Export the full graph (or a subgraph) to the nodes + relationships flat JSON format compatible
   with Neo4j, Gephi, and similar tools. Import in the same format via `transaction { }`.
   Node labels and edge types map to `@SerialName` values.
 
-## Low
+## 3. Low
 
-- **YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
+- **3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
   HikariCP pools connections but will queue under burst cold-cache misses.
 
-- **Dual parallel YSQL + YCQL query on every cache miss**
+- **3.2 Dual parallel YSQL + YCQL query on every cache miss**
   Half the queries always return nothing. Wasteful under high miss rate.
