@@ -26,13 +26,28 @@ interface AbyssEngineLike {
         checkIntegrity: Boolean = true,
         block: suspend AbyssTransactionLike.() -> Unit
     ): Either<AbyssError, Unit>
+
+    suspend fun ephemeral(
+        ttl: Duration,
+        checkIntegrity: Boolean = true,
+        block: suspend AbyssEphemeralTransactionLike.() -> Unit
+    ): Either<AbyssError, Unit>
 }
 
 interface AbyssTransactionLike {
-    fun addNode(node: NodeLike, ttl: Duration? = null)
+    fun addNode(node: NodeLike)
     fun removeNode(id: Uuid)
 
-    fun addEdge(edge: EdgeLike, ttl: Duration? = null)
+    fun addEdge(edge: EdgeLike)
     fun removeEdge(fromId: Uuid, toId: Uuid, type: String)
-    fun modifyEdge(old: EdgeLike, new: EdgeLike, ttl: Duration? = null)
+    fun modifyEdge(old: EdgeLike, new: EdgeLike)
+}
+
+interface AbyssEphemeralTransactionLike {
+    fun addNode(node: NodeLike)
+    fun removeNode(id: Uuid)
+
+    fun addEdge(edge: EdgeLike)
+    fun removeEdge(fromId: Uuid, toId: Uuid, type: String)
+    fun modifyEdge(old: EdgeLike, new: EdgeLike)
 }

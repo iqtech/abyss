@@ -111,8 +111,8 @@ graph.transaction {
 }
 
 // ephemeral write with TTL — stored in YCQL, expires after 60 s
-graph.transaction {
-    addNode(Person(name = "TemporaryBob"), ttl = 60.seconds)
+graph.ephemeral(ttl = 60.seconds) {
+    addNode(Person(name = "TemporaryBob"))
 }
 ```
 
@@ -149,27 +149,41 @@ Hazelcast map names must also be distinct (the `nodesMapName` / `edgesMapName` a
 
 ### Add / remove nodes and edges
 
-All mutations go through `transaction { }`. Operations are buffered and applied atomically to the cache (and to the store, if configured).
+Mutations go through `transaction { }` (persistent, YSQL) or `ephemeral { }` (TTL-bound, YCQL).
+The two builders are intentionally separate — they cannot be combined into one atomic operation.
 
-#### Nodes
+#### Persistent mutations
 
 ```kotlin
 graph.transaction {
     addNode(Person(name = "Alice"))          // insert or overwrite
-    addNode(Person(name = "TempBob"), ttl = 60.seconds)  // expires after TTL
     removeNode(alice.id)                    // delete node — cascades to edges (see below)
+    addEdge(Knows(fromId = alice.id, toId = bob.id))
+    removeEdge<Knows>(fromId = alice.id, toId = bob.id)  // delete by type (compile-time)
+    removeEdge(alice.id, bob.id, "knows")                // delete by type string
+    removeEdge(edge)                                     // delete by edge instance
 }
 ```
 
-#### Edges
+#### Ephemeral mutations (TTL-bound)
 
 ```kotlin
-graph.transaction {
-    addEdge(Knows(fromId = alice.id, toId = bob.id))           // insert or overwrite
-    addEdge(Knows(fromId = alice.id, toId = bob.id), ttl = 30.seconds)  // with TTL
-    removeEdge<Knows>(fromId = alice.id, toId = bob.id)        // delete by type (compile-time)
-    removeEdge(alice.id, bob.id, "knows")                      // delete by type string
-    removeEdge(edge)                                           // delete by edge instance
+graph.ephemeral(ttl = 60.seconds) {
+    addNode(Person(name = "TempBob"))       // stored in YCQL, expires after 60 s
+    addEdge(Knows(fromId = alice.id, toId = bob.id))
+}
+```
+
+All operations inside `ephemeral { }` share the same TTL. Nodes and edges are stored in
+YCQL and disappear automatically when the TTL elapses. The cache entry also expires at the
+same time.
+
+To disable integrity checks for bulk imports:
+
+```kotlin
+graph.ephemeral(ttl = 300.seconds, checkIntegrity = false) {
+    nodes.forEach { addNode(it) }
+    edges.forEach { addEdge(it) }
 }
 ```
 

@@ -28,6 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
@@ -367,6 +368,57 @@ class GraphTest {
             assertIs<Either.Left<AbyssError>>(graphTest.node(node.id))
             assertIs<Either.Left<AbyssError>>(graphTest.edge(node.id,  other.id, "test_edge"))
             assertIs<Either.Left<AbyssError>>(graphTest.edge(other.id, node.id,  "test_edge"))
+        }
+    }
+
+    // ── ephemeral ─────────────────────────────────────────────────────────────
+
+    @Test fun `ephemeral addNode makes node retrievable`() {
+        runBlocking {
+            val node = TestNode(id = Uuid.random(), name = "eph-node")
+            graphTest.ephemeral(60.seconds) { addNode(node) }
+            assertIs<Either.Right<NodeLike>>(graphTest.node(node.id))
+        }
+    }
+
+    @Test fun `ephemeral addEdge makes edge retrievable`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-edge")
+            graphTest.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
+            assertIs<Either.Right<EdgeLike>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+        }
+    }
+
+    @Test fun `ephemeral addEdge returns IntegrityError when fromId node absent`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-dangling")
+            val result = graphTest.ephemeral(60.seconds) { addEdge(edge) }
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.IntegrityError>(result.value)
+        }
+    }
+
+    @Test fun `ephemeral addEdge with checkIntegrity=false skips node existence check`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-bulk")
+            val result = graphTest.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
+            assertIs<Either.Right<Unit>>(result)
+        }
+    }
+
+    @Test fun `ephemeral with store commits to store with ttl`() {
+        runBlocking {
+            val fake = FakeStore()
+            val storeGraph = AbyssGraph(graphTestHz, "eph-s-nodes", "eph-s-edges", fake)
+            val node = TestNode(id = Uuid.random(), name = "eph-stored")
+
+            storeGraph.ephemeral(60.seconds) { addNode(node) }
+
+            assertTrue(fake.saveNodeCalls.contains(node.id))
+            assertIs<Either.Right<NodeLike>>(storeGraph.node(node.id))
+
+            graphTestHz.getMap<Any, Any>("eph-s-nodes").clear()
+            graphTestHz.getMap<Any, Any>("eph-s-edges").clear()
         }
     }
 

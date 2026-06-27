@@ -20,6 +20,7 @@ import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
 import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.dsl.AbyssEngineLike
+import pl.iqtech.abyss.dsl.AbyssEphemeralTransactionLike
 import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
@@ -160,6 +161,48 @@ class AbyssGraph(
         Either.catch { TraversalBuilder(this, setOf(nodeId)).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
+    override suspend fun ephemeral(ttl: Duration, checkIntegrity: Boolean, block: suspend AbyssEphemeralTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+        val buffer = BufferedEphemeralTransaction(ttl)
+        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+
+        val ops = withContext(Dispatchers.IO) {
+            buffer.ops.flatMap { op ->
+                if (op is Op.RemoveNode) listOf(op) + cascadeEdgeRemovals(op.id)
+                else listOf(op)
+            }
+        }
+
+        if (checkIntegrity) {
+            val addedInTx = ops.filterIsInstance<Op.AddNode>().mapTo(mutableSetOf()) { it.node.id }
+            val error = withContext(Dispatchers.IO) {
+                ops.filterIsInstance<Op.AddEdge>().firstNotNullOfOrNull { op ->
+                    when {
+                        op.edge.fromId !in addedInTx && nodesMap[op.edge.fromId.toJavaUuid()] == null ->
+                            AbyssError.IntegrityError("Node ${op.edge.fromId} (fromId) not found")
+                        op.edge.toId !in addedInTx && nodesMap[op.edge.toId.toJavaUuid()] == null ->
+                            AbyssError.IntegrityError("Node ${op.edge.toId} (toId) not found")
+                        else -> null
+                    }
+                }
+            }
+            if (error != null) return error.left()
+        }
+
+        if (store != null) {
+            val storeResult = store.transaction { ops.forEach { applyToStore(it) } }
+            if (storeResult.isLeft()) {
+                log.error("Ephemeral store commit failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                return storeResult
+            }
+        }
+
+        Either.catch { withContext(Dispatchers.IO) { ops.forEach { applyToCache(it) } } }
+            .fold(ifLeft = { log.warn("Cache update failed after ephemeral store commit; cache may be stale", it) }, ifRight = {})
+
+        log.debug("Ephemeral committed [{} op(s), ttl={}, nodes={}, edges={}]", ops.size, ttl, nodesMapName, edgesMapName)
+        return Unit.right()
+    }
+
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val buffer = BufferedTransaction()
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
@@ -266,11 +309,23 @@ private sealed interface Op {
 
 private class BufferedTransaction : AbyssTransactionLike {
     val ops = mutableListOf<Op>()
-    override fun addNode(node: NodeLike, ttl: Duration?)           { ops += Op.AddNode(node, ttl) }
+    override fun addNode(node: NodeLike)                            { ops += Op.AddNode(node, null) }
     override fun removeNode(id: Uuid)                               { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike, ttl: Duration?)            { ops += Op.AddEdge(edge, ttl) }
+    override fun addEdge(edge: EdgeLike)                            { ops += Op.AddEdge(edge, null) }
     override fun removeEdge(fromId: Uuid, toId: Uuid, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
-    override fun modifyEdge(old: EdgeLike, new: EdgeLike, ttl: Duration?) {
+    override fun modifyEdge(old: EdgeLike, new: EdgeLike) {
+        ops += Op.RemoveEdge(old.fromId, old.toId, old::class.findAnnotation<SerialName>()!!.value)
+        ops += Op.AddEdge(new, null)
+    }
+}
+
+private class BufferedEphemeralTransaction(private val ttl: Duration) : AbyssEphemeralTransactionLike {
+    val ops = mutableListOf<Op>()
+    override fun addNode(node: NodeLike)                            { ops += Op.AddNode(node, ttl) }
+    override fun removeNode(id: Uuid)                               { ops += Op.RemoveNode(id) }
+    override fun addEdge(edge: EdgeLike)                            { ops += Op.AddEdge(edge, ttl) }
+    override fun removeEdge(fromId: Uuid, toId: Uuid, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
+    override fun modifyEdge(old: EdgeLike, new: EdgeLike) {
         ops += Op.RemoveEdge(old.fromId, old.toId, old::class.findAnnotation<SerialName>()!!.value)
         ops += Op.AddEdge(new, ttl)
     }

@@ -40,6 +40,14 @@ inline fun <reified E : EdgeLike> AbyssTransactionLike.removeEdge(fromId: Uuid, 
 fun AbyssTransactionLike.removeEdge(edge: EdgeLike) =
     removeEdge(edge.fromId, edge.toId, edge::class.findAnnotation<SerialName>()!!.value)
 
+// AbyssEphemeralTransactionLike
+
+inline fun <reified E : EdgeLike> AbyssEphemeralTransactionLike.removeEdge(fromId: Uuid, toId: Uuid) =
+    removeEdge(fromId, toId, E::class.findAnnotation<SerialName>()!!.value)
+
+fun AbyssEphemeralTransactionLike.removeEdge(edge: EdgeLike) =
+    removeEdge(edge.fromId, edge.toId, edge::class.findAnnotation<SerialName>()!!.value)
+
 // TraversalBuilderLike
 
 suspend inline fun <reified E : EdgeLike> TraversalBuilderLike.outgoing() =
