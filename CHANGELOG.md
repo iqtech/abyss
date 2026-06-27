@@ -1,3 +1,7 @@
+## [0.7.0] - 2026-06-27
+
+- Bump Kotlin to 2.3.21, Hazelcast to 5.6.0, kotlinx-serialization to 1.11.0; replace `kotlinx-datetime` with `kotlin.time.Instant` / `kotlin.time.Clock`
+
 ## [0.6.0] - 2026-06-27
 
 - Add `modifyEdge(old, new)` for atomic edge retargeting with integrity check support
