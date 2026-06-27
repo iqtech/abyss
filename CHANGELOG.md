@@ -1,3 +1,7 @@
+## [0.9.0] - 2026-06-27
+
+- Add `ephemeral { }` builder for TTL-bound YCQL writes; `transaction { }` is now exclusively persistent (YSQL); TTL removed from per-operation signatures
+
 ## [0.8.0] - 2026-06-27
 
 - Add `subgraph()` / `subgraph<N>()` terminal traversal call returning `Subgraph(nodes, edges)` — all visited nodes and traversed edges across all hops
