@@ -19,21 +19,21 @@ User-agnostic in-memory graph library backed by Hazelcast with pluggable durable
 @Serializable
 @SerialName("person")
 data class Person(
-    override val id: UUID = UUID.randomUUID(),
+    override val id: Uuid = Uuid.random(),
     val name: String,
     override val tags: List<String> = emptyList(),
-    override val createdAt: Instant = Instant.now(),
-    override val updatedAt: Instant = Instant.now(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
 ) : NodeLike
 
 @Serializable
 @SerialName("knows")
 data class Knows(
-    override val fromId: UUID,
-    override val toId: UUID,
+    override val fromId: Uuid,
+    override val toId: Uuid,
     override val tags: List<String> = emptyList(),
-    override val createdAt: Instant = Instant.now(),
-    override val updatedAt: Instant = Instant.now(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
 ) : EdgeLike
 ```
 

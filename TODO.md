@@ -17,6 +17,11 @@
   `@SerialName` type strings are unchecked. Nothing prevents a `Knows` edge connecting two
   non-`Person` nodes. Invalid graphs are silently possible.
 
+- **Graph export / import (property graph JSON)**
+  Export the full graph (or a subgraph) to the nodes + relationships flat JSON format compatible
+  with Neo4j, Gephi, and similar tools. Import in the same format via `transaction { }`.
+  Node labels and edge types map to `@SerialName` values.
+
 ## Low
 
 - **YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
