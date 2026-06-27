@@ -1,3 +1,7 @@
+## [0.8.0] - 2026-06-27
+
+- Add `subgraph()` / `subgraph<N>()` terminal traversal call returning `Subgraph(nodes, edges)` — all visited nodes and traversed edges across all hops
+
 ## [0.7.0] - 2026-06-27
 
 - Bump Kotlin to 2.3.21, Hazelcast to 5.6.0, kotlinx-serialization to 1.11.0; replace `kotlinx-datetime` with `kotlin.time.Instant` / `kotlin.time.Clock`
