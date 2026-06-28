@@ -93,12 +93,15 @@
   `setAsync`/`removeAsync`), freeing the IO thread entirely. Worth switching under high cache-miss
   rates where IO thread exhaustion becomes a bottleneck.
 
-- **2.8 Async predicate and bulk reads via Hazelcast async APIs**
+- **🔴 ~~2.8 Async predicate and bulk reads via Hazelcast async APIs~~**
   `reverseEdgesMap.keySet(predicate)`, `edgesMap.getAll(keys)`, and `edgesMap.values(paging)` still
   use `withContext(Dispatchers.IO)`. Hazelcast 5.6 exposes `keySetAsync(Predicate)` and
   `getAllAsync(Set<K>)` as `CompletionStage`-based equivalents. The existing `asDeferred()` bridge
   would handle them. Worth switching under high-miss-rate or traversal-heavy workloads where IO
   thread pressure from bulk reads becomes measurable.
+  **Removed:** Hazelcast 5.6.0 `IMap` does not expose `keySetAsync(Predicate)` or `getAllAsync(Set<K>)` —
+  only single-key `getAsync(K)` is available. The premise cannot be implemented without a Hazelcast
+  API that doesn't exist yet.
 
 ## 3. Low
 
