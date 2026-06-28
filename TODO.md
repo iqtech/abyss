@@ -42,6 +42,14 @@
   with Neo4j, Gephi, and similar tools. Import in the same format via `transaction { }`.
   Node labels and edge types map to `@SerialName` values.
 
+- **2.4 Graph algorithms**
+  BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`
+  (Future development section). Hazelcast in-memory maps make these fast without DB round-trips.
+
+- **2.5 Schema export / import as JSON**
+  Export and import the registered `SerializersModule` (node and edge type definitions) as JSON,
+  so tooling and downstream clients can discover the graph schema without inspecting source code.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
@@ -49,3 +57,8 @@
 
 - **3.2 Dual parallel YSQL + YCQL query on every cache miss**
   Half the queries always return nothing. Wasteful under high miss rate.
+
+- **3.3 YSQL as ephemeral store in `abyss-store-yugabyte`**
+  Allow configuring YSQL (instead of YCQL) as the ephemeral backend. Benefit: YSQL supports
+  full transactions, so ephemeral edge and reverse-edge writes are atomic. Trade-off: TTL requires
+  an `expires_at` column and a background cleanup job rather than native YCQL TTL.

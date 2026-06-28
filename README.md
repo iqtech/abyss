@@ -11,6 +11,20 @@ User-agnostic in-memory graph library backed by Hazelcast with pluggable durable
 | `abyss-graph` | Hazelcast `IMap` engine — `AbyssGraph` |
 | `abyss-store-yugabyte` | YugabyteDB store — YSQL for durable, YCQL for ephemeral/TTL |
 
+## Pluggable storage
+
+`abyss-store-yugabyte` is the reference implementation; any `AbyssStoreLike` works. The store
+choice affects consistency guarantees on bidirectional edge access:
+
+- **Transactional store (e.g. PostgreSQL):** a single `edges` table with an index on `to_id`
+  covers both traversal directions in one atomic write. Forward and reverse access are always in sync.
+- **YCQL (`abyss-store-yugabyte` ephemeral layer):** YCQL has no multi-statement transaction support.
+  Efficient reverse lookups on ephemeral data require either a secondary index (with Cassandra caveats)
+  or a denormalized reverse table — and those two writes are best-effort. A failure between them leaves
+  the maps temporarily inconsistent until the next write or eviction.
+
+---
+
 ## Usage
 
 ### Define your types
