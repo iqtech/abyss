@@ -50,6 +50,13 @@
   Export and import the registered `SerializersModule` (node and edge type definitions) as JSON,
   so tooling and downstream clients can discover the graph schema without inspecting source code.
 
+- **2.6 Configurable sync vs async cache population after store commit**
+  Currently `applyToCache` runs synchronously after the store transaction commits (line 245 in
+  `AbyssGraph.kt`). For write-heavy workloads the caller blocks on Hazelcast puts that are
+  best-effort anyway. Add a config flag (e.g. `asyncCachePopulation: Boolean`) to fire cache
+  puts on a separate coroutine and return to the caller as soon as the store commits. Trade-off:
+  async mode widens the window where a read after write lands a cache miss.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

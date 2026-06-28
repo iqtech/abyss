@@ -285,6 +285,112 @@ After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or
 
 ---
 
+## Sizing — Sniper on Oracle Always Free (single Ampere A1)
+
+Hardware: 4 vCPU ARM, 24 GB RAM. Runs YugabyteDB + Ktor app with embedded Hazelcast in Docker Compose.
+
+### Data per user
+
+Sniper domain: rifles (~4), scopes (~4), calibers (~3), loads (~15), components (~16),
+sessions (~50/year), DOPE (~200), chrono (~200) = **~500 nodes + ~700 edges = ~1200 elements/user**
+
+### Memory layout (1000 users)
+
+Three Hazelcast maps:
+
+```
+nodes map        (IMap<UUID, NodeLike>):          1000 × 500 × 1.5 KB  =  750 MB
+edges map        (IMap<EdgeKey, EdgeLike>):        1000 × 700 × 1.5 KB  = 1050 MB
+reverse edge map (IMap<ReverseEdgeKey, Unit>):     1000 × 700 × 0.3 KB  =  210 MB  ← keys only
+────────────────────────────────────────────────────────────────────────────────
+Total graph data in heap                                                 ≈ 2.0 GB
+```
+
+The reverse edge map (`inEdges` partition index) holds only `ReverseEdgeKey` objects — no edge payload —
+so each entry is ~0.3 KB vs 1.5 KB for a full edge value.
+
+> **Working set vs total users:** the scaling ceilings below are worst-case — all users' data warm
+> simultaneously. In practice, LRU eviction (`max-idle-seconds: 86400`, `FREE_HEAP_PERCENTAGE` policy)
+> evicts cold users automatically. If 10 % of users are active at any time, only ~200 MB of the
+> 2.0 GB/1,000-user figure is resident — the real capacity is roughly 10× the table ceiling on
+> each machine.
+
+| Process | RAM |
+|---|---|
+| YugabyteDB single-node | 8 GB |
+| Ktor JVM — app + embedded Hazelcast (`-Xmx7g`) | 7 GB |
+| OS | 1.5 GB |
+| **Total** | **16.5 GB of 24 GB** |
+
+`-Xmx2g` is sufficient without the graph cache.
+With graph cache active: ~500 MB app + 2.0 GB data + GC headroom → **`-Xmx7g`**.
+
+### Scaling ceiling on this machine
+
+| Users | Heap needed | `-Xmx` | Total RAM | Status |
+|---|---|---|---|---|
+| 1,000 | ~2.7 GB | 7 GB | 16.5 GB | ✓ comfortable |
+| 4,500 | ~12 GB | 14 GB | 23.5 GB | ✓ tight |
+| 5,000 | ~13.5 GB | 15.5 GB | 25 GB | ✗ RAM exceeded |
+
+Real ceiling: **~4,700 users** before needing more RAM (was ~5,000 before the reverse edge map was added).
+CPU stays well under 50% past that point.
+
+---
+
+## Sizing — dedicated server (16 vCPU, 64 GB RAM)
+
+Same data model — only the RAM envelope changes.
+
+| Process | RAM |
+|---|---|
+| YugabyteDB single-node | 16 GB |
+| Ktor JVM — app + embedded Hazelcast | varies |
+| OS | 2 GB |
+| **JVM budget** | **46 GB** |
+
+### Scaling ceiling on this machine
+
+| Users | Heap needed | `-Xmx` | Total RAM | Status |
+|---|---|---|---|---|
+| 5,000 | ~11 GB | 22 GB | 40 GB | ✓ comfortable |
+| 10,000 | ~21 GB | 42 GB | 60 GB | ✓ tight |
+| 11,000 | ~23 GB | 46 GB | 64 GB | ✗ RAM exceeded |
+
+Real ceiling: **~10,500 users**. At that scale (~1,050 concurrent at 3 ms avg across 16 cores) CPU sits at ~20% peak — RAM is the constraint, not CPU.
+
+---
+
+## Sizing — 3-node cluster (3 × 16 vCPU, 64 GB RAM, `backup-count = 0`)
+
+`backup-count = 0` means no partition replicas — each node owns ~1/3 of the total Hazelcast data. A node
+failure evicts that third from the cache; `MapLoader` reloads from YugabyteDB on miss. This is a
+performance event, not data loss: YugabyteDB RF=3 means all durable data survives one node failure.
+
+YugabyteDB runs as a 3-node RF=3 cluster — each node hosts a tablet server (~12 GB, lower per-node than
+single-node because coordinator work is distributed).
+
+| Process | RAM / node |
+|---|---|
+| YugabyteDB tablet server | 12 GB |
+| Ktor JVM — app + embedded Hazelcast | varies |
+| OS | 2 GB |
+| **JVM budget / node** | **50 GB** |
+
+### Scaling ceiling on this cluster
+
+| Users | Total graph data | Per-node data | Per-node `-Xmx` | RAM / node | Status |
+|---|---|---|---|---|---|
+| 10,000 | ~20 GB | ~6.7 GB | 16 GB | 30 GB | ✓ comfortable |
+| 20,000 | ~40 GB | ~13.3 GB | 28 GB | 42 GB | ✓ comfortable |
+| 35,000 | ~70 GB | ~23.3 GB | 48 GB | 62 GB | ✓ tight |
+| 37,000 | ~74 GB | ~24.7 GB | 51 GB | 65 GB | ✗ RAM exceeded |
+
+Real ceiling: **~36,000 users** (3 × 25 GB usable live data at 2× GC ratio = 75 GB total / 2 GB per 1,000 users).
+At that scale (~3,600 concurrent across 48 cores) CPU peaks at ~22% — RAM is still the constraint.
+
+---
+
 ## Building
 
 ```
