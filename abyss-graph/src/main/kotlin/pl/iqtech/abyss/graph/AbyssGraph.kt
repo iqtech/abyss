@@ -5,12 +5,11 @@ import arrow.core.flatMap
 import arrow.core.left
 import arrow.core.right
 import com.hazelcast.config.Config
-import com.hazelcast.config.MapStoreConfig
-import com.hazelcast.config.SerializerConfig
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.hazelcast.query.Predicate
 import com.hazelcast.query.Predicates
+import com.hazelcast.config.SerializerConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -31,8 +30,6 @@ import pl.iqtech.abyss.store.api.EdgeConstraint
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
-import pl.iqtech.abyss.graph.loader.EdgeMapLoader
-import pl.iqtech.abyss.graph.loader.NodeMapLoader
 import pl.iqtech.abyss.graph.serialization.EdgeKeySerializer
 import pl.iqtech.abyss.graph.serialization.EdgeLikeHzSerializer
 import pl.iqtech.abyss.graph.serialization.NodeLikeHzSerializer
@@ -65,18 +62,6 @@ class AbyssGraph(
     private val edgesMap: IMap<EdgeKey, EdgeLike>
     private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit>
     init {
-        if (store != null) {
-            hazelcast.config.getMapConfig(nodesMapName).mapStoreConfig.apply {
-                isEnabled = true
-                setImplementation(NodeMapLoader(store))
-                initialLoadMode = MapStoreConfig.InitialLoadMode.LAZY
-            }
-            hazelcast.config.getMapConfig(edgesMapName).mapStoreConfig.apply {
-                isEnabled = true
-                setImplementation(EdgeMapLoader(store))
-                initialLoadMode = MapStoreConfig.InitialLoadMode.LAZY
-            }
-        }
         nodesMap = hazelcast.getMap(nodesMapName)
         edgesMap = hazelcast.getMap(edgesMapName)
         reverseEdgesMap = hazelcast.getMap("${edgesMapName}-reverse")
@@ -89,21 +74,21 @@ class AbyssGraph(
     }
 
     override suspend fun node(id: Uuid): Either<AbyssError, NodeLike> =
-        Either.catch { nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() }
+        Either.catch { nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() ?: loadAndCacheNode(id) }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.NodeNotFound(id).left() }
 
     override suspend fun edge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike> =
-        Either.catch { edgesMap.getAsync(EdgeKey(fromId, toId, type)).asDeferred().await() }
+        Either.catch { edgesMap.getAsync(EdgeKey(fromId, toId, type)).asDeferred().await() ?: loadAndCacheEdge(fromId, toId, type) }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.EdgeNotFound(fromId, toId, type).left() }
 
     override suspend fun nodeExists(id: Uuid): Either<AbyssError, Boolean> =
-        Either.catch { nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() != null }
+        Either.catch { nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() != null || loadAndCacheNode(id) != null }
             .mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun edgeExists(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Boolean> =
-        Either.catch { edgesMap.getAsync(EdgeKey(fromId, toId, type)).asDeferred().await() != null }
+        Either.catch { edgesMap.getAsync(EdgeKey(fromId, toId, type)).asDeferred().await() != null || loadAndCacheEdge(fromId, toId, type) != null }
             .mapLeft { AbyssError.Unexpected(it) }
 
     override fun outEdges(nodeId: Uuid, pageSize: Int): Flow<EdgeLike> =
@@ -128,8 +113,13 @@ class AbyssGraph(
     // partition — partitionPredicate routes the query there without a cluster-wide scatter.
     private fun outEdgeFlow(nodeId: Uuid, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
-            store?.loadEdges(nodeId)?.getOrNull()?.forEach { edge ->
-                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, edgeType(edge)), edge)
+            store?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
+                val key = EdgeKey(edge.fromId, edge.toId, edgeType(edge))
+                when {
+                    remaining == null -> edgesMap.putIfAbsent(key, edge)
+                    remaining.inWholeSeconds > 0 -> edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                    // remaining <= 0: expired — skip
+                }
             }
         }
         val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike>(nodeId.toJavaUuid(), predicate)
@@ -140,10 +130,21 @@ class AbyssGraph(
     // the same partition, making this a single-partition key-set query followed by point-lookups.
     private fun inEdgeFlow(nodeId: Uuid, typeFilter: String? = null): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
-            store?.loadInEdges(nodeId)?.getOrNull()?.forEach { edge ->
+            store?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
                 val type = edgeType(edge)
-                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, type), edge)
-                reverseEdgesMap.putIfAbsent(ReverseEdgeKey(edge.toId, edge.fromId, type), Unit)
+                val key = EdgeKey(edge.fromId, edge.toId, type)
+                val revKey = ReverseEdgeKey(edge.toId, edge.fromId, type)
+                when {
+                    remaining == null -> {
+                        edgesMap.putIfAbsent(key, edge)
+                        reverseEdgesMap.putIfAbsent(revKey, Unit)
+                    }
+                    remaining.inWholeSeconds > 0 -> {
+                        edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                        reverseEdgesMap.putIfAbsent(revKey, Unit, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                    }
+                    // remaining <= 0: expired — skip
+                }
             }
         }
         val revPredicate = Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
@@ -248,7 +249,7 @@ class AbyssGraph(
         }
 
         // Cache failure after a successful store commit is logged but not propagated: the store is
-        // the source of truth and the cache self-heals on the next miss via MapLoader.
+        // the source of truth and the cache self-heals on the next miss.
         populateCache(ops, "Cache update failed after store commit; cache may be stale")
 
         log.debug("Transaction committed [{} op(s), nodes={}, edges={}]", ops.size, nodesMapName, edgesMapName)
@@ -308,6 +309,30 @@ class AbyssGraph(
             edgesMap.removeAsync(EdgeKey(op.fromId, op.toId, op.type)),
             reverseEdgesMap.removeAsync(ReverseEdgeKey(op.toId, op.fromId, op.type))
         )
+    }
+
+    private suspend fun loadAndCacheNode(id: Uuid): NodeLike? {
+        val (node, remaining) = store?.loadNode(id)?.getOrNull() ?: return null
+        node ?: return null
+        if (remaining != null && remaining.inWholeSeconds <= 0) return null
+        val jId = id.toJavaUuid()
+        withContext(Dispatchers.IO) {
+            if (remaining == null) nodesMap.set(jId, node)
+            else nodesMap.set(jId, node, remaining.inWholeSeconds, TimeUnit.SECONDS)
+        }
+        return node
+    }
+
+    private suspend fun loadAndCacheEdge(fromId: Uuid, toId: Uuid, type: String): EdgeLike? {
+        val (edge, remaining) = store?.loadEdge(fromId, toId, type)?.getOrNull() ?: return null
+        edge ?: return null
+        if (remaining != null && remaining.inWholeSeconds <= 0) return null
+        val key = EdgeKey(fromId, toId, type)
+        withContext(Dispatchers.IO) {
+            if (remaining == null) edgesMap.set(key, edge)
+            else edgesMap.set(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
+        }
+        return edge
     }
 
     private fun edgeType(edge: EdgeLike): String =

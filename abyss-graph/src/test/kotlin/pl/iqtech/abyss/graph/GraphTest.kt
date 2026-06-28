@@ -557,8 +557,8 @@ class GraphTest {
 private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
 
-    override suspend fun loadNode(id: Uuid): Either<AbyssError, NodeLike?> = Either.Right(null)
-    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike?> = Either.Right(null)
+    override suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<EdgeLike?, Duration?>> = Either.Right(null to null)
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         if (failTx) return AbyssError.Unexpected(RuntimeException("store down")).left()
@@ -577,10 +577,10 @@ private class WarmingFakeStore(
     private val outEdges: List<EdgeLike> = emptyList(),
     private val inEdges: List<EdgeLike> = emptyList(),
 ) : AbyssStoreLike {
-    override suspend fun loadNode(id: Uuid): Either<AbyssError, NodeLike?> = Either.Right(null)
-    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike?> = Either.Right(null)
-    override suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<EdgeLike>> = Either.Right(outEdges.filter { it.fromId == fromId })
-    override suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<EdgeLike>> = Either.Right(inEdges.filter { it.toId == toId })
+    override suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<EdgeLike?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(outEdges.filter { it.fromId == fromId }.map { it to null })
+    override suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(inEdges.filter { it.toId == toId }.map { it to null })
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Unit.right()
 }
 

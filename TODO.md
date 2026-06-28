@@ -31,7 +31,7 @@
   write fails, start an asynchronous retry procedure: up to 5 attempts with exponentially growing
   intervals (via a multiplier). Arrow's `Schedule` primitive covers this pattern.
 
-- **1.6 Ephemeral node/edge TTL restoration on cache miss**
+- **✅ 1.6 Ephemeral node/edge TTL restoration on cache miss**
   When a cache miss causes a read from YCQL disk, the TTL must be restored correctly before
   populating the cache. This likely requires a technical column `ttl_expiration` (absolute
   timestamp) on the ephemeral node/edge tables, so the remaining TTL can be calculated at

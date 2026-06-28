@@ -5,10 +5,10 @@ import kotlin.uuid.Uuid
 import kotlin.time.Duration
 
 interface AbyssStoreLike {
-    suspend fun loadNode(id: Uuid): Either<AbyssError, NodeLike?>
-    suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike?>
-    suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<EdgeLike>> = Either.Right(emptyList())
-    suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<EdgeLike>> = Either.Right(emptyList())
+    suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike?, Duration?>>
+    suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<EdgeLike?, Duration?>>
+    suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(emptyList())
+    suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(emptyList())
     suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
 }
 

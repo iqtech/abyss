@@ -13,12 +13,13 @@ CREATE KEYSPACE IF NOT EXISTS abyss_test_graph
 -- and transactions=true blocks per-row USING TTL (issue #10992). Primary-key lookups suffice
 -- for loadNode(id) and loadEdge(fromId, toId, type).
 CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_nodes (
-    id          UUID      PRIMARY KEY,
-    type        TEXT,
-    data        TEXT,
-    tags        LIST<TEXT>,
-    created_at  TIMESTAMP,
-    updated_at  TIMESTAMP
+    id              UUID      PRIMARY KEY,
+    type            TEXT,
+    data            TEXT,
+    tags            LIST<TEXT>,
+    created_at      TIMESTAMP,
+    updated_at      TIMESTAMP,
+    ttl_expiration  TIMESTAMP
 );
 
 -- ── ephemeral_edges ──────────────────────────────────────────────────────────
@@ -26,13 +27,14 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_nodes (
 -- Clustering columns: (to_id, type) — match EdgeKey ordering.
 
 CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
-    from_id     UUID,
-    to_id       UUID,
-    type        TEXT,
-    data        TEXT,
-    tags        LIST<TEXT>,
-    created_at  TIMESTAMP,
-    updated_at  TIMESTAMP,
+    from_id         UUID,
+    to_id           UUID,
+    type            TEXT,
+    data            TEXT,
+    tags            LIST<TEXT>,
+    created_at      TIMESTAMP,
+    updated_at      TIMESTAMP,
+    ttl_expiration  TIMESTAMP,
     PRIMARY KEY ((from_id), to_id, type)
 );
 
@@ -42,12 +44,13 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
 -- Secondary indexes can't be used: transactions=true blocks per-row USING TTL.
 
 CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_reverse_edges (
-    to_id       UUID,
-    from_id     UUID,
-    type        TEXT,
-    data        TEXT,
-    tags        LIST<TEXT>,
-    created_at  TIMESTAMP,
-    updated_at  TIMESTAMP,
+    to_id           UUID,
+    from_id         UUID,
+    type            TEXT,
+    data            TEXT,
+    tags            LIST<TEXT>,
+    created_at      TIMESTAMP,
+    updated_at      TIMESTAMP,
+    ttl_expiration  TIMESTAMP,
     PRIMARY KEY ((to_id), from_id, type)
 );

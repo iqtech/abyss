@@ -39,6 +39,7 @@ import java.sql.Timestamp
 import java.sql.Types
 import javax.sql.DataSource
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
@@ -83,54 +84,54 @@ class YugabyteAbyssStoreLike(
     private val edgeSer = PolymorphicSerializer(EdgeLike::class)
 
     private val selectNodeYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
+        ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
     private val selectEdgeYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
+        ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
     private val selectEdgesYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ?")
+        ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ?")
     private val selectInEdgesYcql: PreparedStatement =
-        ycql.prepare("SELECT data FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ?")
+        ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ?")
     private val deleteNodeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
     private val deleteEdgeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
     private val insertReverseEdgeYcql: PreparedStatement =
-        ycql.prepare("INSERT INTO $ycqlKeyspace.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?")
+        ycql.prepare("INSERT INTO $ycqlKeyspace.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?")
     private val deleteReverseEdgeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ? AND from_id = ? AND type = ?")
 
-    override suspend fun loadNode(id: Uuid): Either<AbyssError, NodeLike?> =
+    override suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike?, Duration?>> =
         Either.catch {
             coroutineScope {
-                val fromYsql = async(Dispatchers.IO) { queryNodeYsql(id) }
-                val fromYcql = async(Dispatchers.IO) { queryNodeYcql(id) }
-                awaitAll(fromYsql, fromYcql).firstOrNull { it != null }
+                val fromYsql = async(Dispatchers.IO) { queryNodeYsql(id)?.let { it to null } }
+                val fromYcql = async(Dispatchers.IO) { queryNodeYcql(id)?.let { (node, exp) -> node to remainingTtl(exp) } }
+                awaitAll(fromYsql, fromYcql).firstOrNull { it != null } ?: (null to null)
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike?> =
+    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<EdgeLike?, Duration?>> =
         Either.catch {
             coroutineScope {
-                val fromYsql = async(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type) }
-                val fromYcql = async(Dispatchers.IO) { queryEdgeYcql(fromId, toId, type) }
-                awaitAll(fromYsql, fromYcql).firstOrNull { it != null }
+                val fromYsql = async(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type)?.let { it to null } }
+                val fromYcql = async(Dispatchers.IO) { queryEdgeYcql(fromId, toId, type)?.let { (edge, exp) -> edge to remainingTtl(exp) } }
+                awaitAll(fromYsql, fromYcql).firstOrNull { it != null } ?: (null to null)
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<EdgeLike>> =
+    override suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> =
         Either.catch {
             coroutineScope {
-                val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("from_id", fromId) }
-                val fromYcql = async(Dispatchers.IO) { queryEdgesYcql(selectEdgesYcql, fromId) }
+                val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("from_id", fromId).map { it to null } }
+                val fromYcql = async(Dispatchers.IO) { queryEdgesYcql(selectEdgesYcql, fromId).map { (e, exp) -> e to remainingTtl(exp) } }
                 mergeEdgeLists(fromYsql.await(), fromYcql.await())
             }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<EdgeLike>> =
+    override suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> =
         Either.catch {
             coroutineScope {
-                val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("to_id", toId) }
-                val fromYcql = async(Dispatchers.IO) { queryEdgesYcql(selectInEdgesYcql, toId) }
+                val fromYsql = async(Dispatchers.IO) { queryEdgesYsql("to_id", toId).map { it to null } }
+                val fromYcql = async(Dispatchers.IO) { queryEdgesYcql(selectInEdgesYcql, toId).map { (e, exp) -> e to remainingTtl(exp) } }
                 mergeEdgeLists(fromYsql.await(), fromYcql.await())
             }
         }.mapLeft { AbyssError.Unexpected(it) }
@@ -151,6 +152,12 @@ class YugabyteAbyssStoreLike(
         runCatching { (ysql as? Closeable)?.close() }.onFailure { log.warn("Failed to close YSQL DataSource", it) }
     }
 
+    private fun remainingTtl(expiresAt: java.time.Instant?): Duration? {
+        if (expiresAt == null) return null
+        val remaining = java.time.Duration.between(java.time.Instant.now(), expiresAt).toMillis()
+        return remaining.milliseconds
+    }
+
     private fun queryNodeYsql(id: Uuid): NodeLike? =
         ysql.connection.use { conn ->
             conn.prepareStatement("SELECT data FROM $ysqlSchema.nodes WHERE id = ?").use { stmt ->
@@ -161,10 +168,11 @@ class YugabyteAbyssStoreLike(
             }
         }
 
-    private fun queryNodeYcql(id: Uuid): NodeLike? {
+    private fun queryNodeYcql(id: Uuid): Pair<NodeLike, java.time.Instant?>? {
         val row = ycql.execute(selectNodeYcql.bind(id.toJavaUuid())).one() ?: return null
         val data = row.getString("data") ?: return null
-        return json.decodeFromString(nodeSer, data)
+        val exp = row.getInstant("ttl_expiration")
+        return json.decodeFromString(nodeSer, data) to exp
     }
 
     private fun queryEdgeYsql(fromId: Uuid, toId: Uuid, type: String): EdgeLike? =
@@ -181,10 +189,11 @@ class YugabyteAbyssStoreLike(
             }
         }
 
-    private fun queryEdgeYcql(fromId: Uuid, toId: Uuid, type: String): EdgeLike? {
+    private fun queryEdgeYcql(fromId: Uuid, toId: Uuid, type: String): Pair<EdgeLike, java.time.Instant?>? {
         val row = ycql.execute(selectEdgeYcql.bind(fromId.toJavaUuid(), toId.toJavaUuid(), type)).one() ?: return null
         val data = row.getString("data") ?: return null
-        return json.decodeFromString(edgeSer, data)
+        val exp = row.getInstant("ttl_expiration")
+        return json.decodeFromString(edgeSer, data) to exp
     }
 
     private fun queryEdgesYsql(column: String, id: Uuid): List<EdgeLike> =
@@ -196,15 +205,22 @@ class YugabyteAbyssStoreLike(
             }
         }
 
-    private fun queryEdgesYcql(stmt: PreparedStatement, id: Uuid): List<EdgeLike> =
+    private fun queryEdgesYcql(stmt: PreparedStatement, id: Uuid): List<Pair<EdgeLike, java.time.Instant?>> =
         ycql.execute(stmt.bind(id.toJavaUuid()))
-            .mapNotNull { row -> row.getString("data")?.let { json.decodeFromString(edgeSer, it) } }
+            .mapNotNull { row ->
+                val data = row.getString("data") ?: return@mapNotNull null
+                val exp = row.getInstant("ttl_expiration")
+                json.decodeFromString(edgeSer, data) to exp
+            }
 
     // YSQL wins on key conflict — durable store takes precedence over ephemeral.
-    private fun mergeEdgeLists(ysql: List<EdgeLike>, ycql: List<EdgeLike>): List<EdgeLike> {
-        val map = LinkedHashMap<Triple<Uuid, Uuid, String>, EdgeLike>()
-        ycql.forEach { map[Triple(it.fromId, it.toId, edgeTypeOf(it))] = it }
-        ysql.forEach { map[Triple(it.fromId, it.toId, edgeTypeOf(it))] = it }
+    private fun mergeEdgeLists(
+        ysql: List<Pair<EdgeLike, Duration?>>,
+        ycql: List<Pair<EdgeLike, Duration?>>
+    ): List<Pair<EdgeLike, Duration?>> {
+        val map = LinkedHashMap<Triple<Uuid, Uuid, String>, Pair<EdgeLike, Duration?>>()
+        ycql.forEach { map[Triple(it.first.fromId, it.first.toId, edgeTypeOf(it.first))] = it }
+        ysql.forEach { map[Triple(it.first.fromId, it.first.toId, edgeTypeOf(it.first))] = it }
         return map.values.toList()
     }
 
@@ -273,18 +289,20 @@ class YugabyteAbyssStoreLike(
             is StoreOp.SaveNode -> {
                 val (type, data) = jsonPair(nodeSer, op.node)
                 val ttl = op.ttl!!.inWholeSeconds
+                val expiresAt = java.time.Instant.now().plusSeconds(ttl)
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO $ycqlKeyspace.ephemeral_nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    op.node.id.toJavaUuid(), type, data, op.node.tags, op.node.createdAt.toJavaInstant(), op.node.updatedAt.toJavaInstant()
+                    "INSERT INTO $ycqlKeyspace.ephemeral_nodes (id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
+                    op.node.id.toJavaUuid(), type, data, op.node.tags, op.node.createdAt.toJavaInstant(), op.node.updatedAt.toJavaInstant(), expiresAt
                 ))
             }
             is StoreOp.SaveEdge -> {
                 val (type, data) = jsonPair(edgeSer, op.edge)
                 val ttl = op.ttl!!.inWholeSeconds.toInt()
+                val expiresAt = java.time.Instant.now().plusSeconds(ttl.toLong())
                 // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
-                ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId.toJavaUuid(), op.edge.fromId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), ttl))
+                ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId.toJavaUuid(), op.edge.fromId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), expiresAt, ttl))
                 try {
-                    writePrimaryEdge(op, ttl)
+                    writePrimaryEdge(op, ttl, expiresAt)
                 } catch (e: Exception) {
                     val failedAt = java.time.Instant.now()
                     log.error("Primary edge write failed, scheduling heal for ${op.edge.fromId}→${op.edge.toId}", e)
@@ -300,12 +318,12 @@ class YugabyteAbyssStoreLike(
         }
     }
 
-    private fun writePrimaryEdge(op: StoreOp.SaveEdge, ttlSeconds: Int) {
+    private fun writePrimaryEdge(op: StoreOp.SaveEdge, ttlSeconds: Int, expiresAt: java.time.Instant) {
         val (type, data) = jsonPair(edgeSer, op.edge)
         ycql.execute(SimpleStatement.newInstance(
-            "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttlSeconds",
+            "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttlSeconds",
             op.edge.fromId.toJavaUuid(), op.edge.toId.toJavaUuid(), type, data,
-            op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant()
+            op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), expiresAt
         ))
     }
 
@@ -321,7 +339,8 @@ class YugabyteAbyssStoreLike(
                 return
             }
             try {
-                withContext(Dispatchers.IO) { writePrimaryEdge(op, remainingTtl) }
+                val healExpiresAt = java.time.Instant.now().plusSeconds(remainingTtl.toLong())
+                withContext(Dispatchers.IO) { writePrimaryEdge(op, remainingTtl, healExpiresAt) }
                 log.info("Healed edge ${op.edge.fromId}→${op.edge.toId} on attempt ${attempt + 1}")
                 return
             } catch (e: Exception) {
