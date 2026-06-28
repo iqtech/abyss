@@ -6,10 +6,15 @@ import com.datastax.oss.driver.api.core.cql.PreparedStatement
 import com.datastax.oss.driver.api.core.cql.SimpleStatement
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.time.toJavaInstant
 import kotlinx.serialization.PolymorphicSerializer
@@ -65,6 +70,7 @@ class YugabyteAbyssStoreLike(
 ) : AbyssStoreLike, Closeable {
 
     private val log = LoggerFactory.getLogger(YugabyteAbyssStoreLike::class.java)
+    private val healScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -140,6 +146,7 @@ class YugabyteAbyssStoreLike(
         }.mapLeft { AbyssError.Unexpected(it) }
 
     override fun close() {
+        healScope.cancel()
         runCatching { ycql.close() }.onFailure { log.warn("Failed to close YCQL session", it) }
         runCatching { (ysql as? Closeable)?.close() }.onFailure { log.warn("Failed to close YSQL DataSource", it) }
     }
@@ -276,10 +283,14 @@ class YugabyteAbyssStoreLike(
                 val ttl = op.ttl!!.inWholeSeconds.toInt()
                 // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
                 ycql.execute(insertReverseEdgeYcql.bind(op.edge.toId.toJavaUuid(), op.edge.fromId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), ttl))
-                ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    op.edge.fromId.toJavaUuid(), op.edge.toId.toJavaUuid(), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant()
-                ))
+                try {
+                    writePrimaryEdge(op, ttl)
+                } catch (e: Exception) {
+                    val failedAt = java.time.Instant.now()
+                    log.error("Primary edge write failed, scheduling heal for ${op.edge.fromId}→${op.edge.toId}", e)
+                    healScope.launch { healEdge(op, failedAt) }
+                    throw e
+                }
             }
             is StoreOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(op.id.toJavaUuid()))
             is StoreOp.DeleteEdge -> {
@@ -287,6 +298,38 @@ class YugabyteAbyssStoreLike(
                 ycql.execute(deleteEdgeYcql.bind(op.fromId.toJavaUuid(), op.toId.toJavaUuid(), op.type))
             }
         }
+    }
+
+    private fun writePrimaryEdge(op: StoreOp.SaveEdge, ttlSeconds: Int) {
+        val (type, data) = jsonPair(edgeSer, op.edge)
+        ycql.execute(SimpleStatement.newInstance(
+            "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttlSeconds",
+            op.edge.fromId.toJavaUuid(), op.edge.toId.toJavaUuid(), type, data,
+            op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant()
+        ))
+    }
+
+    private suspend fun healEdge(op: StoreOp.SaveEdge, failedAt: java.time.Instant) {
+        val originalTtlSeconds = op.ttl!!.inWholeSeconds
+        var delayMs = 1_000L
+        repeat(5) { attempt ->
+            delay(delayMs)
+            val elapsed = java.time.Duration.between(failedAt, java.time.Instant.now()).seconds
+            val remainingTtl = (originalTtlSeconds - elapsed).toInt()
+            if (remainingTtl <= 0) {
+                log.warn("TTL exceeded for edge ${op.edge.fromId}→${op.edge.toId}, dropping heal — reverse entry will expire naturally")
+                return
+            }
+            try {
+                withContext(Dispatchers.IO) { writePrimaryEdge(op, remainingTtl) }
+                log.info("Healed edge ${op.edge.fromId}→${op.edge.toId} on attempt ${attempt + 1}")
+                return
+            } catch (e: Exception) {
+                log.warn("Heal attempt ${attempt + 1}/5 failed for ${op.edge.fromId}→${op.edge.toId}", e)
+                delayMs *= 2
+            }
+        }
+        log.error("Failed to heal edge ${op.edge.fromId}→${op.edge.toId} after 5 attempts — reverse entry will expire via TTL")
     }
 
     private inner class StoreTransaction : AbyssStoreTransactionLike {

@@ -26,6 +26,11 @@
   atomically replace the old edge with the new one (removing it from both the forward and reverse
   maps). Integrity check must apply to the new `fromId`/`toId` when `checkIntegrity` is enabled.
 
+- **✅ 1.5 Graph self-healing for non-atomic YCQL edge writes**
+  YCQL cannot atomically write both the edge table and the reverse-edge table. When the second
+  write fails, start an asynchronous retry procedure: up to 5 attempts with exponentially growing
+  intervals (via a multiplier). Arrow's `Schedule` primitive covers this pattern.
+
 ## 2. Medium
 
 - **2.1 Single Hazelcast node**
