@@ -1,3 +1,7 @@
+## [0.11.0] - 2026-06-28
+
+- Add graph algorithms: `exhaustReachable`/`allReachable` (BFS exhaust to `Subgraph`), `detectCycle`/`hasCycle` (DFS back-edge detection), and `connectedComponents` (weakly connected grouping via `allNodeIds`)
+
 ## [0.10.0] - 2026-06-27
 
 - Add `@EdgeConstraint` annotation for opt-in edge endpoint type enforcement; `AbyssError.SchemaError` distinguishes schema violations from referential integrity errors
