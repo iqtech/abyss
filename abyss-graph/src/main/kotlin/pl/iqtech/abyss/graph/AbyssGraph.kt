@@ -89,21 +89,21 @@ class AbyssGraph(
     }
 
     override suspend fun node(id: Uuid): Either<AbyssError, NodeLike> =
-        Either.catch { withContext(Dispatchers.IO) { nodesMap[id.toJavaUuid()] } }
+        Either.catch { nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.NodeNotFound(id).left() }
 
     override suspend fun edge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, EdgeLike> =
-        Either.catch { withContext(Dispatchers.IO) { edgesMap[EdgeKey(fromId, toId, type)] } }
+        Either.catch { edgesMap.getAsync(EdgeKey(fromId, toId, type)).asDeferred().await() }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.EdgeNotFound(fromId, toId, type).left() }
 
     override suspend fun nodeExists(id: Uuid): Either<AbyssError, Boolean> =
-        Either.catch { withContext(Dispatchers.IO) { nodesMap.containsKey(id.toJavaUuid()) } }
+        Either.catch { nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() != null }
             .mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun edgeExists(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Boolean> =
-        Either.catch { withContext(Dispatchers.IO) { edgesMap.containsKey(EdgeKey(fromId, toId, type)) } }
+        Either.catch { edgesMap.getAsync(EdgeKey(fromId, toId, type)).asDeferred().await() != null }
             .mapLeft { AbyssError.Unexpected(it) }
 
     override fun outEdges(nodeId: Uuid, pageSize: Int): Flow<EdgeLike> =

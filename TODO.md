@@ -31,6 +31,12 @@
   write fails, start an asynchronous retry procedure: up to 5 attempts with exponentially growing
   intervals (via a multiplier). Arrow's `Schedule` primitive covers this pattern.
 
+- **1.6 Ephemeral node/edge TTL restoration on cache miss**
+  When a cache miss causes a read from YCQL disk, the TTL must be restored correctly before
+  populating the cache. This likely requires a technical column `ttl_expiration` (absolute
+  timestamp) on the ephemeral node/edge tables, so the remaining TTL can be calculated at
+  read time and applied to the cache entry.
+
 ## 2. Medium
 
 - **2.1 Single Hazelcast node**
@@ -79,6 +85,20 @@
   best-effort anyway. Add a config flag (e.g. `asyncCachePopulation: Boolean`) to fire cache
   puts on a separate coroutine and return to the caller as soon as the store commits. Trade-off:
   async mode widens the window where a read after write lands a cache miss.
+
+- **✅ 2.7 Async Hazelcast reads via `IMap.getAsync()`**
+  Cache reads (`loadNode`, `loadEdge`, `containsNode`, `containsEdge`) use blocking `IMap.get()`
+  wrapped in `withContext(Dispatchers.IO)`, pinning an IO thread for the full network round-trip.
+  `IMap.getAsync()` returns a `CompletionStage` (same pattern already used for writes via
+  `setAsync`/`removeAsync`), freeing the IO thread entirely. Worth switching under high cache-miss
+  rates where IO thread exhaustion becomes a bottleneck.
+
+- **2.8 Async predicate and bulk reads via Hazelcast async APIs**
+  `reverseEdgesMap.keySet(predicate)`, `edgesMap.getAll(keys)`, and `edgesMap.values(paging)` still
+  use `withContext(Dispatchers.IO)`. Hazelcast 5.6 exposes `keySetAsync(Predicate)` and
+  `getAllAsync(Set<K>)` as `CompletionStage`-based equivalents. The existing `asDeferred()` bridge
+  would handle them. Worth switching under high-miss-rate or traversal-heavy workloads where IO
+  thread pressure from bulk reads becomes measurable.
 
 ## 3. Low
 
