@@ -50,7 +50,7 @@
   Export and import the registered `SerializersModule` (node and edge type definitions) as JSON,
   so tooling and downstream clients can discover the graph schema without inspecting source code.
 
-- **2.6 Configurable sync vs async cache population after store commit**
+- **✅ 2.6 Configurable sync vs async cache population after store commit**
   Currently `applyToCache` runs synchronously after the store transaction commits (line 245 in
   `AbyssGraph.kt`). For write-heavy workloads the caller blocks on Hazelcast puts that are
   best-effort anyway. Add a config flag (e.g. `asyncCachePopulation: Boolean`) to fire cache

@@ -11,10 +11,14 @@ import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.hazelcast.query.Predicate
 import com.hazelcast.query.Predicates
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import java.util.concurrent.CompletionStage
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
@@ -51,7 +55,8 @@ class AbyssGraph(
     private val hazelcast: HazelcastInstance,
     val nodesMapName: String,
     val edgesMapName: String,
-    val store: AbyssStoreLike? = null
+    val store: AbyssStoreLike? = null,
+    private val asyncCachePopulation: Boolean = false
 ) : AbyssEngineLike {
 
     // Hazelcast IMap keys are java.util.UUID — natively supported by Hazelcast serialization.
@@ -59,7 +64,6 @@ class AbyssGraph(
     private val nodesMap: IMap<java.util.UUID, NodeLike>
     private val edgesMap: IMap<EdgeKey, EdgeLike>
     private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit>
-
     init {
         if (store != null) {
             hazelcast.config.getMapConfig(nodesMapName).mapStoreConfig.apply {
@@ -198,8 +202,7 @@ class AbyssGraph(
             }
         }
 
-        Either.catch { withContext(Dispatchers.IO) { ops.forEach { applyToCache(it) } } }
-            .fold(ifLeft = { log.warn("Cache update failed after ephemeral store commit; cache may be stale", it) }, ifRight = {})
+        populateCache(ops, "Cache update failed after ephemeral store commit; cache may be stale")
 
         log.debug("Ephemeral committed [{} op(s), ttl={}, nodes={}, edges={}]", ops.size, ttl, nodesMapName, edgesMapName)
         return Unit.right()
@@ -242,8 +245,7 @@ class AbyssGraph(
 
         // Cache failure after a successful store commit is logged but not propagated: the store is
         // the source of truth and the cache self-heals on the next miss via MapLoader.
-        Either.catch { withContext(Dispatchers.IO) { ops.forEach { applyToCache(it) } } }
-            .fold(ifLeft = { log.warn("Cache update failed after store commit; cache may be stale", it) }, ifRight = {})
+        populateCache(ops, "Cache update failed after store commit; cache may be stale")
 
         log.debug("Transaction committed [{} op(s), nodes={}, edges={}]", ops.size, nodesMapName, edgesMapName)
         return Unit.right()
@@ -265,27 +267,43 @@ class AbyssGraph(
         is Op.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
     }
 
-    private fun applyToCache(op: Op) = when (op) {
+    // ponytail: bridges CompletionStage → Deferred; avoids kotlinx-coroutines-jdk8 dependency
+    private fun <T> CompletionStage<T>.asDeferred(): Deferred<T> = CompletableDeferred<T>().also { d ->
+        whenComplete { v, ex -> if (ex != null) d.completeExceptionally(ex) else d.complete(v) }
+    }
+
+    private suspend fun populateCache(ops: List<Op>, warnMsg: String) {
+        val stages = ops.flatMap { applyToCacheAsync(it) }
+        if (asyncCachePopulation) {
+            // ponytail: fire-and-forget — no thread pinned during network wait
+            stages.forEach { it.exceptionally { ex -> log.warn(warnMsg, ex); null } }
+        } else {
+            Either.catch { stages.map { it.asDeferred() }.awaitAll() }
+                .fold(ifLeft = { log.warn(warnMsg, it) }, ifRight = {})
+        }
+    }
+
+    private fun applyToCacheAsync(op: Op): List<CompletionStage<*>> = when (op) {
         is Op.AddNode -> if (op.ttl != null)
-            nodesMap.set(op.node.id.toJavaUuid(), op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
+            listOf(nodesMap.setAsync(op.node.id.toJavaUuid(), op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS))
         else
-            nodesMap.set(op.node.id.toJavaUuid(), op.node)
-        is Op.RemoveNode -> nodesMap.delete(op.id.toJavaUuid())
+            listOf(nodesMap.setAsync(op.node.id.toJavaUuid(), op.node))
+        is Op.RemoveNode -> listOf(nodesMap.removeAsync(op.id.toJavaUuid()))
         is Op.AddEdge -> {
             val key    = EdgeKey(op.edge.fromId, op.edge.toId, edgeType(op.edge))
             val revKey = ReverseEdgeKey(op.edge.toId, op.edge.fromId, edgeType(op.edge))
-            if (op.ttl != null) {
-                edgesMap.set(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
-                reverseEdgesMap.set(revKey, Unit, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
-            } else {
-                edgesMap.set(key, op.edge)
-                reverseEdgesMap.set(revKey, Unit)
-            }
+            if (op.ttl != null) listOf(
+                edgesMap.setAsync(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS),
+                reverseEdgesMap.setAsync(revKey, Unit, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
+            ) else listOf(
+                edgesMap.setAsync(key, op.edge),
+                reverseEdgesMap.setAsync(revKey, Unit)
+            )
         }
-        is Op.RemoveEdge -> {
-            edgesMap.delete(EdgeKey(op.fromId, op.toId, op.type))
-            reverseEdgesMap.delete(ReverseEdgeKey(op.toId, op.fromId, op.type))
-        }
+        is Op.RemoveEdge -> listOf(
+            edgesMap.removeAsync(EdgeKey(op.fromId, op.toId, op.type)),
+            reverseEdgesMap.removeAsync(ReverseEdgeKey(op.toId, op.fromId, op.type))
+        )
     }
 
     private fun edgeType(edge: EdgeLike): String =
