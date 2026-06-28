@@ -39,7 +39,7 @@
 
 ## 2. Medium
 
-- **2.1 Single Hazelcast node**
+- **➡️ 2.1 Single Hazelcast node**
   `PartitionAware` and partition-predicate routing only matter in a cluster. On one node it
   degrades to a smaller in-memory scan. No cluster topology awareness, near-cache, or partition
   migration hooks.
@@ -48,7 +48,7 @@
   `@SerialName` type strings are unchecked. Nothing prevents a `Knows` edge connecting two
   non-`Person` nodes. Invalid graphs are silently possible.
 
-- **2.3 Graph export / import (property graph JSON)**
+- **➡️ 2.3 Graph export / import (property graph JSON)**
   Export the full graph (or a subgraph) to the nodes + relationships flat JSON format compatible
   with Neo4j, Gephi, and similar tools. Import in the same format via `transaction { }`.
   Node labels and edge types map to `@SerialName` values.
@@ -75,7 +75,7 @@
     `nodesMap.keys`). Top-level extension in `Extensions.kt` uses existing untyped `outEdges` /
     `inEdges` overloads; no block parameter needed.
 
-- **2.5 Schema export / import as JSON**
+- **➡️ 2.5 Schema export / import as JSON**
   Export and import the registered `SerializersModule` (node and edge type definitions) as JSON,
   so tooling and downstream clients can discover the graph schema without inspecting source code.
 
@@ -108,10 +108,10 @@
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
   HikariCP pools connections but will queue under burst cold-cache misses.
 
-- **3.2 Dual parallel YSQL + YCQL query on every cache miss**
+- **➡️ 3.2 Dual parallel YSQL + YCQL query on every cache miss**
   Half the queries always return nothing. Wasteful under high miss rate.
 
-- **3.3 YSQL as ephemeral store in `abyss-store-yugabyte`**
+- **➡️ 3.3 YSQL as ephemeral store in `abyss-store-yugabyte`**
   Allow configuring YSQL (instead of YCQL) as the ephemeral backend. Benefit: YSQL supports
   full transactions, so ephemeral edge and reverse-edge writes are atomic. Trade-off: TTL requires
   an `expires_at` column and a background cleanup job rather than native YCQL TTL.
