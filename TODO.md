@@ -42,7 +42,7 @@
   with Neo4j, Gephi, and similar tools. Import in the same format via `transaction { }`.
   Node labels and edge types map to `@SerialName` values.
 
-- **2.4 Graph algorithms**
+- **✅ 2.4 Graph algorithms**
   BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`
   (Future development section). Hazelcast in-memory maps make these fast without DB round-trips.
 
