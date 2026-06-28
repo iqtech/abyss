@@ -46,6 +46,24 @@
   BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`
   (Future development section). Hazelcast in-memory maps make these fast without DB round-trips.
 
+  - **2.4.1 `exhaustReachable`**
+    BFS exhaust from the current frontier following caller-defined edge hops, returns a `Subgraph`
+    (all visited nodes + all traversed edges). Distinct from `reaches` (single target) and manual
+    hop-chaining (unknown depth). Adds `exhaustReachable` to `TraversalBuilderLike`; DSL alias
+    `allReachable`. Implementation mirrors the `checkReaches` BFS loop.
+
+  - **2.4.2 `detectCycle`**
+    DFS cycle detection using a recursion stack (back-edge method). Caller's block defines which
+    edge types count. Adds `detectCycle` to `TraversalBuilderLike`; DSL alias `hasCycle`. Private
+    `dfsCycle` helper in `TraversalBuilder` reuses the `TraversalBuilder(engine, setOf(nodeId))`
+    pattern already present in `checkReaches`.
+
+  - **2.4.3 `connectedComponents`**
+    Weakly connected component grouping over all graph nodes (edges treated as undirected). Requires
+    adding `allNodeIds(): Flow<Uuid>` to `AbyssEngineLike` (implemented in `AbyssGraph` via
+    `nodesMap.keys`). Top-level extension in `Extensions.kt` uses existing untyped `outEdges` /
+    `inEdges` overloads; no block parameter needed.
+
 - **2.5 Schema export / import as JSON**
   Export and import the registered `SerializersModule` (node and edge type definitions) as JSON,
   so tooling and downstream clients can discover the graph schema without inspecting source code.
