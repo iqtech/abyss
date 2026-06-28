@@ -20,6 +20,8 @@ interface AbyssEngineLike {
     fun inEdges(nodeId: Uuid, pageSize: Int = 100): Flow<EdgeLike>
     fun inEdges(nodeId: Uuid, type: String, pageSize: Int = 100): Flow<EdgeLike>
 
+    fun allNodeIds(): Flow<Uuid>
+
     suspend fun <T> from(nodeId: Uuid, block: suspend TraversalBuilderLike.() -> T): Either<AbyssError, T>
 
     suspend fun transaction(

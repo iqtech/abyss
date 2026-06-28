@@ -58,7 +58,7 @@
     `dfsCycle` helper in `TraversalBuilder` reuses the `TraversalBuilder(engine, setOf(nodeId))`
     pattern already present in `checkReaches`.
 
-  - **2.4.3 `connectedComponents`**
+  - **✅ 2.4.3 `connectedComponents`**
     Weakly connected component grouping over all graph nodes (edges treated as undirected). Requires
     adding `allNodeIds(): Flow<Uuid>` to `AbyssEngineLike` (implemented in `AbyssGraph` via
     `nodesMap.keys`). Top-level extension in `Extensions.kt` uses existing untyped `outEdges` /

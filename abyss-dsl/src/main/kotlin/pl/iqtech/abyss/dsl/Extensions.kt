@@ -5,7 +5,9 @@ import arrow.core.flatMap
 import arrow.core.left
 import arrow.core.right
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
@@ -89,3 +91,23 @@ suspend fun TraversalBuilderLike.subgraph(): Subgraph = collectSubgraph()
 
 suspend inline fun <reified N : NodeLike> TraversalBuilderLike.subgraph(): Subgraph =
     collectSubgraph(N::class.findAnnotation<SerialName>()!!.value)
+
+// AbyssEngineLike — graph algorithms
+
+suspend fun AbyssEngineLike.connectedComponents(): List<Set<Uuid>> {
+    val remaining = allNodeIds().toList().toMutableSet()
+    val components = mutableListOf<Set<Uuid>>()
+    while (remaining.isNotEmpty()) {
+        val start = remaining.first()
+        val visited = mutableSetOf(start)
+        val queue = ArrayDeque<Uuid>().also { it += start }
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            outEdges(id).collect { if (it.toId !in visited) { visited += it.toId; queue += it.toId } }
+            inEdges(id).collect { if (it.fromId !in visited) { visited += it.fromId; queue += it.fromId } }
+        }
+        components += visited
+        remaining -= visited
+    }
+    return components
+}

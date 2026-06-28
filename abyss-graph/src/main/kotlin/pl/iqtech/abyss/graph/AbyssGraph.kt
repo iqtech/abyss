@@ -84,6 +84,10 @@ class AbyssGraph(
             nodesMapName, edgesMapName, store?.javaClass?.simpleName ?: "none")
     }
 
+    override fun allNodeIds(): Flow<Uuid> = flow {
+        nodesMap.keys.forEach { emit(it.toKotlinUuid()) }
+    }
+
     override suspend fun node(id: Uuid): Either<AbyssError, NodeLike> =
         Either.catch { withContext(Dispatchers.IO) { nodesMap[id.toJavaUuid()] } }
             .mapLeft { AbyssError.Unexpected(it) }

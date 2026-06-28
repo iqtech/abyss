@@ -4,6 +4,7 @@ import arrow.core.Either
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.allReachable
+import pl.iqtech.abyss.dsl.connectedComponents
 import pl.iqtech.abyss.dsl.hasCycle
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.NodeLike
@@ -176,6 +177,73 @@ class AlgorithmsTest {
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
             assertIs<Either.Right<Subgraph>>(result)
             assertEquals(setOf(a.id, b.id), result.value.nodes.map { it.id }.toSet())
+        }
+    }
+
+    // ── connectedComponents ───────────────────────────────────────────────────
+
+    @Test fun `connectedComponents with empty graph returns empty list`() {
+        runBlocking {
+            assertEquals(emptyList(), graphTest.connectedComponents())
+        }
+    }
+
+    @Test fun `connectedComponents with single isolated node returns one component`() {
+        runBlocking {
+            val a = putNode("a")
+            val components = graphTest.connectedComponents()
+            assertEquals(1, components.size)
+            assertEquals(setOf(a.id), components.first())
+        }
+    }
+
+    @Test fun `connectedComponents treats edges as undirected`() {
+        // a → b: both should be in one component regardless of direction
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b")
+            putEdge(a.id, b.id)
+            val components = graphTest.connectedComponents()
+            assertEquals(1, components.size)
+            assertEquals(setOf(a.id, b.id), components.first())
+        }
+    }
+
+    @Test fun `connectedComponents returns two components for disjoint pairs`() {
+        // a → b   c → d
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b")
+            val c = putNode("c"); val d = putNode("d")
+            putEdge(a.id, b.id); putEdge(c.id, d.id)
+
+            val components = graphTest.connectedComponents()
+            assertEquals(2, components.size)
+            assertEquals(setOf(setOf(a.id, b.id), setOf(c.id, d.id)), components.toSet())
+        }
+    }
+
+    @Test fun `connectedComponents merges disjoint pairs when bridge is added`() {
+        // a → b   c → d, then add b → c
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b")
+            val c = putNode("c"); val d = putNode("d")
+            putEdge(a.id, b.id); putEdge(c.id, d.id); putEdge(b.id, c.id)
+
+            val components = graphTest.connectedComponents()
+            assertEquals(1, components.size)
+            assertEquals(setOf(a.id, b.id, c.id, d.id), components.first())
+        }
+    }
+
+    @Test fun `connectedComponents handles cycle within a component`() {
+        // a → b → c → a, plus isolated d
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b")
+            val c = putNode("c"); val d = putNode("d")
+            putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, a.id)
+
+            val components = graphTest.connectedComponents()
+            assertEquals(2, components.size)
+            assertEquals(setOf(setOf(a.id, b.id, c.id), setOf(d.id)), components.toSet())
         }
     }
 }
