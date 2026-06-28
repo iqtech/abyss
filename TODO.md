@@ -46,7 +46,7 @@
   BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`
   (Future development section). Hazelcast in-memory maps make these fast without DB round-trips.
 
-  - **2.4.1 `exhaustReachable`**
+  - **✅ 2.4.1 `exhaustReachable`**
     BFS exhaust from the current frontier following caller-defined edge hops, returns a `Subgraph`
     (all visited nodes + all traversed edges). Distinct from `reaches` (single target) and manual
     hop-chaining (unknown depth). Adds `exhaustReachable` to `TraversalBuilderLike`; DSL alias

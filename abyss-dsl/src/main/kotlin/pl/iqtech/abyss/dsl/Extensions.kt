@@ -80,6 +80,8 @@ suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline fi
 
 suspend fun TraversalBuilderLike.reaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean = checkReaches(targetId, block)
 
+suspend fun TraversalBuilderLike.allReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph = exhaustReachable(block)
+
 @JvmName("subgraphAll")
 suspend fun TraversalBuilderLike.subgraph(): Subgraph = collectSubgraph()
 

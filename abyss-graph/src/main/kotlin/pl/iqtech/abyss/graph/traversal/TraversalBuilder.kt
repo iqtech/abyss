@@ -28,6 +28,7 @@ class TraversalBuilder(
 
     private val allVisitedIds: MutableSet<Uuid> = startFrontier.toMutableSet()
     private val allTraversedEdges: MutableList<EdgeLike> = mutableListOf()
+    internal val traversedEdges: List<EdgeLike> get() = allTraversedEdges
 
     override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)?) {
         val hopEdges = coroutineScope {
@@ -98,6 +99,24 @@ class TraversalBuilder(
             else all.filter { it::class.findAnnotation<SerialName>()?.value == nodeType }
         }
         return Subgraph(nodes, allTraversedEdges.toList())
+    }
+
+    override suspend fun exhaustReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph {
+        val visited = mutableSetOf<Uuid>(); visited += frontier
+        val allEdges = mutableListOf<EdgeLike>()
+        var current = frontier.toSet()
+        while (current.isNotEmpty()) {
+            val sub = TraversalBuilder(engine, current)
+            sub.block()
+            allEdges += sub.traversedEdges
+            val next = sub.frontier - visited
+            visited += next
+            current = next
+        }
+        val nodes = coroutineScope {
+            visited.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
+        }.filterNotNull()
+        return Subgraph(nodes, allEdges)
     }
 
     override suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean {
