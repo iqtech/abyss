@@ -1,3 +1,7 @@
+## [0.13.0] - 2026-06-28
+
+- Switch cache reads to non-blocking `IMap.getAsync()`, freeing IO threads on cache hits; add async self-healing for failed YCQL reverse-edge writes
+
 ## [0.12.0] - 2026-06-28
 
 - Document graph algorithms in README with warm-cache correctness notes for `connectedComponents`
