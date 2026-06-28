@@ -5,9 +5,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.HopDirection
@@ -82,14 +82,8 @@ class TraversalBuilder(
         }
     }
 
-    override suspend fun collectNodes(nodeType: String, filter: (NodeLike) -> Boolean): Flow<NodeLike> = flow {
-        for (id in frontier) {
-            val node = withContext(Dispatchers.IO) { engine.node(id).getOrNull() } ?: continue
-            if (node::class.findAnnotation<SerialName>()?.value != nodeType) continue
-            if (!filter(node)) continue
-            emit(node)
-        }
-    }
+    override suspend fun collectNodes(nodeType: String, filter: (NodeLike) -> Boolean): Flow<NodeLike> =
+        collectNodes(nodeType).filter { filter(it) }
 
     override suspend fun collectSubgraph(nodeType: String?): Subgraph {
         val nodes = coroutineScope {

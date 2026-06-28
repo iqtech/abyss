@@ -133,6 +133,6 @@
   one `Buffered(ttl: Duration?)` class, and remove the duplicate `removeEdge` extensions
   in `Extensions.kt:43-48`.
 
-- **➡️ 4.4 Shrink `collectNodes` filter overload**
+- **✅ 4.4 Shrink `collectNodes` filter overload**
   `TraversalBuilder.kt:85-93` — sequential re-implementation of what `collectNodes(nodeType).filter(filter)`
   does in one line using the parallel impl already present. Replace 9 lines with 1.
