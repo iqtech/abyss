@@ -285,6 +285,55 @@ After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or
 
 ---
 
+## Graph algorithms
+
+All algorithms are available as extension functions on `AbyssEngineLike` or `TraversalBuilderLike`
+and work directly against the Hazelcast in-memory maps — no DB round-trips.
+
+### `allReachable` — BFS exhaust
+
+Visits every node reachable from the start, following whichever edge types the caller's block
+specifies, and returns a `Subgraph` of all visited nodes and all traversed edges. Unlike repeated
+`outgoing<E>()` hops, the caller does not need to know the depth in advance.
+
+```kotlin
+val subgraph: Either<AbyssError, Subgraph> = graph.from(alice.id) {
+    allReachable { outgoing<Knows>() }
+}
+val (nodes, edges) = subgraph.getOrNull()!!
+```
+
+Cycles are handled — already-visited nodes are skipped, so the BFS terminates even on cyclic
+graphs.
+
+### `hasCycle` — DFS cycle detection
+
+Returns `true` if any cycle is reachable from the start node via the specified edge types. Uses
+iterative DFS with a recursion stack (back-edge detection).
+
+```kotlin
+val cyclic: Either<AbyssError, Boolean> = graph.from(alice.id) {
+    hasCycle { outgoing<Knows>() }
+}
+```
+
+Useful for validating that a subgraph forms a DAG before operations that assume acyclicity.
+
+### `connectedComponents` — weakly connected grouping
+
+Partitions **all nodes in the graph** into weakly connected components — groups where every node
+can reach every other when edges are treated as undirected. Returns `List<Set<Uuid>>`.
+
+```kotlin
+val components: List<Set<Uuid>> = graph.connectedComponents()
+// e.g. [{alice, bob, charlie}, {dave, eve}]
+```
+
+Each call scans `allNodeIds()` (the full in-memory node map) and performs a BFS over both
+`outEdges` and `inEdges` per node. Suitable for one-shot analysis; not intended for hot paths.
+
+---
+
 ## Sizing — Sniper on Oracle Always Free (single Ampere A1)
 
 Hardware: 4 vCPU ARM, 24 GB RAM. Runs YugabyteDB + Ktor app with embedded Hazelcast in Docker Compose.
