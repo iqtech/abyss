@@ -118,15 +118,15 @@
 
 ## 4. Uncategorized
 
-- **➡️ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
+- **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
   `AbyssGraph.kt:108-111, 161-168` — `edgeFlow` is never called; `outEdgeFlow`/`inEdgeFlow` bypass it.
   `edgeOrder` is only referenced inside `edgeFlow`. Both are dead code.
 
-- **➡️ 4.2 Remove `pageSize` param from `outEdges`/`inEdges`**
+- **❓ 4.2 Remove `pageSize` param from `outEdges`/`inEdges`**
   `AbyssGraph.kt:94-104`, `AbyssEngineLike.kt:17-20` — all four overrides accept `pageSize` and
   silently ignore it. The only impl that honoured it (`edgeFlow`) is dead (see 4.1).
 
-- **➡️ 4.3 Merge duplicate transaction interfaces and buffers**
+- **❓ 4.3 Merge duplicate transaction interfaces and buffers**
   `AbyssEphemeralTransactionLike` (`AbyssEngineLike.kt:48-55`) is a byte-for-byte copy of
   `AbyssTransactionLike`. `BufferedEphemeralTransaction` (`AbyssGraph.kt:380-390`) differs from
   `BufferedTransaction` only in `null` → `ttl` for `addNode`/`addEdge`. Merge to one interface,
