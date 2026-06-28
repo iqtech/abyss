@@ -115,3 +115,24 @@
   Allow configuring YSQL (instead of YCQL) as the ephemeral backend. Benefit: YSQL supports
   full transactions, so ephemeral edge and reverse-edge writes are atomic. Trade-off: TTL requires
   an `expires_at` column and a background cleanup job rather than native YCQL TTL.
+
+## 4. Uncategorized
+
+- **➡️ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
+  `AbyssGraph.kt:108-111, 161-168` — `edgeFlow` is never called; `outEdgeFlow`/`inEdgeFlow` bypass it.
+  `edgeOrder` is only referenced inside `edgeFlow`. Both are dead code.
+
+- **➡️ 4.2 Remove `pageSize` param from `outEdges`/`inEdges`**
+  `AbyssGraph.kt:94-104`, `AbyssEngineLike.kt:17-20` — all four overrides accept `pageSize` and
+  silently ignore it. The only impl that honoured it (`edgeFlow`) is dead (see 4.1).
+
+- **➡️ 4.3 Merge duplicate transaction interfaces and buffers**
+  `AbyssEphemeralTransactionLike` (`AbyssEngineLike.kt:48-55`) is a byte-for-byte copy of
+  `AbyssTransactionLike`. `BufferedEphemeralTransaction` (`AbyssGraph.kt:380-390`) differs from
+  `BufferedTransaction` only in `null` → `ttl` for `addNode`/`addEdge`. Merge to one interface,
+  one `Buffered(ttl: Duration?)` class, and remove the duplicate `removeEdge` extensions
+  in `Extensions.kt:43-48`.
+
+- **➡️ 4.4 Shrink `collectNodes` filter overload**
+  `TraversalBuilder.kt:85-93` — sequential re-implementation of what `collectNodes(nodeType).filter(filter)`
+  does in one line using the parallel impl already present. Replace 9 lines with 1.
