@@ -119,6 +119,31 @@ class TraversalBuilder(
         return Subgraph(nodes, allEdges)
     }
 
+    override suspend fun detectCycle(block: suspend TraversalBuilderLike.() -> Unit): Boolean {
+        val visited = mutableSetOf<Uuid>()
+        for (start in frontier) {
+            if (start !in visited && dfsCycle(start, visited, mutableSetOf(), block)) return true
+        }
+        return false
+    }
+
+    private suspend fun dfsCycle(
+        nodeId: Uuid,
+        visited: MutableSet<Uuid>,
+        inStack: MutableSet<Uuid>,
+        block: suspend TraversalBuilderLike.() -> Unit
+    ): Boolean {
+        visited += nodeId; inStack += nodeId
+        val sub = TraversalBuilder(engine, setOf(nodeId))
+        sub.block()
+        for (neighbor in sub.frontier) {
+            if (neighbor in inStack) return true
+            if (neighbor !in visited && dfsCycle(neighbor, visited, inStack, block)) return true
+        }
+        inStack -= nodeId
+        return false
+    }
+
     override suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean {
         val visited = mutableSetOf<Uuid>()
         visited += frontier

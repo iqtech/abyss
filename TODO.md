@@ -52,7 +52,7 @@
     hop-chaining (unknown depth). Adds `exhaustReachable` to `TraversalBuilderLike`; DSL alias
     `allReachable`. Implementation mirrors the `checkReaches` BFS loop.
 
-  - **2.4.2 `detectCycle`**
+  - **✅ 2.4.2 `detectCycle`**
     DFS cycle detection using a recursion stack (back-edge method). Caller's block defines which
     edge types count. Adds `detectCycle` to `TraversalBuilderLike`; DSL alias `hasCycle`. Private
     `dfsCycle` helper in `TraversalBuilder` reuses the `TraversalBuilder(engine, setOf(nodeId))`

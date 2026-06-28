@@ -17,4 +17,5 @@ interface TraversalBuilderLike {
     suspend fun collectSubgraph(nodeType: String? = null): Subgraph
     suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph
+    suspend fun detectCycle(block: suspend TraversalBuilderLike.() -> Unit): Boolean
 }

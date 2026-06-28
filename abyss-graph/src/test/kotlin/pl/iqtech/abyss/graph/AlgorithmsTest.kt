@@ -4,12 +4,15 @@ import arrow.core.Either
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.allReachable
+import pl.iqtech.abyss.dsl.hasCycle
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
@@ -89,6 +92,78 @@ class AlgorithmsTest {
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(3, subgraph.edges.size)
+        }
+    }
+
+    // ── detectCycle / hasCycle ────────────────────────────────────────────────
+
+    @Test fun `hasCycle returns false for isolated node`() {
+        runBlocking {
+            val a = putNode("a")
+            val result = graphTest.from(a.id) { hasCycle { outgoing<TestEdge>() } }
+            assertIs<Either.Right<Boolean>>(result)
+            assertFalse(result.value)
+        }
+    }
+
+    @Test fun `hasCycle returns false for linear chain`() {
+        // a → b → c
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+            putEdge(a.id, b.id); putEdge(b.id, c.id)
+            val result = graphTest.from(a.id) { hasCycle { outgoing<TestEdge>() } }
+            assertIs<Either.Right<Boolean>>(result)
+            assertFalse(result.value)
+        }
+    }
+
+    @Test fun `hasCycle returns false for diamond (convergent paths, no back-edge)`() {
+        //     a
+        //    / \
+        //   b   c
+        //    \ /
+        //     d
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b")
+            val c = putNode("c"); val d = putNode("d")
+            putEdge(a.id, b.id); putEdge(a.id, c.id)
+            putEdge(b.id, d.id); putEdge(c.id, d.id)
+            val result = graphTest.from(a.id) { hasCycle { outgoing<TestEdge>() } }
+            assertIs<Either.Right<Boolean>>(result)
+            assertFalse(result.value)
+        }
+    }
+
+    @Test fun `hasCycle returns true for self-loop`() {
+        // a → a
+        runBlocking {
+            val a = putNode("a")
+            putEdge(a.id, a.id)
+            val result = graphTest.from(a.id) { hasCycle { outgoing<TestEdge>() } }
+            assertIs<Either.Right<Boolean>>(result)
+            assertTrue(result.value)
+        }
+    }
+
+    @Test fun `hasCycle returns true for simple cycle`() {
+        // a → b → c → a
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+            putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, a.id)
+            val result = graphTest.from(a.id) { hasCycle { outgoing<TestEdge>() } }
+            assertIs<Either.Right<Boolean>>(result)
+            assertTrue(result.value)
+        }
+    }
+
+    @Test fun `hasCycle returns true for back-edge to intermediate node`() {
+        // a → b → c → b (cycle between b and c only)
+        runBlocking {
+            val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+            putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, b.id)
+            val result = graphTest.from(a.id) { hasCycle { outgoing<TestEdge>() } }
+            assertIs<Either.Right<Boolean>>(result)
+            assertTrue(result.value)
         }
     }
 

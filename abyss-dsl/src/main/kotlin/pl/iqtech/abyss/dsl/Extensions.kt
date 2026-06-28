@@ -82,6 +82,8 @@ suspend fun TraversalBuilderLike.reaches(targetId: Uuid, block: suspend Traversa
 
 suspend fun TraversalBuilderLike.allReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph = exhaustReachable(block)
 
+suspend fun TraversalBuilderLike.hasCycle(block: suspend TraversalBuilderLike.() -> Unit): Boolean = detectCycle(block)
+
 @JvmName("subgraphAll")
 suspend fun TraversalBuilderLike.subgraph(): Subgraph = collectSubgraph()
 
