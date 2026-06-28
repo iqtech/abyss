@@ -1,3 +1,7 @@
+## [0.12.0] - 2026-06-28
+
+- Document graph algorithms in README with warm-cache correctness notes for `connectedComponents`
+
 ## [0.11.0] - 2026-06-28
 
 - Add graph algorithms: `exhaustReachable`/`allReachable` (BFS exhaust to `Subgraph`), `detectCycle`/`hasCycle` (DFS back-edge detection), and `connectedComponents` (weakly connected grouping via `allNodeIds`)
