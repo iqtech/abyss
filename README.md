@@ -287,8 +287,12 @@ After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or
 
 ## Graph algorithms
 
-All algorithms are available as extension functions on `AbyssEngineLike` or `TraversalBuilderLike`
-and work directly against the Hazelcast in-memory maps — no DB round-trips.
+All algorithms operate against the Hazelcast in-memory maps. When a store is configured,
+individual edge lookups (`outEdges` / `inEdges`) may trigger `MapLoader` reads from the DB on a
+cache miss — the same lazy-load behaviour as any other traversal. **`connectedComponents` is the
+exception:** it discovers nodes via `allNodeIds()`, which reads only the keys currently present in
+the Hazelcast node map. Nodes that have never been loaded (cold after a restart) are not visible
+to it — pre-warm the map or use it only in in-memory-only deployments for a full picture.
 
 ### `allReachable` — BFS exhaust
 
@@ -309,7 +313,7 @@ graphs.
 ### `hasCycle` — DFS cycle detection
 
 Returns `true` if any cycle is reachable from the start node via the specified edge types. Uses
-iterative DFS with a recursion stack (back-edge detection).
+DFS with a recursion stack (back-edge detection).
 
 ```kotlin
 val cyclic: Either<AbyssError, Boolean> = graph.from(alice.id) {
@@ -321,16 +325,18 @@ Useful for validating that a subgraph forms a DAG before operations that assume 
 
 ### `connectedComponents` — weakly connected grouping
 
-Partitions **all nodes in the graph** into weakly connected components — groups where every node
-can reach every other when edges are treated as undirected. Returns `List<Set<Uuid>>`.
+Partitions **all nodes currently in the Hazelcast map** into weakly connected components — groups
+where every node can reach every other when edges are treated as undirected. Returns
+`List<Set<Uuid>>`.
 
 ```kotlin
 val components: List<Set<Uuid>> = graph.connectedComponents()
 // e.g. [{alice, bob, charlie}, {dave, eve}]
 ```
 
-Each call scans `allNodeIds()` (the full in-memory node map) and performs a BFS over both
-`outEdges` and `inEdges` per node. Suitable for one-shot analysis; not intended for hot paths.
+Scans `allNodeIds()` and performs a BFS over both `outEdges` and `inEdges` per node. Results are
+only complete when the node map is fully warm. Suitable for one-shot analysis; not intended for
+hot paths.
 
 ---
 
