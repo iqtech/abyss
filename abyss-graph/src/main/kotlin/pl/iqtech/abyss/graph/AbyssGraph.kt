@@ -13,7 +13,9 @@ import com.hazelcast.config.SerializerConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
@@ -34,6 +36,8 @@ import pl.iqtech.abyss.graph.serialization.EdgeKeySerializer
 import pl.iqtech.abyss.graph.serialization.EdgeLikeHzSerializer
 import pl.iqtech.abyss.graph.serialization.NodeLikeHzSerializer
 import pl.iqtech.abyss.graph.serialization.ReverseEdgeKeySerializer
+import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
+import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
@@ -52,7 +56,8 @@ class AbyssGraph(
     private val hazelcast: HazelcastInstance,
     val nodesMapName: String,
     val edgesMapName: String,
-    val store: AbyssStoreLike? = null,
+    val persistentStore: AbyssStoreLike? = null,
+    val ephemeralStore: AbyssEphemeralStoreLike? = null,
     private val asyncCachePopulation: Boolean = false
 ) : AbyssEngineLike {
 
@@ -65,8 +70,10 @@ class AbyssGraph(
         nodesMap = hazelcast.getMap(nodesMapName)
         edgesMap = hazelcast.getMap(edgesMapName)
         reverseEdgesMap = hazelcast.getMap("${edgesMapName}-reverse")
-        log.info("AbyssGraph started [nodes={}, edges={}, store={}]",
-            nodesMapName, edgesMapName, store?.javaClass?.simpleName ?: "none")
+        log.info("AbyssGraph started [nodes={}, edges={}, persistentStore={}, ephemeralStore={}]",
+            nodesMapName, edgesMapName,
+            persistentStore?.javaClass?.simpleName ?: "none",
+            ephemeralStore?.javaClass?.simpleName ?: "none")
     }
 
     override fun allNodeIds(): Flow<Uuid> = flow {
@@ -113,7 +120,10 @@ class AbyssGraph(
     // partition — partitionPredicate routes the query there without a cluster-wide scatter.
     private fun outEdgeFlow(nodeId: Uuid, predicate: Predicate<EdgeKey, EdgeLike>): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
-            store?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
+            persistentStore?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
+                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, edgeType(edge)), edge)
+            }
+            ephemeralStore?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
                 val key = EdgeKey(edge.fromId, edge.toId, edgeType(edge))
                 when {
                     remaining == null -> edgesMap.putIfAbsent(key, edge)
@@ -130,7 +140,12 @@ class AbyssGraph(
     // the same partition, making this a single-partition key-set query followed by point-lookups.
     private fun inEdgeFlow(nodeId: Uuid, typeFilter: String? = null): Flow<EdgeLike> = flow {
         withContext(Dispatchers.IO) {
-            store?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
+            persistentStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
+                val type = edgeType(edge)
+                edgesMap.putIfAbsent(EdgeKey(edge.fromId, edge.toId, type), edge)
+                reverseEdgesMap.putIfAbsent(ReverseEdgeKey(edge.toId, edge.fromId, type), Unit)
+            }
+            ephemeralStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
                 val type = edgeType(edge)
                 val key = EdgeKey(edge.fromId, edge.toId, type)
                 val revKey = ReverseEdgeKey(edge.toId, edge.fromId, type)
@@ -199,12 +214,17 @@ class AbyssGraph(
             if (error != null) return error.left()
         }
 
-        if (store != null) {
-            val storeResult = store.transaction { ops.forEach { applyToStore(it) } }
+        if (ephemeralStore != null) {
+            val storeResult = ephemeralStore.transaction { ops.forEach { applyEphemeralOp(it) } }
             if (storeResult.isLeft()) {
                 log.error("Ephemeral store commit failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
                 return storeResult
             }
+        }
+        val deletes = ops.filter { it is Op.RemoveNode || it is Op.RemoveEdge }
+        if (persistentStore != null && deletes.isNotEmpty()) {
+            persistentStore.transaction { deletes.forEach { applyPersistentOp(it) } }
+                .onLeft { log.warn("Persistent delete fanout failed during ephemeral commit; stale persistent data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
         }
 
         populateCache(ops, "Cache update failed after ephemeral store commit; cache may be stale")
@@ -240,12 +260,17 @@ class AbyssGraph(
             if (error != null) return error.left()
         }
 
-        if (store != null) {
-            val storeResult = store.transaction { ops.forEach { applyToStore(it) } }
+        if (persistentStore != null) {
+            val storeResult = persistentStore.transaction { ops.forEach { applyPersistentOp(it) } }
             if (storeResult.isLeft()) {
                 log.error("Store transaction failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
                 return storeResult
             }
+        }
+        val deletes = ops.filter { it is Op.RemoveNode || it is Op.RemoveEdge }
+        if (ephemeralStore != null && deletes.isNotEmpty()) {
+            ephemeralStore.transaction { deletes.forEach { applyEphemeralOp(it) } }
+                .onLeft { log.warn("Ephemeral delete fanout failed during transaction; stale ephemeral data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
         }
 
         // Cache failure after a successful store commit is logged but not propagated: the store is
@@ -265,10 +290,17 @@ class AbyssGraph(
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
 
-    private fun AbyssStoreTransactionLike.applyToStore(op: Op) = when (op) {
-        is Op.AddNode    -> saveNode(op.node, op.ttl)
+    private fun AbyssStoreTransactionLike.applyPersistentOp(op: Op) = when (op) {
+        is Op.AddNode    -> saveNode(op.node)
         is Op.RemoveNode -> deleteNode(op.id)
-        is Op.AddEdge    -> saveEdge(op.edge, op.ttl)
+        is Op.AddEdge    -> saveEdge(op.edge)
+        is Op.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
+    }
+
+    private fun AbyssEphemeralStoreTransactionLike.applyEphemeralOp(op: Op) = when (op) {
+        is Op.AddNode    -> saveNode(op.node, op.ttl!!)
+        is Op.RemoveNode -> deleteNode(op.id)
+        is Op.AddEdge    -> saveEdge(op.edge, op.ttl!!)
         is Op.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
     }
 
@@ -312,7 +344,11 @@ class AbyssGraph(
     }
 
     private suspend fun loadAndCacheNode(id: Uuid): NodeLike? {
-        val (node, remaining) = store?.loadNode(id)?.getOrNull() ?: return null
+        val (node, remaining) = coroutineScope {
+            val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadNode(id)?.getOrNull() }
+            val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore?.loadNode(id)?.getOrNull() }
+            fromPersistent.await() ?: fromEphemeral.await()
+        } ?: return null
         node ?: return null
         if (remaining != null && remaining.inWholeSeconds <= 0) return null
         val jId = id.toJavaUuid()
@@ -324,7 +360,11 @@ class AbyssGraph(
     }
 
     private suspend fun loadAndCacheEdge(fromId: Uuid, toId: Uuid, type: String): EdgeLike? {
-        val (edge, remaining) = store?.loadEdge(fromId, toId, type)?.getOrNull() ?: return null
+        val (edge, remaining) = coroutineScope {
+            val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadEdge(fromId, toId, type)?.getOrNull() }
+            val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore?.loadEdge(fromId, toId, type)?.getOrNull() }
+            fromPersistent.await() ?: fromEphemeral.await()
+        } ?: return null
         edge ?: return null
         if (remaining != null && remaining.inWholeSeconds <= 0) return null
         val key = EdgeKey(fromId, toId, type)

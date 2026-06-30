@@ -6,22 +6,34 @@ User-agnostic in-memory graph library backed by Hazelcast with pluggable durable
 
 | Module | Purpose |
 |---|---|
-| `abyss-store-api` | `NodeLike` / `EdgeLike` interfaces and `AbyssStoreLike` contract |
+| `abyss-store-api` | `NodeLike` / `EdgeLike` interfaces, `AbyssStoreLike` (persistent) and `AbyssEphemeralStoreLike` (TTL) contracts |
 | `abyss-dsl` | Engine + traversal interfaces, reified extension functions |
 | `abyss-graph` | Hazelcast `IMap` engine — `AbyssGraph` |
-| `abyss-store-yugabyte` | YugabyteDB store — YSQL for durable, YCQL for ephemeral/TTL |
+| `abyss-store-yugabyte` | YugabyteDB stores — `YugabytePersistentStore` (YSQL) and `YugabyteEphemeralStore` (YCQL) |
 
 ## Pluggable storage
 
-`abyss-store-yugabyte` is the reference implementation; any `AbyssStoreLike` works. The store
-choice affects consistency guarantees on bidirectional edge access:
+`AbyssGraph` accepts two independently nullable stores:
 
-- **Transactional store (e.g. PostgreSQL):** a single `edges` table with an index on `to_id`
-  covers both traversal directions in one atomic write. Forward and reverse access are always in sync.
-- **YCQL (`abyss-store-yugabyte` ephemeral layer):** YCQL has no multi-statement transaction support.
-  Efficient reverse lookups on ephemeral data require either a secondary index (with Cassandra caveats)
-  or a denormalized reverse table — and those two writes are best-effort. A failure between them leaves
-  the maps temporarily inconsistent until the next write or eviction.
+- **`persistentStore: AbyssStoreLike?`** — durable, no-TTL writes. Any `AbyssStoreLike` works here; the
+  reference implementation is `YugabytePersistentStore` (YSQL/PostgreSQL-compatible).
+- **`ephemeralStore: AbyssEphemeralStoreLike?`** — TTL-bound writes. Any `AbyssEphemeralStoreLike` works;
+  the reference implementation is `YugabyteEphemeralStore` (YCQL/Cassandra-compatible).
+
+Either store can be `null`. Passing neither gives a pure in-memory (Hazelcast-only) mode.
+
+The store split affects consistency guarantees on bidirectional edge access:
+
+- **Transactional store (e.g. PostgreSQL / `YugabytePersistentStore`):** a single `edges` table with an
+  index on `to_id` covers both traversal directions in one atomic write. Forward and reverse access are
+  always in sync.
+- **YCQL (`YugabyteEphemeralStore`):** YCQL has no multi-statement transaction support. Efficient reverse
+  lookups on ephemeral data require a denormalized reverse table — and those two writes are best-effort.
+  A failure between them leaves the maps temporarily inconsistent until the next write or eviction.
+
+Delete operations issued from either DSL builder (`transaction { }` or `ephemeral { }`) are fanned out
+to **both** stores, so a node removed via `transaction { removeNode(id) }` is also deleted from the
+ephemeral store (best-effort; fanout failure is logged but not propagated).
 
 ---
 
@@ -144,19 +156,26 @@ val astronomyFans = astronomers.getOrNull()!!.nodes.filterIsInstance<Person>()
 Apply the schema scripts from `abyss-store-yugabyte/src/main/resources/db/` then:
 
 ```kotlin
-val store = YugabyteAbyssStoreLike.create(
-    ysqlUrl          = "jdbc:postgresql://localhost:5433/my_graph",
-    ysqlUser         = "abyss",
-    ysqlPassword     = "abyss",
-    ycqlHost         = "localhost",
-    ycqlPort         = 9042,
-    ycqlDatacenter   = "datacenter1",
-    module           = module,
+val persistentStore = YugabytePersistentStore.create(
+    ysqlUrl      = "jdbc:postgresql://localhost:5433/my_graph",
+    ysqlUser     = "abyss",
+    ysqlPassword = "abyss",
+    module       = module,
+)
+
+val ephemeralStore = YugabyteEphemeralStore.create(
+    ycqlHost       = "localhost",
+    ycqlPort       = 9042,
+    ycqlDatacenter = "datacenter1",
+    module         = module,
 )
 
 val config = Config().registerAbyssSerializers(module)
 val hz     = Hazelcast.newHazelcastInstance(config)
-val graph  = AbyssGraph(hz, "nodes", "edges", store = store)
+val graph  = AbyssGraph(hz, "nodes", "edges",
+    persistentStore = persistentStore,
+    ephemeralStore  = ephemeralStore,
+)
 
 // durable write (goes to YSQL)
 graph.transaction {
@@ -169,31 +188,40 @@ graph.ephemeral(ttl = 60.seconds) {
 }
 ```
 
-Cache misses trigger automatic load from the store via Hazelcast `MapLoader`.
+Either store can be omitted. Pass only `persistentStore` for YSQL-only durability (no TTL support),
+or only `ephemeralStore` for TTL-only data (nothing survives a YCQL keyspace drop). Pass neither for
+pure in-memory (Hazelcast-only) mode.
+
+Cache misses trigger automatic load from whichever store(s) are configured; both are queried in
+parallel and the persistent result wins if both return a hit.
 
 #### Multiple graphs in one application
 
-Each graph needs its own YSQL schema and YCQL keyspace. Pass them to `create()`:
+Each graph needs its own YSQL schema and YCQL keyspace. Pass them to each `create()`:
 
 ```kotlin
-val socialStore = YugabyteAbyssStoreLike.create(
+val socialPersistent = YugabytePersistentStore.create(
     ysqlUrl = "jdbc:postgresql://localhost:5433/mydb",
     ysqlUser = "app", ysqlPassword = "secret",
-    module = socialModule,
-    ysqlSchema  = "social",
-    ycqlKeyspace = "social_graph"
+    module = socialModule, ysqlSchema = "social",
+)
+val socialEphemeral = YugabyteEphemeralStore.create(
+    module = socialModule, ycqlKeyspace = "social_graph",
 )
 
-val productStore = YugabyteAbyssStoreLike.create(
+val productPersistent = YugabytePersistentStore.create(
     ysqlUrl = "jdbc:postgresql://localhost:5433/mydb",
     ysqlUser = "app", ysqlPassword = "secret",
-    module = productModule,
-    ysqlSchema  = "product",
-    ycqlKeyspace = "product_graph"
+    module = productModule, ysqlSchema = "product",
+)
+val productEphemeral = YugabyteEphemeralStore.create(
+    module = productModule, ycqlKeyspace = "product_graph",
 )
 
-val socialGraph  = AbyssGraph(hz, "social-nodes",  "social-edges",  socialStore)
-val productGraph = AbyssGraph(hz, "product-nodes", "product-edges", productStore)
+val socialGraph  = AbyssGraph(hz, "social-nodes",  "social-edges",
+    persistentStore = socialPersistent, ephemeralStore = socialEphemeral)
+val productGraph = AbyssGraph(hz, "product-nodes", "product-edges",
+    persistentStore = productPersistent, ephemeralStore = productEphemeral)
 ```
 
 Hazelcast map names must also be distinct (the `nodesMapName` / `edgesMapName` arguments above).

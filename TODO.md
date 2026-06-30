@@ -123,6 +123,12 @@
   `sub.frontier.isNotEmpty()`. Sub-traversal edges/visited IDs stay siloed — don't bleed into
   the parent, consistent with predicate-check semantics.
 
+- **✅ 2.10 Two separate stores: ephemeral and persistent**
+  Currently a single store is configured and both ephemeral (TTL) and persistent (no-TTL) data are
+  written to it at once. Split into two independent store configurations — one for ephemeral data,
+  one for persistent data. Each store should be nullable so callers can create an ephemeral-only
+  (in-memory) setup or a persistent-only setup without requiring both backends to be present.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
