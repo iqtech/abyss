@@ -50,7 +50,7 @@ interface TraversalBuilderLike {
     suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph
     suspend fun detectCycle(block: suspend TraversalBuilderLike.() -> Unit): Boolean
-    fun loop(
+    fun paths(
         strategy: TraversalStrategy = TraversalStrategy.DFS,
         direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
         maxDepth: Int = Int.MAX_VALUE,

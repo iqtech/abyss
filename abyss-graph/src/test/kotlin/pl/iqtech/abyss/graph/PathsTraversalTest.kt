@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 
-class LoopTraversalTest {
+class PathsTraversalTest {
 
     @BeforeTest fun clear() {
         graphTestHz.getMap<Any, Any>("g-nodes").clear()
@@ -43,33 +43,33 @@ class LoopTraversalTest {
 
     // ── basic path finding ────────────────────────────────────────────────────
 
-    @Test fun `loop DFS emits path for single hop`() = runBlocking {
+    @Test fun `paths DFS emits path for single hop`() = runBlocking {
         val a = putNode("a"); val b = putNode("b")
         putEdge(a.id, b.id)
         val paths = graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+            paths(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         }
         val result = (paths as Either.Right).value
         assertEquals(1, result.size)
         assertEquals(listOf(a, b), result[0].nodes)
     }
 
-    @Test fun `loop DFS emits both branches from a fork`() = runBlocking {
+    @Test fun `paths DFS emits both branches from a fork`() = runBlocking {
         val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
         putEdge(a.id, b.id); putEdge(a.id, c.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+            paths(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         } as Either.Right).value
         assertEquals(2, paths.size)
         val terminals = paths.map { it.nodes.last() }.toSet()
         assertEquals(setOf(b, c), terminals)
     }
 
-    @Test fun `loop DFS path contains correct edge`() = runBlocking {
+    @Test fun `paths DFS path contains correct edge`() = runBlocking {
         val a = putNode("a"); val b = putNode("b")
         val edge = putEdge(a.id, b.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+            paths(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         } as Either.Right).value
         assertEquals(1, paths[0].edges.size)
         assertEquals(edge.fromId to edge.toId, paths[0].edges[0].fromId to paths[0].edges[0].toId)
@@ -81,7 +81,7 @@ class LoopTraversalTest {
         val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
         putEdge(a.id, b.id); putEdge(b.id, c.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS,
+            paths(TraversalStrategy.DFS,
                 edgeVisitor = ::followAll,
                 nodeEvaluator = { _, node ->
                     if (node == b) Evaluation.EXCLUDE_AND_CONTINUE else Evaluation.INCLUDE_AND_PRUNE
@@ -100,7 +100,7 @@ class LoopTraversalTest {
         val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
         putEdge(a.id, b.id); putEdge(b.id, c.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS,
+            paths(TraversalStrategy.DFS,
                 edgeVisitor = ::followAll,
                 nodeEvaluator = { _, node ->
                     if (node == b) Evaluation.EXCLUDE_AND_PRUNE else Evaluation.INCLUDE_AND_PRUNE
@@ -116,7 +116,7 @@ class LoopTraversalTest {
         val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
         putEdge(a.id, b.id); putEdge(b.id, c.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS, maxDepth = 1,
+            paths(TraversalStrategy.DFS, maxDepth = 1,
                 edgeVisitor = ::followAll,
                 nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_CONTINUE }
             ).toList()
@@ -132,7 +132,7 @@ class LoopTraversalTest {
         val a = putNode("a"); val b = putNode("b")
         putEdge(a.id, b.id); putEdge(b.id, a.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+            paths(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         } as Either.Right).value
         // b is visited, a is already in visited — no infinite loop
         assertEquals(1, paths.size)
@@ -142,20 +142,21 @@ class LoopTraversalTest {
     // ── BFS shortest paths first ──────────────────────────────────────────────
 
     @Test fun `loop BFS emits shorter paths before longer ones`() = runBlocking {
-        // a → b → d  (2 hops)
-        // a → c → d  (2 hops, same length — order within same depth is unspecified)
-        // a → d      (1 hop — should come first)
-        val a = putNode("a"); val b = putNode("b")
-        val c = putNode("c"); val d = putNode("d")
-        putEdge(a.id, d.id)   // direct path
+        // a → d      (1 hop, direct)
+        // a → b → d  (2 hops, b is INCLUDE_AND_CONTINUE so Path([a,b,d]) has depth=2)
+        val a = putNode("a"); val b = putNode("b"); val d = putNode("d")
+        putEdge(a.id, d.id)
         putEdge(a.id, b.id); putEdge(b.id, d.id)
-        putEdge(a.id, c.id); putEdge(c.id, d.id)
-        val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.BFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+        val result = (graphTest.from(a.id) {
+            paths(TraversalStrategy.BFS, edgeVisitor = ::followAll,
+                nodeEvaluator = { _, node -> if (node == b) Evaluation.INCLUDE_AND_CONTINUE else Evaluation.INCLUDE_AND_PRUNE }
+            ).toList()
         } as Either.Right).value
-        // shortest path (depth 1) must come first
-        assertEquals(1, paths[0].depth)
-        assertEquals(d, paths[0].nodes.last())
+        assertEquals(2, result.size)
+        assertEquals(1, result[0].depth)   // direct a→d emitted first
+        assertEquals(d, result[0].nodes.last())
+        assertEquals(2, result[1].depth)   // a→b→d emitted second
+        assertEquals(d, result[1].nodes.last())
     }
 
     // ── EdgeTraversalDirection ───────────────────────────────────────────────
@@ -164,7 +165,7 @@ class LoopTraversalTest {
         val a = putNode("a"); val b = putNode("b")
         putEdge(b.id, a.id)  // b → a (incoming to a)
         val paths = (graphTest.from(a.id) {
-            loop(direction = EdgeTraversalDirection.OUT,
+            paths(direction = EdgeTraversalDirection.OUT,
                 edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         } as Either.Right).value
         assertTrue(paths.isEmpty())
@@ -175,7 +176,7 @@ class LoopTraversalTest {
         putEdge(b.id, a.id)  // b → a (incoming to a)
         putEdge(a.id, c.id)  // a → c (outgoing from a, should be ignored)
         val paths = (graphTest.from(a.id) {
-            loop(direction = EdgeTraversalDirection.IN,
+            paths(direction = EdgeTraversalDirection.IN,
                 edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         } as Either.Right).value
         assertEquals(1, paths.size)
@@ -188,7 +189,7 @@ class LoopTraversalTest {
         val a = putNode("a"); val b = putNode("b")
         val edge = putEdge(a.id, b.id)
         val paths = (graphTest.from(a.id) {
-            loop(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+            paths(TraversalStrategy.DFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
         } as Either.Right).value
         val list = paths[0].toEitherList()
         assertEquals(3, list.size)

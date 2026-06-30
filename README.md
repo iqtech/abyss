@@ -463,7 +463,7 @@ Scans `allNodeIds()` and performs a BFS over both `outEdges` and `inEdges` per n
 only complete when the node map is fully warm. Suitable for one-shot analysis; not intended for
 hot paths.
 
-### `loop` — Neo4j-style path traversal
+### `paths` — Neo4j-style path traversal
 
 Walks the graph from the start node using caller-controlled visitors, emitting a `Path` for each
 accepted terminal. Two visitors control the traversal:
@@ -481,7 +481,7 @@ context-aware (e.g. prune if a certain node type already appears in the path).
 ```kotlin
 // Find all permission paths from alice to any Resource via ACL edges (DFS, outgoing only, max 5 hops)
 val paths: Either<AbyssError, List<Path>> = graph.from(alice.id) {
-    loop(
+    paths(
         strategy = TraversalStrategy.DFS,
         direction = EdgeTraversalDirection.OUT,
         maxDepth = 5,

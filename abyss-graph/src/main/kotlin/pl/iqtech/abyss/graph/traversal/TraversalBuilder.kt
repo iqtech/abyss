@@ -232,7 +232,7 @@ class TraversalBuilder(
         return false
     }
 
-    override fun loop(
+    override fun paths(
         strategy: TraversalStrategy,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
