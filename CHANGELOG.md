@@ -1,3 +1,7 @@
+## [0.19.0] - 2026-06-30
+
+- Rename `loop` to `paths` across DSL interface, implementation, tests, and README for clarity
+
 ## [0.18.0] - 2026-06-30
 
 - Add Neo4j-style `loop` traversal: `TraversalStrategy` (DFS/BFS), `EdgeTraversalDirection` (IN/OUT/BOTH), `Evaluation` (4-state per-node decision), `Path` with `toEitherList()`, and `Flow<Path>` result emitting one path per accepted terminal
