@@ -332,6 +332,32 @@ hop results. Because `nodes<T>` prunes the visited history, `subgraph<Person>()`
 multi-hop traversal returns only the Persons that survived node filters — not every Person
 ever reached.
 
+#### Connectivity filters
+
+`hasOutgoing<E>(targetId)` keeps only frontier nodes that have an outgoing edge of type `E` to a
+specific target node. `hasOutgoing<E, N>()` keeps only those with an outgoing edge of type `E` to
+**any** node of type `N`. Both leave the frontier where it is — they filter without advancing it.
+`hasIncoming<E>(sourceId)` and `hasIncoming<E, N>()` are the symmetric incoming variants.
+
+Chaining two filters expresses AND — a node must satisfy both to survive:
+
+```kotlin
+// "People Alice knows who like Astronomy specifically"
+val result = graph.from(alice.id) {
+    outgoing<Knows>()
+    hasOutgoing<Likes>(astronomyInterestId)    // keep only those with a Likes edge to this node
+    collectNodes<Person>()
+}
+
+// conjunction — "People Alice knows who like BOTH Astronomy and Jazz"
+val both = graph.from(alice.id) {
+    outgoing<Knows>()
+    hasOutgoing<Likes>(astronomyInterestId)    // AND
+    hasOutgoing<Likes>(jazzInterestId)
+    collectNodes<Person>()
+}
+```
+
 #### Cold-restart behaviour
 
 After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or `inEdges(nodeId)` call, Abyss loads the relevant edges from the store (if configured) and warms both `edgesMap` and `reverseEdgesMap` before executing the query. Subsequent calls for the same node are served from the warm cache.

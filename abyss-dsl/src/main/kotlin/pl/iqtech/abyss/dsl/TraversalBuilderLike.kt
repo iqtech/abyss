@@ -13,6 +13,10 @@ interface TraversalBuilderLike {
     suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)? = null)
     suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)? = null)
     suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike) -> Boolean)? = null)
+    suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: Uuid)
+    suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String)
+    suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: Uuid)
+    suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String)
     suspend fun flushFrontierNodes(): Flow<NodeLike>
     suspend fun collectSubgraph(nodeType: String? = null): Subgraph
     suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean

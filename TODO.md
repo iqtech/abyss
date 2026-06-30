@@ -44,6 +44,11 @@
   `nodePredicate` field on `TraversalBuilder` (or a staging step) and a `collectNodes()` extension
   that materialises using it.
 
+- **✅ 1.8 Traversal DSL: frontier connectivity filters (`hasOutgoing` / `hasIncoming`)**
+  Add `hasOutgoing<E>(toId)`, `hasOutgoing<E, N>()` and symmetric `hasIncoming` variants that
+  filter the frontier in place (without advancing it), keeping only nodes that have the specified
+  edge to a particular target node or to any node of a given type.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

@@ -84,6 +84,62 @@ class TraversalBuilder(
         frontier = matchingIds
     }
 
+    override suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: Uuid) {
+        val matching = coroutineScope {
+            frontier.map { id ->
+                async(Dispatchers.IO) {
+                    if (engine.outEdges(id, edgeType).toList().any { it.toId == toId }) id else null
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matching)
+        frontier = matching
+    }
+
+    override suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String) {
+        val matching = coroutineScope {
+            frontier.map { id ->
+                async(Dispatchers.IO) {
+                    val hasMatch = engine.outEdges(id, edgeType).toList().any { edge ->
+                        engine.node(edge.toId).getOrNull()
+                            ?.let { it::class.findAnnotation<SerialName>()?.value == nodeType } == true
+                    }
+                    if (hasMatch) id else null
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matching)
+        frontier = matching
+    }
+
+    override suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: Uuid) {
+        val matching = coroutineScope {
+            frontier.map { id ->
+                async(Dispatchers.IO) {
+                    if (engine.inEdges(id, edgeType).toList().any { it.fromId == fromId }) id else null
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matching)
+        frontier = matching
+    }
+
+    override suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String) {
+        val matching = coroutineScope {
+            frontier.map { id ->
+                async(Dispatchers.IO) {
+                    val hasMatch = engine.inEdges(id, edgeType).toList().any { edge ->
+                        engine.node(edge.fromId).getOrNull()
+                            ?.let { it::class.findAnnotation<SerialName>()?.value == nodeType } == true
+                    }
+                    if (hasMatch) id else null
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matching)
+        frontier = matching
+    }
+
     override suspend fun flushFrontierNodes(): Flow<NodeLike> = flow {
         for (id in frontier) engine.node(id).getOrNull()?.let { emit(it) }
     }

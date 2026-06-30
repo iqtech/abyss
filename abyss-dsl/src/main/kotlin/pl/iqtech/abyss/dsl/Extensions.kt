@@ -79,6 +79,24 @@ suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes() =
 suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline filter: (N) -> Boolean) =
     filterFrontierByNode(N::class.findAnnotation<SerialName>()!!.value, { filter(it as N) })
 
+suspend inline fun <reified E : EdgeLike> TraversalBuilderLike.hasOutgoing(toId: Uuid) =
+    filterFrontierByOutEdgeTo(E::class.findAnnotation<SerialName>()!!.value, toId)
+
+suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.hasOutgoing() =
+    filterFrontierByOutEdgeToType(
+        E::class.findAnnotation<SerialName>()!!.value,
+        N::class.findAnnotation<SerialName>()!!.value
+    )
+
+suspend inline fun <reified E : EdgeLike> TraversalBuilderLike.hasIncoming(fromId: Uuid) =
+    filterFrontierByInEdgeFrom(E::class.findAnnotation<SerialName>()!!.value, fromId)
+
+suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.hasIncoming() =
+    filterFrontierByInEdgeFromType(
+        E::class.findAnnotation<SerialName>()!!.value,
+        N::class.findAnnotation<SerialName>()!!.value
+    )
+
 @JvmName("collectNodesAll")
 suspend fun TraversalBuilderLike.collectNodes(): Flow<NodeLike> = flushFrontierNodes()
 

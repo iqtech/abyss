@@ -6,6 +6,8 @@ import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.collectNodes
+import pl.iqtech.abyss.dsl.hasIncoming
+import pl.iqtech.abyss.dsl.hasOutgoing
 import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
@@ -266,6 +268,98 @@ class TraversalTest {
 
             val testNodes = sg.nodes.filterIsInstance<TestNode>().toSet()
             assertEquals(setOf(alice, bob), testNodes)
+        }
+    }
+
+    // ── hasOutgoing / hasIncoming ─────────────────────────────────────────────
+
+    @Test fun `hasOutgoing specific target filters frontier`() {
+        runBlocking {
+            val root   = putNode("root")
+            val a      = putNode("a")
+            val b      = putNode("b")
+            val target = putNode("target")
+            putEdge(root.id, a.id)
+            putEdge(root.id, b.id)
+            putEdge(a.id, target.id)   // only a has edge to target
+
+            val result = graphTest.from(root.id) {
+                outgoing<TestEdge>()
+                hasOutgoing<TestEdge>(target.id)
+                collectNodes<TestNode>().toList()
+            }
+            assertIs<Either.Right<List<TestNode>>>(result)
+            assertEquals(listOf(a), result.value)
+        }
+    }
+
+    @Test fun `hasOutgoing type-based filters frontier`() {
+        runBlocking {
+            val root  = putNode("root")
+            val a     = putNode("a")
+            val b     = putNode("b")
+            val other = OtherNode(id = Uuid.random())
+            graphTest.transaction { addNode(other) }
+            putEdge(root.id, a.id)
+            putEdge(root.id, b.id)
+            putEdge(a.id, other.id)   // only a has edge to an OtherNode
+
+            val result = graphTest.from(root.id) {
+                outgoing<TestEdge>()
+                hasOutgoing<TestEdge, OtherNode>()
+                collectNodes<TestNode>().toList()
+            }
+            assertIs<Either.Right<List<TestNode>>>(result)
+            assertEquals(listOf(a), result.value)
+        }
+    }
+
+    @Test fun `hasIncoming specific source filters frontier`() {
+        runBlocking {
+            val root   = putNode("root")
+            val source = putNode("source")
+            val a      = putNode("a")
+            val b      = putNode("b")
+            putEdge(root.id,   a.id)   // root → a, root → b (to build frontier)
+            putEdge(root.id,   b.id)
+            putEdge(source.id, a.id)   // only a has incoming from source
+
+            val result = graphTest.from(root.id) {
+                outgoing<TestEdge>()
+                hasIncoming<TestEdge>(source.id)
+                collectNodes<TestNode>().toList()
+            }
+            assertIs<Either.Right<List<TestNode>>>(result)
+            assertEquals(listOf(a), result.value)
+        }
+    }
+
+    @Test fun `hasOutgoing conjunction - AND two independent edge conditions`() {
+        runBlocking {
+            val alice   = putNode("alice")
+            val bob     = putNode("bob")
+            val charlie = putNode("charlie")
+            val newYork = putNode("NewYork")
+            val astronomy = OtherNode(id = Uuid.random())
+            graphTest.transaction { addNode(astronomy) }
+
+            graphTest.transaction {
+                addEdge(TestEdge(fromId = alice.id,   toId = bob.id,       label = "knows"))
+                addEdge(TestEdge(fromId = alice.id,   toId = charlie.id,   label = "knows"))
+                addEdge(TestEdge(fromId = bob.id,     toId = newYork.id,   label = "livesIn"))
+                // charlie has no livesIn edge
+                addEdge(TestEdge(fromId = bob.id,     toId = astronomy.id, label = "likes"))
+                addEdge(TestEdge(fromId = charlie.id, toId = astronomy.id, label = "likes"))
+            }
+
+            val result = graphTest.from(alice.id) {
+                outgoing<TestEdge>()                       // {bob, charlie}
+                hasOutgoing<TestEdge>(newYork.id)          // {bob} — charlie not in NY
+                hasOutgoing<TestEdge, OtherNode>()         // {bob} — bob likes astronomy
+                collectNodes<TestNode>().toList()
+            }
+            assertIs<Either.Right<List<TestNode>>>(result)
+            assertEquals(listOf(bob), result.value)
         }
     }
 
