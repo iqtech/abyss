@@ -69,7 +69,26 @@ class TraversalBuilder(
         allVisitedIds += frontier
     }
 
-    override suspend fun collectNodes(nodeType: String): Flow<NodeLike> {
+    override suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike) -> Boolean)?) {
+        val matchingIds = coroutineScope {
+            frontier.map { id ->
+                async(Dispatchers.IO) {
+                    val node = engine.node(id).getOrNull() ?: return@async null
+                    if (node::class.findAnnotation<SerialName>()?.value != nodeType) return@async null
+                    if (predicate != null && !predicate(node)) return@async null
+                    id
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matchingIds)
+        frontier = matchingIds
+    }
+
+    override suspend fun flushFrontierNodes(): Flow<NodeLike> = flow {
+        for (id in frontier) engine.node(id).getOrNull()?.let { emit(it) }
+    }
+
+    private suspend fun collectNodes(nodeType: String): Flow<NodeLike> {
         val nodes = coroutineScope {
             frontier.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
         }
@@ -82,7 +101,7 @@ class TraversalBuilder(
         }
     }
 
-    override suspend fun collectNodes(nodeType: String, filter: (NodeLike) -> Boolean): Flow<NodeLike> =
+    private suspend fun collectNodes(nodeType: String, filter: (NodeLike) -> Boolean): Flow<NodeLike> =
         collectNodes(nodeType).filter { filter(it) }
 
     override suspend fun collectSubgraph(nodeType: String?): Subgraph {

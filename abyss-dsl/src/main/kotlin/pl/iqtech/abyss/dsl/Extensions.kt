@@ -5,7 +5,6 @@ import arrow.core.flatMap
 import arrow.core.left
 import arrow.core.right
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerialName
@@ -74,11 +73,17 @@ suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilder
 suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilderLike.incoming(noinline predicate: (N) -> Boolean) =
     addNodeHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
-suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(): Flow<N> =
-    collectNodes(N::class.findAnnotation<SerialName>()!!.value).filterIsInstance<N>()
+suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes() =
+    filterFrontierByNode(N::class.findAnnotation<SerialName>()!!.value, null)
 
-suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline filter: (N) -> Boolean): Flow<N> =
-    collectNodes(N::class.findAnnotation<SerialName>()!!.value) { filter(it as N) }.filterIsInstance<N>()
+suspend inline fun <reified N : NodeLike> TraversalBuilderLike.nodes(noinline filter: (N) -> Boolean) =
+    filterFrontierByNode(N::class.findAnnotation<SerialName>()!!.value, { filter(it as N) })
+
+@JvmName("collectNodesAll")
+suspend fun TraversalBuilderLike.collectNodes(): Flow<NodeLike> = flushFrontierNodes()
+
+suspend inline fun <reified N : NodeLike> TraversalBuilderLike.collectNodes(): Flow<N> =
+    flushFrontierNodes().filterIsInstance<N>()
 
 suspend fun TraversalBuilderLike.reaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean = checkReaches(targetId, block)
 

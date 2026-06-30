@@ -35,6 +35,18 @@ choice affects consistency guarantees on bidirectional edge access:
 data class Person(
     override val id: Uuid = Uuid.random(),
     val name: String,
+    val age: Int = 0,
+    val interests: List<String> = emptyList(),
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
+) : NodeLike
+
+@Serializable
+@SerialName("interest")
+data class Interest(
+    override val id: Uuid = Uuid.random(),
+    val name: String,
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
@@ -43,6 +55,18 @@ data class Person(
 @Serializable
 @SerialName("knows")
 data class Knows(
+    override val fromId: Uuid,
+    override val toId: Uuid,
+    val since: Instant = Clock.System.now(),   // edges carry data too
+    val strength: Int = 1,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
+) : EdgeLike
+
+@Serializable
+@SerialName("likes")
+data class Likes(
     override val fromId: Uuid,
     override val toId: Uuid,
     override val tags: List<String> = emptyList(),
@@ -82,8 +106,12 @@ val alice: Either<AbyssError, Person> = graph.node<Person>(alice.id)
 // traverse — frontier nodes only
 graph.from(alice.id) {
     outgoing<Knows>()
-    nodes<Person>().collect { println(it.name) }            // prints "Bob" — parallel fetch
-    nodes<Person> { it.name == "Bob" }.collect { println(it.name) }  // filtered — sequential fetch
+    nodes<Person>()
+    collectNodes<Person>().collect { println(it.name) }             // prints everyone alice knows
+
+    // with predicate — only Bob
+    nodes<Person> { it.name == "Bob" }
+    collectNodes<Person>().collect { println(it.name) }
 }
 
 // traverse — full subgraph (all visited nodes + all traversed edges)
@@ -96,6 +124,17 @@ val result: Either<AbyssError, Subgraph> = graph.from(alice.id) {
 val (persons, edges) = result.getOrNull()!!
 persons.forEach { println((it as Person).name) }
 edges.forEach { println("${it.fromId} → ${it.toId}") }
+
+// multi-hop with edge + node filters — collect intermediate nodes via subgraph
+// "Alice's adult acquaintances (known since 2020+) who like Astronomy"
+val astronomers: Either<AbyssError, Subgraph> = graph.from(alice.id) {
+    outgoing<Knows> { it.since > Instant.parse("2020-01-01T00:00:00Z") }  // edge filter
+    nodes<Person> { it.age > 18 }              // narrow frontier to adults
+    outgoing<Likes>()                          // hop to their interests
+    nodes<Interest> { it.name == "Astronomy" } // narrow to Astronomy
+    subgraph<Person>()                         // collect the intermediate Person nodes
+}
+val astronomyFans = astronomers.getOrNull()!!.nodes.filterIsInstance<Person>()
 ```
 
 ---
@@ -268,16 +307,30 @@ Both maps are kept consistent by every `addEdge` / `removeEdge` transaction, inc
 
 #### Node collection
 
-`nodes<T>()` (no filter) fetches all frontier nodes in parallel — all Hazelcast point-lookups
-fire concurrently and results are emitted after all complete.
+`nodes<T>()` narrows the frontier to nodes of type `T`, loading each one to check its type.
+It is a **non-terminal step** — the frontier is updated in place, so subsequent `outgoing` /
+`incoming` hops travel only from surviving nodes. Nodes pruned by `nodes` are also removed
+from the visited history, so they don't appear in a later `subgraph` call.
 
-`nodes<T> { predicate }` (with filter) fetches sequentially and emits on the fly, so the caller
-can short-circuit (`.first()`, `.take(n)`) without fetching nodes it will never use.
+`nodes<T> { predicate }` does the same and additionally discards nodes where the predicate
+returns false.
+
+`collectNodes<T>()` is the terminal that emits all nodes currently in the frontier as a
+`Flow<T>`. Call it after one or more `nodes<T>` steps to materialise the result:
+
+```kotlin
+outgoing<Knows>()
+nodes<Person> { it.age > 18 }   // non-terminal: narrow frontier
+collectNodes<Person>().toList() // terminal: emit survivors
+```
 
 `subgraph<T>()` returns a `Subgraph(nodes, edges)` containing every node visited across **all hops**
 (including the start node) and every edge traversed. Nodes are filtered to type `T`; use the
-no-arg `subgraph()` to get all visited nodes regardless of type. Nodes are resolved in parallel;
-edges are already in memory from the hop results.
+no-arg `subgraph()` to get all visited nodes regardless of type, or partition the result manually
+to extract multiple types. Nodes are resolved in parallel; edges are already in memory from the
+hop results. Because `nodes<T>` prunes the visited history, `subgraph<Person>()` after a
+multi-hop traversal returns only the Persons that survived node filters — not every Person
+ever reached.
 
 #### Cold-restart behaviour
 

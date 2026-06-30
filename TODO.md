@@ -37,6 +37,13 @@
   timestamp) on the ephemeral node/edge tables, so the remaining TTL can be calculated at
   read time and applied to the cache entry.
 
+- **✅ 1.7 Traversal DSL: non-terminal `nodes` filter + `collectNodes()` terminal**
+  `nodes<N>(filter)` in `Extensions.kt:80` is currently a terminal that returns `Flow<N>` directly.
+  The desired syntax `outgoing { edgePredicate }; nodes { nodePredicate }; collectNodes()` requires
+  a separate non-terminal node-filter step and a no-arg `collectNodes()` terminal. Needs a
+  `nodePredicate` field on `TraversalBuilder` (or a staging step) and a `collectNodes()` extension
+  that materialises using it.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

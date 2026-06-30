@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.Subgraph
+import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
@@ -46,7 +47,7 @@ class TraversalTest {
     @Test fun `from - no hops returns starting node`() {
         runBlocking {
             val a = putNode("a")
-            val result = graphTest.from(a.id) { nodes<TestNode>().toList() }
+            val result = graphTest.from(a.id) { nodes<TestNode>(); collectNodes<TestNode>().toList() }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(listOf(a), result.value)
         }
@@ -64,7 +65,8 @@ class TraversalTest {
 
             val result = graphTest.from(a.id) {
                 outgoing<TestEdge>()
-                nodes<TestNode>().toList()
+                nodes<TestNode>()
+                collectNodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(setOf(b, c), result.value.toSet())
@@ -84,7 +86,8 @@ class TraversalTest {
             val result = graphTest.from(a.id) {
                 outgoing<TestEdge>()
                 outgoing<TestEdge>()
-                nodes<TestNode>().toList()
+                nodes<TestNode>()
+                collectNodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(listOf(c), result.value)
@@ -101,7 +104,8 @@ class TraversalTest {
 
             val result = graphTest.from(b.id) {
                 incoming<TestEdge>()
-                nodes<TestNode>().toList()
+                nodes<TestNode>()
+                collectNodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(listOf(a), result.value)
@@ -126,7 +130,8 @@ class TraversalTest {
 
             val result = graphTest.from(a.id) {
                 outgoing<TestEdge>({ it.label == "keep" })
-                nodes<TestNode>().toList()
+                nodes<TestNode>()
+                collectNodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(listOf(b), result.value)

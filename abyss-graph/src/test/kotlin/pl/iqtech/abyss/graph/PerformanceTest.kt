@@ -3,6 +3,7 @@ package pl.iqtech.abyss.graph
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.EdgeLike
@@ -76,7 +77,7 @@ class PerformanceTest {
             repeat(20) {
                 perfGraph.from(ids.random()) {
                     outgoing<TestEdge>(); outgoing<TestEdge>(); outgoing<TestEdge>()
-                    nodes<TestNode>().toList()
+                    nodes<TestNode>(); collectNodes<TestNode>().toList()
                 }
             }
         }
@@ -87,7 +88,7 @@ class PerformanceTest {
                 repeat(n) {
                     perfGraph.from(ids.random()) {
                         outgoing<TestEdge>(); outgoing<TestEdge>(); outgoing<TestEdge>()
-                        nodes<TestNode>().toList()
+                        nodes<TestNode>(); collectNodes<TestNode>().toList()
                     }
                 }
             }
