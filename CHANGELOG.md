@@ -1,3 +1,7 @@
+## [0.17.0] - 2026-06-30
+
+- Split single `AbyssStoreLike` store into separate `persistentStore` and `ephemeralStore` on `AbyssGraph`; `YugabyteAbyssStoreLike` replaced by `YugabytePersistentStore` (YSQL) and `YugabyteEphemeralStore` (YCQL), each independently nullable
+
 ## [0.16.0] - 2026-06-30
 
 - Add `hasTraversal { }` multi-hop frontier filter to the traversal DSL, keeping only frontier nodes where an arbitrary sub-traversal yields a non-empty result
