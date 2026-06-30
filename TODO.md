@@ -115,6 +115,14 @@
   only single-key `getAsync(K)` is available. The premise cannot be implemented without a Hazelcast
   API that doesn't exist yet.
 
+- **✅ 2.9 Traversal DSL: `hasTraversal { }` frontier filter**
+  Filter frontier nodes by whether a sub-traversal from each node yields a non-empty result.
+  Single `hasTraversal { }` (not split by direction — the block expresses direction via
+  `outgoing`/`incoming` calls). Adds `filterFrontierByTraversal(block)` to `TraversalBuilderLike`;
+  implementation spawns a child `TraversalBuilder` per frontier node and keeps the node if
+  `sub.frontier.isNotEmpty()`. Sub-traversal edges/visited IDs stay siloed — don't bleed into
+  the parent, consistent with predicate-check semantics.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

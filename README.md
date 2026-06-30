@@ -358,6 +358,24 @@ val both = graph.from(alice.id) {
 }
 ```
 
+`hasTraversal { }` is a generalised form: it runs an arbitrary sub-traversal from each frontier
+node and keeps only those where the sub-traversal ends with a non-empty frontier. Unlike
+`hasOutgoing`/`hasIncoming` (single-hop), the block can perform multi-hop checks. Direction is
+expressed inside the block via `outgoing` / `incoming` calls.
+
+```kotlin
+// "People Alice knows who have at least one mutual connection with Bob"
+// (i.e. someone alice knows, who also knows someone bob knows)
+val mutuals = graph.from(alice.id) {
+    outgoing<Knows>()
+    hasTraversal {
+        outgoing<Knows>()           // hop from each candidate
+        hasIncoming<Knows>(bob.id)  // keep only those bob also knows
+    }
+    collectNodes<Person>()
+}
+```
+
 #### Cold-restart behaviour
 
 After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or `inEdges(nodeId)` call, Abyss loads the relevant edges from the store (if configured) and warms both `edgesMap` and `reverseEdgesMap` before executing the query. Subsequent calls for the same node are served from the warm cache.

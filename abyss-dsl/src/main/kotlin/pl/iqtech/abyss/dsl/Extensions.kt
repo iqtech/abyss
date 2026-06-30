@@ -97,6 +97,9 @@ suspend inline fun <reified E : EdgeLike, reified N : NodeLike> TraversalBuilder
         N::class.findAnnotation<SerialName>()!!.value
     )
 
+suspend fun TraversalBuilderLike.hasTraversal(block: suspend TraversalBuilderLike.() -> Unit) =
+    filterFrontierByTraversal(block)
+
 @JvmName("collectNodesAll")
 suspend fun TraversalBuilderLike.collectNodes(): Flow<NodeLike> = flushFrontierNodes()
 

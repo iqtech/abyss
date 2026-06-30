@@ -17,6 +17,7 @@ interface TraversalBuilderLike {
     suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String)
     suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: Uuid)
     suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String)
+    suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike.() -> Unit)
     suspend fun flushFrontierNodes(): Flow<NodeLike>
     suspend fun collectSubgraph(nodeType: String? = null): Subgraph
     suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean

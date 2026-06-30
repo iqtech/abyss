@@ -140,6 +140,20 @@ class TraversalBuilder(
         frontier = matching
     }
 
+    override suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike.() -> Unit) {
+        val matching = coroutineScope {
+            frontier.map { id ->
+                async {
+                    val sub = TraversalBuilder(engine, setOf(id))
+                    sub.block()
+                    if (sub.frontier.isNotEmpty()) id else null
+                }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matching)
+        frontier = matching
+    }
+
     override suspend fun flushFrontierNodes(): Flow<NodeLike> = flow {
         for (id in frontier) engine.node(id).getOrNull()?.let { emit(it) }
     }

@@ -8,6 +8,7 @@ import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.hasIncoming
 import pl.iqtech.abyss.dsl.hasOutgoing
+import pl.iqtech.abyss.dsl.hasTraversal
 import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
@@ -360,6 +361,27 @@ class TraversalTest {
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(listOf(bob), result.value)
+        }
+    }
+
+    @Test fun `hasTraversal multi-hop filters frontier`() {
+        runBlocking {
+            val root   = putNode("root")
+            val a      = putNode("a")
+            val b      = putNode("b")
+            val target = OtherNode(id = Uuid.random())
+            graphTest.transaction { addNode(target) }
+            putEdge(root.id, a.id)
+            putEdge(root.id, b.id)
+            putEdge(a.id, target.id)   // only a has a path to an OtherNode
+
+            val result = graphTest.from(root.id) {
+                outgoing<TestEdge>()
+                hasTraversal { outgoing<TestEdge>(); nodes<OtherNode>() }
+                collectNodes<TestNode>().toList()
+            }
+            assertIs<Either.Right<List<TestNode>>>(result)
+            assertEquals(listOf(a), result.value)
         }
     }
 
