@@ -1,3 +1,7 @@
+## [0.16.0] - 2026-06-30
+
+- Add `hasTraversal { }` multi-hop frontier filter to the traversal DSL, keeping only frontier nodes where an arbitrary sub-traversal yields a non-empty result
+
 ## [0.15.0] - 2026-06-30
 
 - Add `hasOutgoing`/`hasIncoming` frontier connectivity filters to the traversal DSL, enabling in-place AND-conjunction of edge conditions without advancing the frontier
