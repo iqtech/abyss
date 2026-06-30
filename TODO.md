@@ -142,6 +142,12 @@
   full transactions, so ephemeral edge and reverse-edge writes are atomic. Trade-off: TTL requires
   an `expires_at` column and a background cleanup job rather than native YCQL TTL.
 
+- **➡️ 3.4 Concurrent query benchmark**
+  Spin up N coroutines in parallel, each firing queries continuously, and measure throughput +
+  per-query latency at N = 1, 2, 4, 8, 16, 32. Find the knee of the curve where latency starts
+  climbing (expected: ~4 parallel callers on Oracle Ampere A1 before CPU becomes the ceiling).
+  Cover `outEdges`, `inEdges`, and 3-hop traversal.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
