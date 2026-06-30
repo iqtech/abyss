@@ -513,6 +513,29 @@ traversal.
 
 ---
 
+## Performance
+
+Measured on a single JVM, pure in-memory mode (no persistent store), 10,000 nodes × 5 edges/node.
+Hardware: AMD Ryzen 5 2600 (6-core/12-thread), 32 GB RAM.
+All queries run single-threaded; real throughput scales linearly with available cores.
+
+| Operation | Result |
+|---|---|
+| `outEdges` throughput | **2,512 ops/sec** (2,000 queries) |
+| `inEdges` throughput | **1,417 ops/sec** (2,000 queries) |
+| 3-hop traversal | **4.0 ms avg** (200 traversals) |
+
+`inEdges` is slower than `outEdges` because it resolves edge data via `IMap.getAll` point-lookups after
+the reverse-key scan — the reverse map holds only keys, not payloads.
+
+To reproduce:
+
+```
+./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.PerformanceTest" -Pperf
+```
+
+---
+
 ## Sizing — Sniper on Oracle Always Free (single Ampere A1)
 
 Hardware: 4 vCPU ARM, 24 GB RAM. Runs YugabyteDB + Ktor app with embedded Hazelcast in Docker Compose.
