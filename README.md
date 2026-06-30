@@ -246,6 +246,28 @@ graph.transaction {
 }
 ```
 
+#### Node and edge modification
+
+`modifyNode` and `modifyEdge` are read-modify-write operations: they fetch the current value
+internally and pass it to a transform lambda. No pre-fetch required.
+
+```kotlin
+graph.transaction {
+    // update a node in place — old is null if the node doesn't exist yet
+    modifyNode(alice.id) { old ->
+        (old as Person).copy(age = old.age + 1)
+    }
+
+    // retarget an edge — old is null if the edge doesn't exist
+    modifyEdge(alice.id, bob.id, "knows") { old ->
+        (old as Knows).copy(toId = charlie.id)
+    }
+}
+```
+
+Both transforms receive `null` when the target doesn't exist, letting the lambda decide whether
+to create, throw, or no-op. The same operations are available inside `ephemeral { }`.
+
 #### Ephemeral mutations (TTL-bound)
 
 ```kotlin
