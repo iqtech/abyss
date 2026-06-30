@@ -1,3 +1,7 @@
+## [0.18.0] - 2026-06-30
+
+- Add Neo4j-style `loop` traversal: `TraversalStrategy` (DFS/BFS), `EdgeTraversalDirection` (IN/OUT/BOTH), `Evaluation` (4-state per-node decision), `Path` with `toEitherList()`, and `Flow<Path>` result emitting one path per accepted terminal
+
 ## [0.17.0] - 2026-06-30
 
 - Split single `AbyssStoreLike` store into separate `persistentStore` and `ephemeralStore` on `AbyssGraph`; `YugabyteAbyssStoreLike` replaced by `YugabytePersistentStore` (YSQL) and `YugabyteEphemeralStore` (YCQL), each independently nullable
