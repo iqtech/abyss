@@ -39,17 +39,17 @@ interface AbyssEngineLike {
 interface AbyssTransactionLike {
     fun addNode(node: NodeLike)
     fun removeNode(id: Uuid)
-
     fun addEdge(edge: EdgeLike)
     fun removeEdge(fromId: Uuid, toId: Uuid, type: String)
-    fun modifyEdge(old: EdgeLike, new: EdgeLike)
+    suspend fun modifyNode(id: Uuid, transform: (NodeLike?) -> NodeLike)
+    suspend fun modifyEdge(fromId: Uuid, toId: Uuid, type: String, transform: (EdgeLike?) -> EdgeLike)
 }
 
 interface AbyssEphemeralTransactionLike {
     fun addNode(node: NodeLike)
     fun removeNode(id: Uuid)
-
     fun addEdge(edge: EdgeLike)
     fun removeEdge(fromId: Uuid, toId: Uuid, type: String)
-    fun modifyEdge(old: EdgeLike, new: EdgeLike)
+    suspend fun modifyNode(id: Uuid, transform: (NodeLike?) -> NodeLike)
+    suspend fun modifyEdge(fromId: Uuid, toId: Uuid, type: String, transform: (EdgeLike?) -> EdgeLike)
 }

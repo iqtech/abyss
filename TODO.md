@@ -49,6 +49,14 @@
   filter the frontier in place (without advancing it), keeping only nodes that have the specified
   edge to a particular target node or to any node of a given type.
 
+- **✅ 1.9 Add modifyNode + unify modifyEdge to lambda pattern**
+  `AbyssTransactionLike` and `AbyssEphemeralTransactionLike` expose `modifyEdge(old, new)` requiring
+  the caller to pre-fetch the old edge. Replace with a consistent read-modify-write lambda pattern:
+  `suspend fun modifyNode(id, transform: (NodeLike?) -> NodeLike)` and
+  `suspend fun modifyEdge(fromId, toId, type, transform: (EdgeLike?) -> EdgeLike)`.
+  Both fetch the current value internally. `BufferedTransaction` and `BufferedEphemeralTransaction`
+  gain `readNode`/`readEdge` constructor params; four test call sites updated; two new `modifyNode` tests added.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

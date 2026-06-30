@@ -188,7 +188,11 @@ class AbyssGraph(
             .mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun ephemeral(ttl: Duration, checkIntegrity: Boolean, block: suspend AbyssEphemeralTransactionLike.() -> Unit): Either<AbyssError, Unit> {
-        val buffer = BufferedEphemeralTransaction(ttl)
+        val buffer = BufferedEphemeralTransaction(
+            ttl = ttl,
+            readNode = { id -> nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() ?: loadAndCacheNode(id) },
+            readEdge = { f, t, type -> edgesMap.getAsync(EdgeKey(f, t, type)).asDeferred().await() ?: loadAndCacheEdge(f, t, type) }
+        )
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
 
         val ops = withContext(Dispatchers.IO) {
@@ -234,7 +238,10 @@ class AbyssGraph(
     }
 
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike.() -> Unit): Either<AbyssError, Unit> {
-        val buffer = BufferedTransaction()
+        val buffer = BufferedTransaction(
+            readNode = { id -> nodesMap.getAsync(id.toJavaUuid()).asDeferred().await() ?: loadAndCacheNode(id) },
+            readEdge = { f, t, type -> edgesMap.getAsync(EdgeKey(f, t, type)).asDeferred().await() ?: loadAndCacheEdge(f, t, type) }
+        )
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
 
         val ops = withContext(Dispatchers.IO) {
@@ -405,26 +412,39 @@ private sealed interface Op {
     data class RemoveEdge(val fromId: Uuid, val toId: Uuid, val type: String) : Op
 }
 
-private class BufferedTransaction : AbyssTransactionLike {
+private class BufferedTransaction(
+    private val readNode: suspend (Uuid) -> NodeLike?,
+    private val readEdge: suspend (Uuid, Uuid, String) -> EdgeLike?
+) : AbyssTransactionLike {
     val ops = mutableListOf<Op>()
     override fun addNode(node: NodeLike)                            { ops += Op.AddNode(node, null) }
     override fun removeNode(id: Uuid)                               { ops += Op.RemoveNode(id) }
     override fun addEdge(edge: EdgeLike)                            { ops += Op.AddEdge(edge, null) }
     override fun removeEdge(fromId: Uuid, toId: Uuid, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
-    override fun modifyEdge(old: EdgeLike, new: EdgeLike) {
-        ops += Op.RemoveEdge(old.fromId, old.toId, old::class.findAnnotation<SerialName>()!!.value)
-        ops += Op.AddEdge(new, null)
+    override suspend fun modifyNode(id: Uuid, transform: (NodeLike?) -> NodeLike) {
+        ops += Op.AddNode(transform(readNode(id)), null)
+    }
+    override suspend fun modifyEdge(fromId: Uuid, toId: Uuid, type: String, transform: (EdgeLike?) -> EdgeLike) {
+        ops += Op.RemoveEdge(fromId, toId, type)
+        ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), null)
     }
 }
 
-private class BufferedEphemeralTransaction(private val ttl: Duration) : AbyssEphemeralTransactionLike {
+private class BufferedEphemeralTransaction(
+    private val ttl: Duration,
+    private val readNode: suspend (Uuid) -> NodeLike?,
+    private val readEdge: suspend (Uuid, Uuid, String) -> EdgeLike?
+) : AbyssEphemeralTransactionLike {
     val ops = mutableListOf<Op>()
     override fun addNode(node: NodeLike)                            { ops += Op.AddNode(node, ttl) }
     override fun removeNode(id: Uuid)                               { ops += Op.RemoveNode(id) }
     override fun addEdge(edge: EdgeLike)                            { ops += Op.AddEdge(edge, ttl) }
     override fun removeEdge(fromId: Uuid, toId: Uuid, type: String) { ops += Op.RemoveEdge(fromId, toId, type) }
-    override fun modifyEdge(old: EdgeLike, new: EdgeLike) {
-        ops += Op.RemoveEdge(old.fromId, old.toId, old::class.findAnnotation<SerialName>()!!.value)
-        ops += Op.AddEdge(new, ttl)
+    override suspend fun modifyNode(id: Uuid, transform: (NodeLike?) -> NodeLike) {
+        ops += Op.AddNode(transform(readNode(id)), ttl)
+    }
+    override suspend fun modifyEdge(fromId: Uuid, toId: Uuid, type: String, transform: (EdgeLike?) -> EdgeLike) {
+        ops += Op.RemoveEdge(fromId, toId, type)
+        ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), ttl)
     }
 }

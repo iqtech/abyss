@@ -269,7 +269,7 @@ class GraphTest {
             val ab = TestEdge(fromId = a.id, toId = b.id, label = "ab")
             val ac = ab.copy(toId = c.id, label = "ac")
             graphTest.transaction { addNode(a); addNode(b); addNode(c); addEdge(ab) }
-            graphTest.transaction { modifyEdge(ab, ac) }
+            graphTest.transaction { modifyEdge(a.id, b.id, "test_edge") { _ -> ac } }
             assertIs<Either.Right<EdgeLike>>(graphTest.edge(a.id, c.id, "test_edge"))
             assertIs<Either.Left<AbyssError>>(graphTest.edge(a.id, b.id, "test_edge"))
             assertEquals(1, graphTest.inEdges(c.id).toList().size)
@@ -285,7 +285,7 @@ class GraphTest {
             val ac = TestEdge(fromId = a.id, toId = c.id, label = "ac")
             val bc = ac.copy(fromId = b.id, label = "bc")
             graphTest.transaction { addNode(a); addNode(b); addNode(c); addEdge(ac) }
-            graphTest.transaction { modifyEdge(ac, bc) }
+            graphTest.transaction { modifyEdge(a.id, c.id, "test_edge") { _ -> bc } }
             assertIs<Either.Right<EdgeLike>>(graphTest.edge(b.id, c.id, "test_edge"))
             assertIs<Either.Left<AbyssError>>(graphTest.edge(a.id, c.id, "test_edge"))
         }
@@ -297,7 +297,7 @@ class GraphTest {
             val b = TestNode(id = Uuid.random(), name = "b")
             val ab = TestEdge(fromId = a.id, toId = b.id, label = "ab")
             graphTest.transaction { addNode(a); addNode(b); addEdge(ab) }
-            val result = graphTest.transaction { modifyEdge(ab, ab.copy(toId = Uuid.random())) }
+            val result = graphTest.transaction { modifyEdge(a.id, b.id, "test_edge") { ab.copy(toId = Uuid.random()) } }
             assertIs<Either.Left<AbyssError>>(result)
             assertIs<AbyssError.IntegrityError>(result.value)
         }
@@ -309,8 +309,29 @@ class GraphTest {
             val b = TestNode(id = Uuid.random(), name = "b")
             val ghost = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "ghost")
             graphTest.transaction(checkIntegrity = false) { addNode(a); addNode(b); addEdge(ghost) }
-            val result = graphTest.transaction { modifyEdge(ghost, TestEdge(fromId = a.id, toId = b.id, label = "real")) }
+            val result = graphTest.transaction { modifyEdge(ghost.fromId, ghost.toId, "test_edge") { _ -> TestEdge(fromId = a.id, toId = b.id, label = "real") } }
             assertIs<Either.Right<Unit>>(result)
+        }
+    }
+
+    @Test fun `transaction modifyNode transforms existing node`() {
+        runBlocking {
+            val node = TestNode(id = Uuid.random(), name = "before")
+            graphTest.transaction { addNode(node) }
+            graphTest.transaction { modifyNode(node.id) { old -> (old as TestNode).copy(name = "after") } }
+            val result = graphTest.node<TestNode>(node.id)
+            assertIs<Either.Right<TestNode>>(result)
+            assertEquals("after", result.value.name)
+        }
+    }
+
+    @Test fun `transaction modifyNode receives null when node absent`() {
+        runBlocking {
+            val id = Uuid.random()
+            var sawNull = false
+            graphTest.transaction { modifyNode(id) { old -> sawNull = old == null; TestNode(id = id, name = "created") } }
+            assertTrue(sawNull)
+            assertIs<Either.Right<TestNode>>(graphTest.node<TestNode>(id))
         }
     }
 
