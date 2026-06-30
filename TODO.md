@@ -129,6 +129,13 @@
   one for persistent data. Each store should be nullable so callers can create an ephemeral-only
   (in-memory) setup or a persistent-only setup without requiring both backends to be present.
 
+- **✅ 2.11 Neo4j-style `loop` traversal with DFS/BFS, path context, and `Flow<Path>` result**
+  Add `loop(strategy, maxDepth, edgeVisitor, nodeEvaluator): Flow<Path>` to `TraversalBuilderLike`.
+  New types: `TraversalStrategy { DFS, BFS }`, `Evaluation { INCLUDE_AND_CONTINUE, INCLUDE_AND_PRUNE,
+  EXCLUDE_AND_CONTINUE, EXCLUDE_AND_PRUNE }`, and `Path(nodes, edges)` (all nodes in Path are accepted
+  by definition). Visitors receive the current accepted `Path` and the candidate edge/node; `Flow<Path>`
+  emits one `Path` per INCLUDE_AND_PRUNE (or terminal INCLUDE_AND_CONTINUE) node reached.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

@@ -463,6 +463,54 @@ Scans `allNodeIds()` and performs a BFS over both `outEdges` and `inEdges` per n
 only complete when the node map is fully warm. Suitable for one-shot analysis; not intended for
 hot paths.
 
+### `loop` — Neo4j-style path traversal
+
+Walks the graph from the start node using caller-controlled visitors, emitting a `Path` for each
+accepted terminal. Two visitors control the traversal:
+
+- **`edgeVisitor(path, edge) → Boolean`** — return `true` to follow the edge; `false` to skip it.
+- **`nodeEvaluator(path, node) → Evaluation`** — decide what to do at each candidate node:
+  - `INCLUDE_AND_PRUNE` — accept this node, emit the path, stop recursing from here.
+  - `INCLUDE_AND_CONTINUE` — accept this node, keep going deeper; emits if `maxDepth` is reached.
+  - `EXCLUDE_AND_CONTINUE` — skip this node (not added to path), but keep recursing from it.
+  - `EXCLUDE_AND_PRUNE` — skip this node and stop this branch entirely.
+
+Both visitors receive the current `Path` — the accepted chain so far — so decisions can be
+context-aware (e.g. prune if a certain node type already appears in the path).
+
+```kotlin
+// Find all permission paths from alice to any Resource via ACL edges (DFS, outgoing only, max 5 hops)
+val paths: Either<AbyssError, List<Path>> = graph.from(alice.id) {
+    loop(
+        strategy = TraversalStrategy.DFS,
+        direction = EdgeTraversalDirection.OUT,
+        maxDepth = 5,
+        edgeVisitor = { _, edge -> edge is AclEdge },
+        nodeEvaluator = { _, node -> when (node) {
+            is Resource -> Evaluation.INCLUDE_AND_PRUNE    // found target — emit and stop branch
+            is Group    -> Evaluation.EXCLUDE_AND_CONTINUE // pass-through intermediate group
+            else        -> Evaluation.EXCLUDE_AND_PRUNE    // stop on unexpected types
+        }}
+    ).toList()
+}
+
+// Inspect elements in traversal order
+paths.getOrNull()!!.forEach { path ->
+    path.toEitherList().forEach { element ->
+        element.fold({ edge -> print(" →[${edge::class.simpleName}]") },
+                     { node -> print(" ${node::class.simpleName}") })
+    }
+    println()
+}
+```
+
+`BFS` strategy emits shortest paths first. Each emitted `Path` is self-contained: `path.nodes`
+and `path.edges` are ordered from origin to terminal; `path.toEitherList()` interleaves them as
+`List<Either<EdgeLike, NodeLike>>` in traversal order.
+
+Cycle safety is built in — visited nodes are tracked per branch, so cycles never cause infinite
+traversal.
+
 ---
 
 ## Sizing — Sniper on Oracle Always Free (single Ampere A1)

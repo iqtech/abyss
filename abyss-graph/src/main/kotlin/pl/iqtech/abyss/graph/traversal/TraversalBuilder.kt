@@ -5,14 +5,19 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.dsl.AbyssEngineLike
+import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.HopDirection
+import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.Subgraph
+import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
+import pl.iqtech.abyss.dsl.TraversalStrategy
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.reflect.full.findAnnotation
@@ -225,6 +230,101 @@ class TraversalBuilder(
         }
         inStack -= nodeId
         return false
+    }
+
+    override fun loop(
+        strategy: TraversalStrategy,
+        direction: EdgeTraversalDirection,
+        maxDepth: Int,
+        edgeVisitor: (Path, EdgeLike) -> Boolean,
+        nodeEvaluator: (Path, NodeLike) -> Evaluation
+    ): Flow<Path> = flow {
+        val origin = frontier.mapNotNull { engine.node(it).getOrNull() }
+        when (strategy) {
+            TraversalStrategy.DFS -> for (node in origin)
+                dfsLoop(Path(listOf(node), emptyList()), node.id, setOf(node.id), direction, maxDepth, 0, edgeVisitor, nodeEvaluator)
+            TraversalStrategy.BFS -> bfsLoop(origin, direction, maxDepth, edgeVisitor, nodeEvaluator)
+        }
+    }
+
+    private suspend fun edgesFrom(fromId: Uuid, direction: EdgeTraversalDirection): List<EdgeLike> = when (direction) {
+        EdgeTraversalDirection.OUT  -> engine.outEdges(fromId).toList()
+        EdgeTraversalDirection.IN   -> engine.inEdges(fromId).toList()
+        EdgeTraversalDirection.BOTH -> engine.outEdges(fromId).toList() + engine.inEdges(fromId).toList()
+    }
+
+    // fromId: physical traversal position (may differ from currentPath.head when a node was EXCLUDE_AND_CONTINUE)
+    // depth:  hop count (not path depth) — counts all hops including through excluded nodes
+    // seen:   mutable within each call level to prevent re-processing the same neighbour via different edges
+    private suspend fun FlowCollector<Path>.dfsLoop(
+        currentPath: Path,
+        fromId: Uuid,
+        visited: Set<Uuid>,
+        direction: EdgeTraversalDirection,
+        maxDepth: Int,
+        depth: Int,
+        edgeVisitor: (Path, EdgeLike) -> Boolean,
+        nodeEvaluator: (Path, NodeLike) -> Evaluation
+    ) {
+        if (depth >= maxDepth) return
+        val edges = edgesFrom(fromId, direction)
+        val seen = visited.toMutableSet()
+        for (edge in edges) {
+            if (!edgeVisitor(currentPath, edge)) continue
+            val nextId = if (edge.fromId == fromId) edge.toId else edge.fromId
+            if (nextId in seen) continue
+            seen += nextId  // mark before eval to skip if the same node appears via another edge
+            val nextNode = engine.node(nextId).getOrNull() ?: continue
+            val eval = nodeEvaluator(currentPath, nextNode)
+            val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
+            val extendedPath = if (included) {
+                // only add edge when we're travelling directly from the last accepted node
+                val edgePart = if (fromId == currentPath.head.id) listOf(edge) else emptyList()
+                Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
+            } else currentPath
+            val nextDepth = depth + 1
+            if (eval == Evaluation.INCLUDE_AND_PRUNE ||
+                (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) emit(extendedPath)
+            if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE))
+                dfsLoop(extendedPath, nextId, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)
+        }
+    }
+
+    // BFS queue carries (path, fromId, visited, depth) per entry so paths remain independent
+    private suspend fun FlowCollector<Path>.bfsLoop(
+        origin: List<NodeLike>,
+        direction: EdgeTraversalDirection,
+        maxDepth: Int,
+        edgeVisitor: (Path, EdgeLike) -> Boolean,
+        nodeEvaluator: (Path, NodeLike) -> Evaluation
+    ) {
+        data class Entry(val path: Path, val fromId: Uuid, val visited: Set<Uuid>, val depth: Int)
+        val queue = ArrayDeque<Entry>()
+        for (node in origin) queue += Entry(Path(listOf(node), emptyList()), node.id, setOf(node.id), 0)
+        while (queue.isNotEmpty()) {
+            val (currentPath, fromId, visited, depth) = queue.removeFirst()
+            if (depth >= maxDepth) continue
+            val edges = edgesFrom(fromId, direction)
+            val seen = visited.toMutableSet()
+            for (edge in edges) {
+                if (!edgeVisitor(currentPath, edge)) continue
+                val nextId = if (edge.fromId == fromId) edge.toId else edge.fromId
+                if (nextId in seen) continue
+                seen += nextId
+                val nextNode = engine.node(nextId).getOrNull() ?: continue
+                val eval = nodeEvaluator(currentPath, nextNode)
+                val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
+                val extendedPath = if (included) {
+                    val edgePart = if (fromId == currentPath.head.id) listOf(edge) else emptyList()
+                    Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
+                } else currentPath
+                val nextDepth = depth + 1
+                if (eval == Evaluation.INCLUDE_AND_PRUNE ||
+                    (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) emit(extendedPath)
+                if (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)
+                    queue += Entry(extendedPath, nextId, seen.toSet(), nextDepth)
+            }
+        }
     }
 
     override suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean {

@@ -1,11 +1,38 @@
 package pl.iqtech.abyss.dsl
 
+import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.uuid.Uuid
 
 enum class HopDirection { OUTGOING, INCOMING }
+
+enum class TraversalStrategy { DFS, BFS }
+
+enum class EdgeTraversalDirection { IN, OUT, BOTH }
+
+enum class Evaluation {
+    INCLUDE_AND_CONTINUE,
+    INCLUDE_AND_PRUNE,
+    EXCLUDE_AND_CONTINUE,
+    EXCLUDE_AND_PRUNE
+}
+
+data class Path(
+    val nodes: List<NodeLike>,
+    val edges: List<EdgeLike>
+) {
+    val depth: Int get() = nodes.size - 1
+    val head: NodeLike get() = nodes.last()
+
+    fun toEitherList(): List<Either<EdgeLike, NodeLike>> = buildList {
+        nodes.forEachIndexed { i, node ->
+            add(Either.Right(node))
+            if (i < edges.size) add(Either.Left(edges[i]))
+        }
+    }
+}
 
 data class Subgraph(val nodes: List<NodeLike>, val edges: List<EdgeLike>)
 
@@ -23,4 +50,11 @@ interface TraversalBuilderLike {
     suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph
     suspend fun detectCycle(block: suspend TraversalBuilderLike.() -> Unit): Boolean
+    fun loop(
+        strategy: TraversalStrategy = TraversalStrategy.DFS,
+        direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
+        maxDepth: Int = Int.MAX_VALUE,
+        edgeVisitor: (path: Path, edge: EdgeLike) -> Boolean,
+        nodeEvaluator: (path: Path, node: NodeLike) -> Evaluation
+    ): Flow<Path>
 }
