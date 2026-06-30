@@ -230,6 +230,45 @@ class TraversalTest {
         }
     }
 
+    // ── multi-type node filter (astronomers pattern) ──────────────────────────
+    //
+    // alice →[recent]→ bob, charlie    alice →[old]→ dave
+    // bob, charlie, dave →[likes]→ astronomy (OtherNode)
+    //
+    // edge filter "recent" drops dave; node filter name≠"charlie" drops charlie;
+    // subgraph<TestNode>() collects intermediate TestNodes = {alice, bob}
+
+    @Test fun `nodes predicate narrows frontier and subgraph collects surviving intermediate nodes`() {
+        runBlocking {
+            val alice   = putNode("alice")
+            val bob     = putNode("bob")
+            val charlie = putNode("charlie")
+            val dave    = putNode("dave")
+            val astronomy = OtherNode(id = Uuid.random())
+            graphTest.transaction { addNode(astronomy) }
+
+            graphTest.transaction {
+                addEdge(TestEdge(fromId = alice.id,   toId = bob.id,       label = "recent"))
+                addEdge(TestEdge(fromId = alice.id,   toId = charlie.id,   label = "recent"))
+                addEdge(TestEdge(fromId = alice.id,   toId = dave.id,      label = "old"))
+                addEdge(TestEdge(fromId = bob.id,     toId = astronomy.id, label = "likes"))
+                addEdge(TestEdge(fromId = charlie.id, toId = astronomy.id, label = "likes"))
+                addEdge(TestEdge(fromId = dave.id,    toId = astronomy.id, label = "likes"))
+            }
+
+            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(alice.id) {
+                outgoing<TestEdge> { it.label == "recent" }  // drops dave
+                nodes<TestNode> { it.name != "charlie" }      // drops charlie, removes from visited
+                outgoing<TestEdge> { it.label == "likes" }    // bob → astronomy
+                nodes<OtherNode>()                            // confirm interest type
+                subgraph<TestNode>()                          // intermediate TestNodes: alice + bob
+            }).value
+
+            val testNodes = sg.nodes.filterIsInstance<TestNode>().toSet()
+            assertEquals(setOf(alice, bob), testNodes)
+        }
+    }
+
     @Test fun `reaches handles cycles without infinite loop`() {
         runBlocking {
             val a = putNode("a")
