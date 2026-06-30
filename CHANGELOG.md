@@ -1,3 +1,7 @@
+## [0.15.0] - 2026-06-30
+
+- Add `hasOutgoing`/`hasIncoming` frontier connectivity filters to the traversal DSL, enabling in-place AND-conjunction of edge conditions without advancing the frontier
+
 ## [0.14.0] - 2026-06-30
 
 - Make `nodes<N>` a non-terminal frontier-mutating step and introduce `collectNodes<N>()` as the explicit terminal, enabling composable multi-hop traversals with intermediate node filters
