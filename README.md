@@ -508,8 +508,14 @@ paths.getOrNull()!!.forEach { path ->
 and `path.edges` are ordered from origin to terminal; `path.toEitherList()` interleaves them as
 `List<Either<EdgeLike, NodeLike>>` in traversal order.
 
-Cycle safety is built in — visited nodes are tracked per branch, so cycles never cause infinite
-traversal.
+**Node uniqueness** is path-local: a node cannot appear twice within a single emitted path, but
+the same node may appear in multiple independently emitted paths (one per branch that reaches it).
+Within a single expansion step, if two edges from the same parent lead to the same neighbour, that
+neighbour is visited only once from that parent. This is distinct from global uniqueness (where a
+node visited anywhere terminates all future visits to it) — path-local uniqueness means all
+distinct routes through a node are still found, just without revisiting the same node within one
+route. Cycles are handled as a consequence: a back-edge to an already-visited ancestor is skipped,
+so traversal always terminates.
 
 ---
 
