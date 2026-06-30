@@ -1,3 +1,7 @@
+## [0.14.0] - 2026-06-30
+
+- Make `nodes<N>` a non-terminal frontier-mutating step and introduce `collectNodes<N>()` as the explicit terminal, enabling composable multi-hop traversals with intermediate node filters
+
 ## [0.13.0] - 2026-06-28
 
 - Switch cache reads to non-blocking `IMap.getAsync()`, freeing IO threads on cache hits; add async self-healing for failed YCQL reverse-edge writes
