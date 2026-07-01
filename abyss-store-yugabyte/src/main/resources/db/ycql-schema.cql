@@ -8,14 +8,16 @@ CREATE KEYSPACE IF NOT EXISTS abyss_test_graph
 USE abyss_test_graph;
 
 -- ── ephemeral_nodes ──────────────────────────────────────────────────────────
--- Partition key: id (UUID). Per-row TTL set at write time by YugabyteAbyssStoreLike.
+-- Partition key: id — raw NodeId byte encoding (see KeyAdapter), not a UUID column,
+-- since the same schema serves Uuid/Long/String IDs uniformly. YugabyteEphemeralStore
+-- always binds it as a ByteBuffer (idBuf). Per-row TTL set at write time.
 -- `data` carries the full polymorphic JSON (TEXT, not JSONB — YCQL has no JSONB type).
 
 -- No secondary indexes and no transactions flag — both are required together in YugabyteDB YCQL,
 -- and transactions=true blocks per-row USING TTL (issue #10992). Primary-key lookups suffice
 -- for loadNode(id) and loadEdge(fromId, toId, type).
 CREATE TABLE IF NOT EXISTS ephemeral_nodes (
-    id              UUID      PRIMARY KEY,
+    id              BLOB      PRIMARY KEY,
     type            TEXT,
     data            TEXT,
     tags            LIST<TEXT>,
@@ -27,10 +29,11 @@ CREATE TABLE IF NOT EXISTS ephemeral_nodes (
 -- ── ephemeral_edges ──────────────────────────────────────────────────────────
 -- Partition key: from_id — co-locates all outgoing edges of a node on one tablet.
 -- Clustering columns: (to_id, type) — match EdgeKey ordering.
+-- from_id/to_id are raw NodeId bytes, same rationale as ephemeral_nodes.id above.
 
 CREATE TABLE IF NOT EXISTS ephemeral_edges (
-    from_id         UUID,
-    to_id           UUID,
+    from_id         BLOB,
+    to_id           BLOB,
     type            TEXT,
     data            TEXT,
     tags            LIST<TEXT>,
@@ -46,8 +49,8 @@ CREATE TABLE IF NOT EXISTS ephemeral_edges (
 -- Secondary indexes can't be used: transactions=true blocks per-row USING TTL.
 
 CREATE TABLE IF NOT EXISTS ephemeral_reverse_edges (
-    to_id           UUID,
-    from_id         UUID,
+    to_id           BLOB,
+    from_id         BLOB,
     type            TEXT,
     data            TEXT,
     tags            LIST<TEXT>,

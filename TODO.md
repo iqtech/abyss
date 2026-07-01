@@ -165,6 +165,23 @@
   by definition). Visitors receive the current accepted `Path` and the candidate edge/node; `Flow<Path>`
   emits one `Path` per INCLUDE_AND_PRUNE (or terminal INCLUDE_AND_CONTINUE) node reached.
 
+- **➡️ 2.12 `AbyssStoreColumn` annotation + index-seeded traversal entry point**
+  Attributes today live entirely inside the opaque JSONB `data` column (`YugabytePersistentStore`);
+  there is no per-attribute column or index. Add an `@AbyssStoreColumn(name)` annotation for fields
+  that should be promoted to a real, indexed Postgres column via a generated column
+  (`GENERATED ALWAYS AS (data->>'attr') STORED` + `CREATE INDEX`) — the annotation only declares
+  intent and drives DDL generation; it does not duplicate values at write time (Postgres derives
+  the generated column itself, so there's no second write path to keep in sync).
+  The declared column names double as the **allow-list** for a new
+  `AbyssStoreLike.queryNodeIds(column: String, value: Any): Flow<ID>` (id-only, index-driven —
+  YSQL only, no Hazelcast-side equivalent) — `column` must be checked against this allow-list
+  before use since it can't be bind-parameterized (SQL injection otherwise).
+  Add a matching `AbyssEngineLike.from(nodeIds: Set<ID>, block)` overload so query results can seed
+  a traversal frontier directly; this reuses `TraversalBuilder` unchanged (mirrors the existing
+  single-ID `from(nodeId, block)` at `AbyssGraph.kt:194`), so it's wiring, not new machinery.
+  Open question: whether `queryNodeIds` needs more than equality (ranges, `IN`) from the start, or
+  a flat `(column, value)` pair is enough for v1.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
