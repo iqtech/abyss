@@ -1,3 +1,7 @@
+## [0.20.0] - 2026-07-01
+
+- Add generic ID support via `KeyAdapter`/`NodeId`, adapter-native `EdgeKey`/`ReverseEdgeKey` Hazelcast Compact encoding (eliminating hex-string predicates), and a unified `modifyNode`/`modifyEdge` read-modify-write lambda pattern
+
 ## [0.19.0] - 2026-06-30
 
 - Rename `loop` to `paths` across DSL interface, implementation, tests, and README for clarity
