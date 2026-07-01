@@ -10,13 +10,14 @@ import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.TraversalStrategy
 import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
-import kotlin.uuid.toJavaUuid
 
 class PathsTraversalTest {
 
@@ -28,7 +29,7 @@ class PathsTraversalTest {
 
     private fun putNode(name: String): TestNode {
         val node = TestNode(id = Uuid.random(), name = name)
-        graphTestHz.getMap<java.util.UUID, NodeLike>("g-nodes")[node.id.toJavaUuid()] = node
+        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[UuidKeyAdapter.toNodeId(node.id)] = node
         return node
     }
 
@@ -38,8 +39,8 @@ class PathsTraversalTest {
         return edge
     }
 
-    private fun includeAll(path: Path, node: NodeLike) = Evaluation.INCLUDE_AND_PRUNE
-    private fun followAll(path: Path, edge: EdgeLike) = true
+    private fun includeAll(path: Path<*>, node: NodeLike<*>) = Evaluation.INCLUDE_AND_PRUNE
+    private fun followAll(path: Path<*>, edge: EdgeLike<*>) = true
 
     // ── basic path finding ────────────────────────────────────────────────────
 

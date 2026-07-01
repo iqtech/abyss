@@ -5,6 +5,6 @@ import kotlin.reflect.KClass
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class EdgeConstraint(
-    val fromTypes: Array<KClass<out NodeLike>> = [],
-    val toTypes:   Array<KClass<out NodeLike>> = []
+    val fromTypes: Array<KClass<*>> = [],
+    val toTypes:   Array<KClass<*>> = []
 )

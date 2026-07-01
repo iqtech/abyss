@@ -1,9 +1,18 @@
 package pl.iqtech.abyss.dsl
 
 import com.hazelcast.partition.PartitionAware
-import kotlin.uuid.Uuid
-import kotlin.uuid.toJavaUuid
+import pl.iqtech.abyss.store.api.NodeId
+import java.util.Objects
 
-data class EdgeKey(val fromId: Uuid, val toId: Uuid, val type: String) : PartitionAware<java.util.UUID> {
-    override fun getPartitionKey() = fromId.toJavaUuid()
+class EdgeKey(
+    val fromId: NodeId,
+    val toId: NodeId,
+    val type: String,
+    pk: Any = fromId.toString()
+) : PartitionAware<Any> {
+    private val _pk = pk
+    override fun getPartitionKey(): Any = _pk
+    override fun equals(other: Any?) = other is EdgeKey && fromId == other.fromId && toId == other.toId && type == other.type
+    override fun hashCode() = Objects.hash(fromId, toId, type)
+    override fun toString() = "EdgeKey($fromId, $toId, $type)"
 }

@@ -57,6 +57,16 @@
   Both fetch the current value internally. `BufferedTransaction` and `BufferedEphemeralTransaction`
   gain `readNode`/`readEdge` constructor params; four test call sites updated; two new `modifyNode` tests added.
 
+- **✅ 1.10 Generic ID refactor**
+  Introduce `NodeId(ByteArray)` as the internal universal key (content-based equals/hashCode) and
+  `KeyAdapter<ID>` to bridge domain ID types. Make `AbyssGraph<ID>` typed per instance with the
+  adapter injected at construction and invisible to callers. All interfaces become generic:
+  `NodeLike<ID>`, `EdgeLike<ID>`, `AbyssEngineLike<ID>`, `AbyssTransactionLike<ID>`,
+  `AbyssEphemeralTransactionLike<ID>`, `AbyssStoreLike<ID>`, `TraversalBuilderLike<ID>`,
+  `Path<ID>`, `Subgraph<ID>`. `EdgeKey` and `ReverseEdgeKey` store `NodeId` fields.
+  Standard adapters provided: `UuidKeyAdapter`, `LongKeyAdapter`, `StringKeyAdapter`.
+  DB schema: `BYTEA` PK columns. See plan `so-the-quick-summary-typed-hamster.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
@@ -162,6 +172,12 @@
   per-query latency at N = 1, 2, 4, 8, 16, 32. Find the knee of the curve where latency starts
   climbing (expected: ~4 parallel callers on Oracle Ampere A1 before CPU becomes the ceiling).
   Cover `outEdges`, `inEdges`, and 3-hop traversal.
+
+- **➡️ 3.5 Prove serde cost drives Uuid 3-hop slowdown**
+  UUID 3-hop traversal consistently runs ~4 ms vs ~0.6 ms for Long/String. Hypothesis: deserializing
+  `Uuid` fields in `TestEdge` costs more than `Long`/`String` fields in `LongTestEdge`/`StrTestEdge`.
+  Write a focused benchmark that measures Hazelcast compact serde roundtrip cost in isolation for
+  each ID type, independent of partition routing, to confirm or refute the hypothesis.
 
 ## 4. Uncategorized
 

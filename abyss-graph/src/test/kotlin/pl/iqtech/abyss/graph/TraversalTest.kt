@@ -15,13 +15,14 @@ import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.reaches
 import pl.iqtech.abyss.dsl.subgraph
 import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.uuid.Uuid
-import kotlin.uuid.toJavaUuid
 
 class TraversalTest {
 
@@ -35,7 +36,7 @@ class TraversalTest {
 
     private fun putNode(name: String): TestNode {
         val node = TestNode(id = Uuid.random(), name = name)
-        graphTestHz.getMap<java.util.UUID, NodeLike>("g-nodes")[node.id.toJavaUuid()] = node
+        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[UuidKeyAdapter.toNodeId(node.id)] = node
         return node
     }
 
@@ -123,11 +124,13 @@ class TraversalTest {
             val b = putNode("b")
             val c = putNode("c")
             putEdge(a.id, b.id).also {
-                graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(a.id, b.id, "test_edge")] =
+                val fromNid = UuidKeyAdapter.toNodeId(a.id)
+                graphTestHz.getMap<Any, EdgeLike<*>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(b.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
                     it.copy(label = "keep")
             }
             putEdge(a.id, c.id).also {
-                graphTestHz.getMap<Any, EdgeLike>("g-edges")[EdgeKey(a.id, c.id, "test_edge")] =
+                val fromNid = UuidKeyAdapter.toNodeId(a.id)
+                graphTestHz.getMap<Any, EdgeLike<*>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(c.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
                     it.copy(label = "drop")
             }
 
@@ -190,11 +193,11 @@ class TraversalTest {
     @Test fun `subgraph with no hops returns start node and no edges`() {
         runBlocking {
             val a = putNode("a")
-            val sg = assertIs<Either.Right<Subgraph>>(
-                graphTest.from(a.id) { subgraph<TestNode>() }
+            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(
+                graphTest.from(a.id) { subgraph<TestNode, Uuid>() }
             ).value
             assertEquals(listOf(a), sg.nodes)
-            assertEquals(emptyList<EdgeLike>(), sg.edges)
+            assertEquals(emptyList(), sg.edges)
         }
     }
 
@@ -206,10 +209,10 @@ class TraversalTest {
             putEdge(a.id, b.id)
             putEdge(b.id, c.id)
 
-            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(a.id) {
+            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(graphTest.from(a.id) {
                 outgoing<TestEdge>()
                 outgoing<TestEdge>()
-                subgraph<TestNode>()
+                subgraph<TestNode, Uuid>()
             }).value
             assertEquals(setOf(a, b, c), sg.nodes.toSet())
         }
@@ -223,10 +226,10 @@ class TraversalTest {
             val ab = putEdge(a.id, b.id)
             val bc = putEdge(b.id, c.id)
 
-            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(a.id) {
+            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(graphTest.from(a.id) {
                 outgoing<TestEdge>()
                 outgoing<TestEdge>()
-                subgraph<TestNode>()
+                subgraph<TestNode, Uuid>()
             }).value
             assertEquals(setOf(ab.fromId to ab.toId, bc.fromId to bc.toId),
                 sg.edges.map { it.fromId to it.toId }.toSet())
@@ -239,7 +242,7 @@ class TraversalTest {
     // bob, charlie, dave →[likes]→ astronomy (OtherNode)
     //
     // edge filter "recent" drops dave; node filter name≠"charlie" drops charlie;
-    // subgraph<TestNode>() collects intermediate TestNodes = {alice, bob}
+    // subgraph<TestNode, Uuid>() collects intermediate TestNodes = {alice, bob}
 
     @Test fun `nodes predicate narrows frontier and subgraph collects surviving intermediate nodes`() {
         runBlocking {
@@ -259,12 +262,12 @@ class TraversalTest {
                 addEdge(TestEdge(fromId = dave.id,    toId = astronomy.id, label = "likes"))
             }
 
-            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(alice.id) {
+            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(graphTest.from(alice.id) {
                 outgoing<TestEdge> { it.label == "recent" }  // drops dave
                 nodes<TestNode> { it.name != "charlie" }      // drops charlie, removes from visited
                 outgoing<TestEdge> { it.label == "likes" }    // bob → astronomy
                 nodes<OtherNode>()                            // confirm interest type
-                subgraph<TestNode>()                          // intermediate TestNodes: alice + bob
+                subgraph<TestNode, Uuid>()                          // intermediate TestNodes: alice + bob
             }).value
 
             val testNodes = sg.nodes.filterIsInstance<TestNode>().toSet()
@@ -286,7 +289,7 @@ class TraversalTest {
 
             val result = graphTest.from(root.id) {
                 outgoing<TestEdge>()
-                hasOutgoing<TestEdge>(target.id)
+                hasOutgoing<TestEdge, Uuid>(target.id)
                 collectNodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)
@@ -327,7 +330,7 @@ class TraversalTest {
 
             val result = graphTest.from(root.id) {
                 outgoing<TestEdge>()
-                hasIncoming<TestEdge>(source.id)
+                hasIncoming<TestEdge, Uuid>(source.id)
                 collectNodes<TestNode>().toList()
             }
             assertIs<Either.Right<List<TestNode>>>(result)
@@ -355,7 +358,7 @@ class TraversalTest {
 
             val result = graphTest.from(alice.id) {
                 outgoing<TestEdge>()                       // {bob, charlie}
-                hasOutgoing<TestEdge>(newYork.id)          // {bob} — charlie not in NY
+                hasOutgoing<TestEdge, Uuid>(newYork.id)          // {bob} — charlie not in NY
                 hasOutgoing<TestEdge, OtherNode>()         // {bob} — bob likes astronomy
                 collectNodes<TestNode>().toList()
             }

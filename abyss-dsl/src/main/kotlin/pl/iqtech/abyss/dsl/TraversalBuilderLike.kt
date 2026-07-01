@@ -4,7 +4,6 @@ import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
-import kotlin.uuid.Uuid
 
 enum class HopDirection { OUTGOING, INCOMING }
 
@@ -19,14 +18,14 @@ enum class Evaluation {
     EXCLUDE_AND_PRUNE
 }
 
-data class Path(
-    val nodes: List<NodeLike>,
-    val edges: List<EdgeLike>
+data class Path<ID>(
+    val nodes: List<NodeLike<ID>>,
+    val edges: List<EdgeLike<ID>>
 ) {
     val depth: Int get() = nodes.size - 1
-    val head: NodeLike get() = nodes.last()
+    val head: NodeLike<ID> get() = nodes.last()
 
-    fun toEitherList(): List<Either<EdgeLike, NodeLike>> = buildList {
+    fun toEitherList(): List<Either<EdgeLike<ID>, NodeLike<ID>>> = buildList {
         nodes.forEachIndexed { i, node ->
             add(Either.Right(node))
             if (i < edges.size) add(Either.Left(edges[i]))
@@ -34,27 +33,27 @@ data class Path(
     }
 }
 
-data class Subgraph(val nodes: List<NodeLike>, val edges: List<EdgeLike>)
+data class Subgraph<ID>(val nodes: List<NodeLike<ID>>, val edges: List<EdgeLike<ID>>)
 
-interface TraversalBuilderLike {
-    suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike) -> Boolean)? = null)
-    suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike) -> Boolean)? = null)
-    suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike) -> Boolean)? = null)
-    suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: Uuid)
+interface TraversalBuilderLike<ID> {
+    suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike<ID>) -> Boolean)? = null)
+    suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<ID>) -> Boolean)? = null)
+    suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<ID>) -> Boolean)? = null)
+    suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID)
     suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String)
-    suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: Uuid)
+    suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: ID)
     suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String)
-    suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike.() -> Unit)
-    suspend fun flushFrontierNodes(): Flow<NodeLike>
-    suspend fun collectSubgraph(nodeType: String? = null): Subgraph
-    suspend fun checkReaches(targetId: Uuid, block: suspend TraversalBuilderLike.() -> Unit): Boolean
-    suspend fun exhaustReachable(block: suspend TraversalBuilderLike.() -> Unit): Subgraph
-    suspend fun detectCycle(block: suspend TraversalBuilderLike.() -> Unit): Boolean
+    suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit)
+    suspend fun flushFrontierNodes(): Flow<NodeLike<ID>>
+    suspend fun collectSubgraph(nodeType: String? = null): Subgraph<ID>
+    suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
+    suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph<ID>
+    suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
     fun paths(
         strategy: TraversalStrategy = TraversalStrategy.DFS,
         direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
         maxDepth: Int = Int.MAX_VALUE,
-        edgeVisitor: (path: Path, edge: EdgeLike) -> Boolean,
-        nodeEvaluator: (path: Path, node: NodeLike) -> Evaluation
-    ): Flow<Path>
+        edgeVisitor: (path: Path<ID>, edge: EdgeLike<ID>) -> Boolean,
+        nodeEvaluator: (path: Path<ID>, node: NodeLike<ID>) -> Evaluation
+    ): Flow<Path<ID>>
 }

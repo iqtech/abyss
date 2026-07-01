@@ -24,6 +24,42 @@ import kotlin.uuid.Uuid
 
 // ── test-local domain types ──────────────────────────────────────────────────
 
+@Serializable @SerialName("long_test_node")
+data class LongTestNode(
+    override val id: Long,
+    val name: String = "",
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : NodeLike<Long>
+
+@Serializable @SerialName("long_test_edge")
+data class LongTestEdge(
+    override val fromId: Long,
+    override val toId: Long,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : EdgeLike<Long>
+
+@Serializable @SerialName("str_test_node")
+data class StrTestNode(
+    override val id: String,
+    val name: String = "",
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : NodeLike<String>
+
+@Serializable @SerialName("str_test_edge")
+data class StrTestEdge(
+    override val fromId: String,
+    override val toId: String,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : EdgeLike<String>
+
 @Serializable @SerialName("test_node")
 data class TestNode(
     override val id: Uuid,
@@ -31,7 +67,7 @@ data class TestNode(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val name: String
-) : NodeLike
+) : NodeLike<Uuid>
 
 @Serializable @SerialName("test_edge")
 data class TestEdge(
@@ -41,7 +77,7 @@ data class TestEdge(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
-) : EdgeLike
+) : EdgeLike<Uuid>
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -54,10 +90,14 @@ private fun baseJson() = Json(from = customJsonSerializer) {
     serializersModule = abyssSerializersModule + testModule
 }
 
-private val nodeJson = createPolymorphicJsonSerializer<NodeLike>(baseJson()) { UnknownNode(it) }
-private val edgeJson = createPolymorphicJsonSerializer<EdgeLike>(baseJson()) { UnknownEdge(it) }
-private val nodeSer  = PolymorphicSerializer(NodeLike::class)
-private val edgeSer  = PolymorphicSerializer(EdgeLike::class)
+@Suppress("UNCHECKED_CAST")
+private val nodeJson = createPolymorphicJsonSerializer<NodeLike<*>>(baseJson()) { UnknownNode(it) }
+@Suppress("UNCHECKED_CAST")
+private val edgeJson = createPolymorphicJsonSerializer<EdgeLike<*>>(baseJson()) { UnknownEdge(it) }
+@Suppress("UNCHECKED_CAST")
+private val nodeSer  = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
+@Suppress("UNCHECKED_CAST")
+private val edgeSer  = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*>>
 
 // ── tests ────────────────────────────────────────────────────────────────────
 

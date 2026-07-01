@@ -11,6 +11,51 @@ User-agnostic in-memory graph library backed by Hazelcast with pluggable durable
 | `abyss-graph` | Hazelcast `IMap` engine — `AbyssGraph` |
 | `abyss-store-yugabyte` | YugabyteDB stores — `YugabytePersistentStore` (YSQL) and `YugabyteEphemeralStore` (YCQL) |
 
+## Quick start
+
+```kotlin
+@Serializable
+@SerialName("city")
+data class City(
+    override val id: Long,
+    val name: String,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
+) : NodeLike<Long>
+
+@Serializable
+@SerialName("road")
+data class Road(
+    override val fromId: Long,
+    override val toId: Long,
+    val km: Int,
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
+) : EdgeLike<Long>
+
+val module = SerializersModule {
+    polymorphic(NodeLike::class) { subclass(City::class) }
+    polymorphic(EdgeLike::class) { subclass(Road::class) }
+}
+
+val hz    = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(module))
+val graph = AbyssGraph(LongKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
+
+graph.transaction {
+    addNode(City(id = 1L, name = "Warsaw"))
+    addNode(City(id = 2L, name = "Kraków"))
+    addEdge(Road(fromId = 1L, toId = 2L, km = 295))
+}
+
+graph.outEdges<Road>(1L).collect { road ->
+    println("${road.fromId} → ${road.toId} (${road.km} km)")
+}
+```
+
+---
+
 ## Pluggable storage
 
 `AbyssGraph` accepts two independently nullable stores:
@@ -52,7 +97,7 @@ data class Person(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : NodeLike
+) : NodeLike<Uuid>
 
 @Serializable
 @SerialName("interest")
@@ -62,7 +107,7 @@ data class Interest(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : NodeLike
+) : NodeLike<Uuid>
 
 @Serializable
 @SerialName("knows")
@@ -74,7 +119,7 @@ data class Knows(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike
+) : EdgeLike<Uuid>
 
 @Serializable
 @SerialName("likes")
@@ -84,7 +129,7 @@ data class Likes(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike
+) : EdgeLike<Uuid>
 ```
 
 Register them in a `SerializersModule`:
@@ -98,12 +143,37 @@ val module = SerializersModule {
 
 ---
 
+### Key adapters
+
+`AbyssGraph<ID>` is typed per instance. The `ID` type is fixed at construction via a `KeyAdapter<ID>`:
+
+```kotlin
+interface KeyAdapter<ID> {
+    fun toNodeId(id: ID): NodeId      // domain ID → internal key
+    fun fromNodeId(nodeId: NodeId): ID
+}
+```
+
+Three adapters are provided out of the box:
+
+| Adapter | ID type |
+|---|---|
+| `UuidKeyAdapter` | `kotlin.uuid.Uuid` |
+| `LongKeyAdapter` | `Long` |
+| `StringKeyAdapter` | `String` |
+
+Pass the adapter as the first argument to `AbyssGraph`. All interfaces the graph returns
+(`NodeLike<ID>`, `EdgeLike<ID>`, `Subgraph<ID>`, `Path<ID>`) carry the same `ID` type,
+and the internal `NodeId(ByteArray)` key is never exposed to callers.
+
+---
+
 ### In-memory only (no persistent store)
 
 ```kotlin
 val config = Config().registerAbyssSerializers(module)
 val hz = Hazelcast.newHazelcastInstance(config)
-val graph = AbyssGraph(hz, nodesMapName = "nodes", edgesMapName = "edges")
+val graph = AbyssGraph(UuidKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
 
 // write
 graph.transaction {
@@ -127,10 +197,10 @@ graph.from(alice.id) {
 }
 
 // traverse — full subgraph (all visited nodes + all traversed edges)
-val result: Either<AbyssError, Subgraph> = graph.from(alice.id) {
+val result: Either<AbyssError, Subgraph<Uuid>> = graph.from(alice.id) {
     outgoing<Knows>()         // hop 1: alice → bob, alice → charlie
     outgoing<Knows>()         // hop 2: bob → dave
-    subgraph<Person>()        // Person nodes only + all 3 Knows edges
+    subgraph<Person, Uuid>()  // Person nodes only + all 3 Knows edges
     // subgraph()             // all visited nodes regardless of type + all 3 Knows edges
 }
 val (persons, edges) = result.getOrNull()!!
@@ -139,12 +209,12 @@ edges.forEach { println("${it.fromId} → ${it.toId}") }
 
 // multi-hop with edge + node filters — collect intermediate nodes via subgraph
 // "Alice's adult acquaintances (known since 2020+) who like Astronomy"
-val astronomers: Either<AbyssError, Subgraph> = graph.from(alice.id) {
+val astronomers: Either<AbyssError, Subgraph<Uuid>> = graph.from(alice.id) {
     outgoing<Knows> { it.since > Instant.parse("2020-01-01T00:00:00Z") }  // edge filter
     nodes<Person> { it.age > 18 }              // narrow frontier to adults
     outgoing<Likes>()                          // hop to their interests
     nodes<Interest> { it.name == "Astronomy" } // narrow to Astronomy
-    subgraph<Person>()                         // collect the intermediate Person nodes
+    subgraph<Person, Uuid>()                   // collect the intermediate Person nodes
 }
 val astronomyFans = astronomers.getOrNull()!!.nodes.filterIsInstance<Person>()
 ```
@@ -172,7 +242,7 @@ val ephemeralStore = YugabyteEphemeralStore.create(
 
 val config = Config().registerAbyssSerializers(module)
 val hz     = Hazelcast.newHazelcastInstance(config)
-val graph  = AbyssGraph(hz, "nodes", "edges",
+val graph  = AbyssGraph(UuidKeyAdapter, hz, "nodes", "edges",
     persistentStore = persistentStore,
     ephemeralStore  = ephemeralStore,
 )
@@ -218,9 +288,9 @@ val productEphemeral = YugabyteEphemeralStore.create(
     module = productModule, ycqlKeyspace = "product_graph",
 )
 
-val socialGraph  = AbyssGraph(hz, "social-nodes",  "social-edges",
+val socialGraph  = AbyssGraph(UuidKeyAdapter, hz, "social-nodes",  "social-edges",
     persistentStore = socialPersistent, ephemeralStore = socialEphemeral)
-val productGraph = AbyssGraph(hz, "product-nodes", "product-edges",
+val productGraph = AbyssGraph(UuidKeyAdapter, hz, "product-nodes", "product-edges",
     persistentStore = productPersistent, ephemeralStore = productEphemeral)
 ```
 
@@ -316,7 +386,7 @@ Annotate an edge class with `@EdgeConstraint` to declare which node types each e
 @Serializable
 @SerialName("knows")
 @EdgeConstraint(fromTypes = [Person::class], toTypes = [Person::class])
-data class Knows(override val fromId: Uuid, override val toId: Uuid, ...) : EdgeLike
+data class Knows(override val fromId: Uuid, override val toId: Uuid, ...) : EdgeLike<Uuid>
 ```
 
 When `checkIntegrity = true` (the default), `addEdge` checks that the actual node types of both
@@ -448,7 +518,7 @@ specifies, and returns a `Subgraph` of all visited nodes and all traversed edges
 `outgoing<E>()` hops, the caller does not need to know the depth in advance.
 
 ```kotlin
-val subgraph: Either<AbyssError, Subgraph> = graph.from(alice.id) {
+val subgraph: Either<AbyssError, Subgraph<Uuid>> = graph.from(alice.id) {
     allReachable { outgoing<Knows>() }
 }
 val (nodes, edges) = subgraph.getOrNull()!!
@@ -474,10 +544,10 @@ Useful for validating that a subgraph forms a DAG before operations that assume 
 
 Partitions **all nodes currently in the Hazelcast map** into weakly connected components — groups
 where every node can reach every other when edges are treated as undirected. Returns
-`List<Set<Uuid>>`.
+`List<Set<ID>>`.
 
 ```kotlin
-val components: List<Set<Uuid>> = graph.connectedComponents()
+val components: List<Set<Uuid>> = graph.connectedComponents()   // List<Set<ID>> in general
 // e.g. [{alice, bob, charlie}, {dave, eve}]
 ```
 
@@ -502,7 +572,7 @@ context-aware (e.g. prune if a certain node type already appears in the path).
 
 ```kotlin
 // Find all permission paths from alice to any Resource via ACL edges (DFS, outgoing only, max 5 hops)
-val paths: Either<AbyssError, List<Path>> = graph.from(alice.id) {
+val paths: Either<AbyssError, List<Path<Uuid>>> = graph.from(alice.id) {
     paths(
         strategy = TraversalStrategy.DFS,
         direction = EdgeTraversalDirection.OUT,
@@ -547,19 +617,29 @@ Measured on a single JVM, pure in-memory mode (no persistent store), 10,000 node
 Hardware: AMD Ryzen 5 2600 (6-core/12-thread), 32 GB RAM.
 All queries run single-threaded; real throughput scales linearly with available cores.
 
-| Operation | Result |
-|---|---|
-| `outEdges` throughput | **2,512 ops/sec** (2,000 queries) |
-| `inEdges` throughput | **1,417 ops/sec** (2,000 queries) |
-| 3-hop traversal | **4.0 ms avg** (200 traversals) |
+| Adapter | `outEdges` | `inEdges` | 3-hop traversal |
+|---|---|---|---|
+| `UuidKeyAdapter` | **2,770 ops/sec** | **853 ops/sec** | **4.0 ms avg** |
+| `LongKeyAdapter` | **2,861 ops/sec** | **1,040 ops/sec** | **0.6 ms avg** |
+| `StringKeyAdapter` | **2,254 ops/sec** | **629 ops/sec** | **0.5 ms avg** |
 
-`inEdges` is slower than `outEdges` because it resolves edge data via `IMap.getAll` point-lookups after
-the reverse-key scan — the reverse map holds only keys, not payloads.
+`inEdges` is slower than `outEdges` for all adapters: it resolves edge data via `IMap.getAll`
+point-lookups after the reverse-key scan — the reverse map holds only keys, not payloads.
+
+`String` partition keys are hex-encoded UTF-8 byte arrays (20–100 chars for 10–50 char IDs),
+making each Hazelcast partition hash larger than the 16-byte UUID or 8-byte Long keys — hence
+lower throughput across the board.
+
+The UUID 3-hop figure is higher than Long/String due to Hazelcast compact serialization cost:
+`Uuid` fields in edge values require more bytes to encode than `Long` or short `String` fields,
+and that cost compounds across three hops × 5 edges/node.
 
 To reproduce:
 
 ```
-./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.PerformanceTest" -Pperf
+./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.UuidPerformanceTest" -Pperf
+./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongPerformanceTest" -Pperf
+./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.StringPerformanceTest" -Pperf
 ```
 
 ---

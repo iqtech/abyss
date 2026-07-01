@@ -4,7 +4,7 @@ import com.hazelcast.nio.serialization.compact.CompactReader
 import com.hazelcast.nio.serialization.compact.CompactSerializer
 import com.hazelcast.nio.serialization.compact.CompactWriter
 import pl.iqtech.abyss.graph.ReverseEdgeKey
-import kotlin.uuid.Uuid
+import pl.iqtech.abyss.store.api.NodeId
 
 class ReverseEdgeKeySerializer : CompactSerializer<ReverseEdgeKey> {
     override fun getTypeName() = "ReverseEdgeKey"
@@ -17,8 +17,8 @@ class ReverseEdgeKeySerializer : CompactSerializer<ReverseEdgeKey> {
     }
 
     override fun read(reader: CompactReader) = ReverseEdgeKey(
-        toId   = Uuid.parse(reader.readString("toId")!!),
-        fromId = Uuid.parse(reader.readString("fromId")!!),
+        toId   = NodeId.fromHex(reader.readString("toId")!!),
+        fromId = NodeId.fromHex(reader.readString("fromId")!!),
         type   = reader.readString("type")!!
     )
 }

@@ -1,35 +1,34 @@
 package pl.iqtech.abyss.store.api
 
 import arrow.core.Either
-import kotlin.uuid.Uuid
 import kotlin.time.Duration
 
-interface AbyssStoreLike {
-    suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike?, Duration?>>
-    suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<EdgeLike?, Duration?>>
-    suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(emptyList())
-    suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(emptyList())
-    suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
+interface AbyssStoreLike<ID> {
+    suspend fun loadNode(id: ID): Either<AbyssError, Pair<NodeLike<ID>?, Duration?>>
+    suspend fun loadEdge(fromId: ID, toId: ID, type: String): Either<AbyssError, Pair<EdgeLike<ID>?, Duration?>>
+    suspend fun loadEdges(fromId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> = Either.Right(emptyList())
+    suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> = Either.Right(emptyList())
+    suspend fun transaction(block: suspend AbyssStoreTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit>
 }
 
-interface AbyssStoreTransactionLike {
-    fun saveNode(node: NodeLike)
-    fun saveEdge(edge: EdgeLike)
-    fun deleteNode(id: Uuid)
-    fun deleteEdge(fromId: Uuid, toId: Uuid, type: String)
+interface AbyssStoreTransactionLike<ID> {
+    fun saveNode(node: NodeLike<ID>)
+    fun saveEdge(edge: EdgeLike<ID>)
+    fun deleteNode(id: ID)
+    fun deleteEdge(fromId: ID, toId: ID, type: String)
 }
 
-interface AbyssEphemeralStoreLike {
-    suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike?, Duration?>>
-    suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<EdgeLike?, Duration?>>
-    suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(emptyList())
-    suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<Pair<EdgeLike, Duration?>>> = Either.Right(emptyList())
-    suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
+interface AbyssEphemeralStoreLike<ID> {
+    suspend fun loadNode(id: ID): Either<AbyssError, Pair<NodeLike<ID>?, Duration?>>
+    suspend fun loadEdge(fromId: ID, toId: ID, type: String): Either<AbyssError, Pair<EdgeLike<ID>?, Duration?>>
+    suspend fun loadEdges(fromId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> = Either.Right(emptyList())
+    suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> = Either.Right(emptyList())
+    suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit>
 }
 
-interface AbyssEphemeralStoreTransactionLike {
-    fun saveNode(node: NodeLike, ttl: Duration)
-    fun saveEdge(edge: EdgeLike, ttl: Duration)
-    fun deleteNode(id: Uuid)
-    fun deleteEdge(fromId: Uuid, toId: Uuid, type: String)
+interface AbyssEphemeralStoreTransactionLike<ID> {
+    fun saveNode(node: NodeLike<ID>, ttl: Duration)
+    fun saveEdge(edge: EdgeLike<ID>, ttl: Duration)
+    fun deleteNode(id: ID)
+    fun deleteEdge(fromId: ID, toId: ID, type: String)
 }

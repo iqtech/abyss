@@ -2,20 +2,19 @@ package pl.iqtech.abyss.store.api
 
 import kotlin.time.Instant
 import kotlinx.serialization.Polymorphic
-import kotlin.uuid.Uuid
 
 @Polymorphic
-interface NodeLike {
-    val id: Uuid
+interface NodeLike<ID> {
+    val id: ID
     val tags: List<String>
     val createdAt: Instant
     val updatedAt: Instant
 }
 
 @Polymorphic
-interface EdgeLike {
-    val fromId: Uuid
-    val toId: Uuid
+interface EdgeLike<ID> {
+    val fromId: ID
+    val toId: ID
     val tags: List<String>
     val createdAt: Instant
     val updatedAt: Instant

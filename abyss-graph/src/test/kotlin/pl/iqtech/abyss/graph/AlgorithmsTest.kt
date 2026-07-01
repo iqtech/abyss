@@ -7,7 +7,9 @@ import pl.iqtech.abyss.dsl.allReachable
 import pl.iqtech.abyss.dsl.connectedComponents
 import pl.iqtech.abyss.dsl.hasCycle
 import pl.iqtech.abyss.dsl.outgoing
+import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -15,7 +17,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
-import kotlin.uuid.toJavaUuid
 
 class AlgorithmsTest {
 
@@ -27,7 +28,7 @@ class AlgorithmsTest {
 
     private fun putNode(name: String): TestNode {
         val node = TestNode(id = Uuid.random(), name = name)
-        graphTestHz.getMap<java.util.UUID, NodeLike>("g-nodes")[node.id.toJavaUuid()] = node
+        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[UuidKeyAdapter.toNodeId(node.id)] = node
         return node
     }
 
@@ -41,7 +42,7 @@ class AlgorithmsTest {
         runBlocking {
             val a = putNode("a")
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph>>(result)
+            assertIs<Either.Right<Subgraph<*>>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(0, subgraph.edges.size)
@@ -55,7 +56,7 @@ class AlgorithmsTest {
             putEdge(a.id, b.id); putEdge(b.id, c.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph>>(result)
+            assertIs<Either.Right<Subgraph<*>>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(2, subgraph.edges.size)
@@ -75,7 +76,7 @@ class AlgorithmsTest {
             putEdge(b.id, d.id); putEdge(c.id, d.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph>>(result)
+            assertIs<Either.Right<Subgraph<*>>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id, d.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(4, subgraph.edges.size)
@@ -89,7 +90,7 @@ class AlgorithmsTest {
             putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, a.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph>>(result)
+            assertIs<Either.Right<Subgraph<*>>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(3, subgraph.edges.size)
@@ -175,7 +176,7 @@ class AlgorithmsTest {
             putEdge(a.id, b.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph>>(result)
+            assertIs<Either.Right<Subgraph<*>>>(result)
             assertEquals(setOf(a.id, b.id), result.value.nodes.map { it.id }.toSet())
         }
     }
