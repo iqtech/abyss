@@ -19,8 +19,10 @@ class HazelcastConfigTest {
     @Test fun `abyss-edges has HASH indexes on fromId and toId`() {
         val indexes = cfg.getMapConfig("abyss-edges").indexConfigs
         val attrs = indexes.flatMap { it.attributes }
-        assertTrue("__key.fromId" in attrs)
-        assertTrue("__key.toId" in attrs)
+        assertTrue("__key.fromIdHi" in attrs)
+        assertTrue("__key.fromIdLo" in attrs)
+        assertTrue("__key.toIdHi" in attrs)
+        assertTrue("__key.toIdLo" in attrs)
         assertTrue(indexes.all { it.type.name == "HASH" })
     }
 }

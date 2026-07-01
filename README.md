@@ -40,7 +40,7 @@ val module = SerializersModule {
     polymorphic(EdgeLike::class) { subclass(Road::class) }
 }
 
-val hz    = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(module))
+val hz    = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(LongKeyAdapter, module))
 val graph = AbyssGraph(LongKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
 
 graph.transaction {
@@ -166,12 +166,30 @@ Pass the adapter as the first argument to `AbyssGraph`. All interfaces the graph
 (`NodeLike<ID>`, `EdgeLike<ID>`, `Subgraph<ID>`, `Path<ID>`) carry the same `ID` type,
 and the internal `NodeId(ByteArray)` key is never exposed to callers.
 
+#### Edge key encoding
+
+`registerAbyssSerializers(adapter, module)` also takes the `KeyAdapter` (as an `EdgeAdapter`) so
+`EdgeKey`/`ReverseEdgeKey` compact serializers and the `outEdges`/`inEdges` predicates encode
+`fromId`/`toId` in each adapter's native, directly-comparable form instead of a hex string:
+
+| Adapter | `fromId`/`toId` field encoding |
+|---|---|
+| `UuidKeyAdapter` | two `Int64` fields (`fromIdHi`/`fromIdLo`, `toIdHi`/`toIdLo`) |
+| `LongKeyAdapter` | single `Int64` field |
+| `StringKeyAdapter` | single `String` field (the raw ID, not hex) |
+
+Because of this, **the `adapter` passed to `registerAbyssSerializers` must match the `KeyAdapter`
+used by every `AbyssGraph<ID>` sharing that `HazelcastInstance`** — one Hazelcast instance can only
+carry one encoding for `EdgeKey`/`ReverseEdgeKey`. Graphs with different `ID` types need separate
+Hazelcast instances (and, if colocated on the same host, distinct `clusterName`s to avoid
+auto-joining).
+
 ---
 
 ### In-memory only (no persistent store)
 
 ```kotlin
-val config = Config().registerAbyssSerializers(module)
+val config = Config().registerAbyssSerializers(UuidKeyAdapter, module)
 val hz = Hazelcast.newHazelcastInstance(config)
 val graph = AbyssGraph(UuidKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
 
@@ -240,7 +258,7 @@ val ephemeralStore = YugabyteEphemeralStore.create(
     module         = module,
 )
 
-val config = Config().registerAbyssSerializers(module)
+val config = Config().registerAbyssSerializers(UuidKeyAdapter, module)
 val hz     = Hazelcast.newHazelcastInstance(config)
 val graph  = AbyssGraph(UuidKeyAdapter, hz, "nodes", "edges",
     persistentStore = persistentStore,
@@ -619,20 +637,24 @@ All queries run single-threaded; real throughput scales linearly with available 
 
 | Adapter | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| `UuidKeyAdapter` | **2,770 ops/sec** | **853 ops/sec** | **4.0 ms avg** |
-| `LongKeyAdapter` | **2,861 ops/sec** | **1,040 ops/sec** | **0.6 ms avg** |
-| `StringKeyAdapter` | **2,254 ops/sec** | **629 ops/sec** | **0.5 ms avg** |
+| `UuidKeyAdapter` | **3,095 ops/sec** | **1,110 ops/sec** | **3.6 ms avg** |
+| `LongKeyAdapter` | **3,442 ops/sec** | **1,213 ops/sec** | **0.7 ms avg** |
+| `StringKeyAdapter` | **2,635 ops/sec** | **879 ops/sec** | **0.7 ms avg** |
+
+`outEdges`/`inEdges` predicates compare `fromId`/`toId` in each adapter's native encoding (see
+[Edge key encoding](#edge-key-encoding)) rather than the hex strings used previously — a fixed
+`Int64` (or `Int64` pair for UUID) compare, or a native (non-hex) `String` compare, instead of a
+char-by-char hex scan at 2× the byte length. This closed most of the gap between adapters:
+`StringKeyAdapter` now trails `LongKeyAdapter` only because its field is still variable-length
+(10–50 chars, the ID itself) rather than a fixed 8 bytes, not because of a hex-expansion penalty.
 
 `inEdges` is slower than `outEdges` for all adapters: it resolves edge data via `IMap.getAll`
 point-lookups after the reverse-key scan — the reverse map holds only keys, not payloads.
 
-`String` partition keys are hex-encoded UTF-8 byte arrays (20–100 chars for 10–50 char IDs),
-making each Hazelcast partition hash larger than the 16-byte UUID or 8-byte Long keys — hence
-lower throughput across the board.
-
-The UUID 3-hop figure is higher than Long/String due to Hazelcast compact serialization cost:
-`Uuid` fields in edge values require more bytes to encode than `Long` or short `String` fields,
-and that cost compounds across three hops × 5 edges/node.
+The UUID 3-hop figure is still higher than Long/String due to Hazelcast compact serialization
+cost of the edge *values* (`NodeLike`/`EdgeLike` payloads, unrelated to the `EdgeKey` encoding
+above): `Uuid` fields require more bytes to encode than `Long` or short `String` fields, and that
+cost compounds across three hops × 5 edges/node (tracked separately in `TODO.md` 3.5).
 
 To reproduce:
 

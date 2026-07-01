@@ -42,9 +42,11 @@ import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
+import pl.iqtech.abyss.store.api.EdgeAdapter
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
+import pl.iqtech.abyss.store.api.NodeKeyEncoding
 import pl.iqtech.abyss.store.api.NodeLike
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.full.findAnnotation
@@ -101,19 +103,27 @@ class AbyssGraph<ID>(
 
     override fun outEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID>> {
         val nid = adapter.toNodeId(nodeId)
-        return outEdgeFlow(nodeId, nid, eq("__key.fromId", nid.toString()))
+        return outEdgeFlow(nodeId, nid, keyEq<EdgeKey, EdgeLike<ID>>("fromId", nid))
     }
 
     override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID>> {
         val nid = adapter.toNodeId(nodeId)
-        return outEdgeFlow(nodeId, nid, Predicates.and(eq("__key.fromId", nid.toString()), eq("__key.type", type)))
+        return outEdgeFlow(nodeId, nid, Predicates.and(keyEq<EdgeKey, EdgeLike<ID>>("fromId", nid), Predicates.equal<EdgeKey, EdgeLike<ID>>("__key.type", type)))
     }
 
     override fun inEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID>> = inEdgeFlow(nodeId)
 
     override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID>> = inEdgeFlow(nodeId, type)
 
-    private fun eq(attr: String, value: Comparable<*>): Predicate<EdgeKey, EdgeLike<ID>> = Predicates.equal(attr, value)
+    private fun <K, V> keyEq(field: String, nid: NodeId): Predicate<K, V> =
+        when (val enc = adapter.encodeKey(nid)) {
+            is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.$field", enc.value)
+            is NodeKeyEncoding.Str -> Predicates.equal<K, V>("__key.$field", enc.value)
+            is NodeKeyEncoding.Int64Pair -> Predicates.and<K, V>(
+                Predicates.equal<K, V>("__key.${field}Hi", enc.hi),
+                Predicates.equal<K, V>("__key.${field}Lo", enc.lo)
+            )
+        }
 
     private fun edgeKey(fromNid: NodeId, toNid: NodeId, type: String) =
         EdgeKey(fromNid, toNid, type, adapter.partitionKey(fromNid))
@@ -170,7 +180,7 @@ class AbyssGraph<ID>(
         }
         val revKeys = withContext(Dispatchers.IO) {
             reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
-                adapter.partitionKey(nid), Predicates.equal("__key.toId", nid.toString())
+                adapter.partitionKey(nid), keyEq<ReverseEdgeKey, Unit>("toId", nid)
             ))
         }
         val filtered = if (typeFilter != null) revKeys.filter { it.type == typeFilter } else revKeys
@@ -294,11 +304,10 @@ class AbyssGraph<ID>(
     private fun cascadeEdgeRemovals(nodeId: ID): List<Op.RemoveEdge> {
         val nid = adapter.toNodeId(nodeId)
         val pk  = adapter.partitionKey(nid)
-        val nidStr = nid.toString()
-        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, eq("__key.fromId", nidStr)))
+        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<ID>>("fromId", nid)))
             .map { Op.RemoveEdge(adapter.fromNodeId(it.key.fromId), adapter.fromNodeId(it.key.toId), it.key.type) }
         val inc = reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
-            pk, Predicates.equal("__key.toId", nidStr)
+            pk, keyEq<ReverseEdgeKey, Unit>("toId", nid)
         )).map { Op.RemoveEdge(adapter.fromNodeId(it.fromId), adapter.fromNodeId(it.toId), it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
@@ -414,10 +423,12 @@ class AbyssGraph<ID>(
 
 // Call before creating the HazelcastInstance — serialization config is immutable after startup.
 // Pass the consuming project's SerializersModule so concrete NodeLike/EdgeLike types are known.
-fun Config.registerAbyssSerializers(module: SerializersModule = EmptySerializersModule()): Config = apply {
+// The adapter must match the KeyAdapter used by every AbyssGraph<ID> sharing this HazelcastInstance:
+// EdgeKey/ReverseEdgeKey compact serialization is bound to one adapter's native field encoding.
+fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersModule = EmptySerializersModule()): Config = apply {
     serializationConfig.compactSerializationConfig.addSerializer(NodeIdSerializer())
-    serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer())
-    serializationConfig.compactSerializationConfig.addSerializer(ReverseEdgeKeySerializer())
+    serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer(adapter))
+    serializationConfig.compactSerializationConfig.addSerializer(ReverseEdgeKeySerializer(adapter))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }

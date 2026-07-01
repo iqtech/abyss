@@ -5,6 +5,8 @@
 CREATE KEYSPACE IF NOT EXISTS abyss_test_graph
     WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
 
+USE abyss_test_graph;
+
 -- ── ephemeral_nodes ──────────────────────────────────────────────────────────
 -- Partition key: id (UUID). Per-row TTL set at write time by YugabyteAbyssStoreLike.
 -- `data` carries the full polymorphic JSON (TEXT, not JSONB — YCQL has no JSONB type).
@@ -12,7 +14,7 @@ CREATE KEYSPACE IF NOT EXISTS abyss_test_graph
 -- No secondary indexes and no transactions flag — both are required together in YugabyteDB YCQL,
 -- and transactions=true blocks per-row USING TTL (issue #10992). Primary-key lookups suffice
 -- for loadNode(id) and loadEdge(fromId, toId, type).
-CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_nodes (
+CREATE TABLE IF NOT EXISTS ephemeral_nodes (
     id              UUID      PRIMARY KEY,
     type            TEXT,
     data            TEXT,
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_nodes (
 -- Partition key: from_id — co-locates all outgoing edges of a node on one tablet.
 -- Clustering columns: (to_id, type) — match EdgeKey ordering.
 
-CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
+CREATE TABLE IF NOT EXISTS ephemeral_edges (
     from_id         UUID,
     to_id           UUID,
     type            TEXT,
@@ -43,7 +45,7 @@ CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_edges (
 -- Mirrors ephemeral_edges; written/deleted together with same TTL (non-atomic).
 -- Secondary indexes can't be used: transactions=true blocks per-row USING TTL.
 
-CREATE TABLE IF NOT EXISTS abyss_test_graph.ephemeral_reverse_edges (
+CREATE TABLE IF NOT EXISTS ephemeral_reverse_edges (
     to_id           UUID,
     from_id         UUID,
     type            TEXT,

@@ -13,12 +13,17 @@ hazelcast:
         eviction-policy: LRU
         max-size-policy: FREE_HEAP_PERCENTAGE
         size: 25
+      # Attributes below assume UuidKeyAdapter (fromId/toId split into Hi/Lo longs).
+      # LongKeyAdapter/StringKeyAdapter deployments should index the single
+      # __key.fromId / __key.toId attribute instead.
       indexes:
         - name: idx_edge_fromId
           type: HASH
           attributes:
-            - __key.fromId
+            - __key.fromIdHi
+            - __key.fromIdLo
         - name: idx_edge_toId
           type: HASH
           attributes:
-            - __key.toId
+            - __key.toIdHi
+            - __key.toIdLo

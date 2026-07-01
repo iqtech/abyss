@@ -27,14 +27,14 @@ class StringPerformanceTest {
         }
 
         private val perfGraph: AbyssGraph<String> by lazy {
-            AbyssGraph(StringKeyAdapter, graphTestHz, "perf-str-nodes", "perf-str-edges")
+            AbyssGraph(StringKeyAdapter, stringTestHz, "perf-str-nodes", "perf-str-edges")
         }
 
         private val nodeIds: List<String> by lazy {
             val ids = (1..NODE_COUNT).map { randomId() }
-            val nodesMap = graphTestHz.getMap<NodeId, NodeLike<*>>("perf-str-nodes")
-            val edgesMap = graphTestHz.getMap<EdgeKey, EdgeLike<*>>("perf-str-edges")
-            val reverseMap = graphTestHz.getMap<ReverseEdgeKey, Unit>("perf-str-edges-reverse")
+            val nodesMap = stringTestHz.getMap<NodeId, NodeLike<*>>("perf-str-nodes")
+            val edgesMap = stringTestHz.getMap<EdgeKey, EdgeLike<*>>("perf-str-edges")
+            val reverseMap = stringTestHz.getMap<ReverseEdgeKey, Unit>("perf-str-edges-reverse")
             ids.forEach { id ->
                 nodesMap[StringKeyAdapter.toNodeId(id)] = StrTestNode(id = id, name = id)
             }

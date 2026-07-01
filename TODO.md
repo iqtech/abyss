@@ -2,7 +2,18 @@
 
 ## 1. High
 
-- **✅ 1.1 Ephemeral and persistent elements cannot share a transaction**
+- **✅ 1.1 Adapter-aware compact serializers for EdgeKey / ReverseEdgeKey**
+  `EdgeKeySerializer` and `ReverseEdgeKeySerializer` write `fromId`/`toId` as hex strings
+  (workaround for Hazelcast predicates rejecting `byte[]` as non-Comparable). This causes string
+  allocation and character-by-character comparison on every scanned partition entry, and doubles
+  the encoded size vs the native representation. Fix: pass `EdgeAdapter` into
+  `registerAbyssSerializers`; let each serializer write `fromId`/`toId` in the native
+  Hazelcast-comparable form the adapter knows (e.g. `writeLong` for `LongKeyAdapter`, two longs or
+  UUID string for `UuidKeyAdapter`, raw string for `StringKeyAdapter`). Predicates in `AbyssGraph`
+  must be updated to match the native type. Serializers become per-adapter instances rather than
+  global singletons.
+
+- **✅ 1.2 Ephemeral and persistent elements cannot share a transaction**
   Elements with a TTL go to YCQL; elements without go to YSQL. A single `transaction { }` block
   that mixes both is not atomic — if YSQL commits and YCQL fails (or vice versa), the graph is
   silently inconsistent. Currently logs a warning and continues.
@@ -10,46 +21,46 @@
   `transaction { }`), which accepts a TTL and routes exclusively to YCQL. The two builders are
   intentionally separate and cannot be combined into one atomic operation.
 
-- **✅ 1.2 Traversal subgraph extraction**
+- **✅ 1.3 Traversal subgraph extraction**
   After a traversal, callers need the full subgraph: all visited nodes as a list and all traversed
   edges as a list. Currently only the frontier nodes are accessible via `nodes<T>()`.
 
-- **✅ 1.3 Edge integrity check on creation**
+- **✅ 1.4 Edge integrity check on creation**
   When an edge is added, verify that both `fromId` and `toId` nodes exist in the graph. Return a
   new `AbyssError.IntegrityError` variant when either node is missing, rather than silently
   creating a dangling edge. Integrity checks should be disable-able (e.g. a flag on the builder)
   for bulk operations such as graph import, where node existence is guaranteed by the caller.
 
-- **✅ 1.4 Edge modification (retarget)**
+- **✅ 1.5 Edge modification (retarget)**
   Allow changing an existing edge's endpoint — e.g. A→B becomes A→C — without having to
   `removeEdge` + `addEdge` manually. A `modifyEdge(edge, newFromId?, newToId?)` operation should
   atomically replace the old edge with the new one (removing it from both the forward and reverse
   maps). Integrity check must apply to the new `fromId`/`toId` when `checkIntegrity` is enabled.
 
-- **✅ 1.5 Graph self-healing for non-atomic YCQL edge writes**
+- **✅ 1.6 Graph self-healing for non-atomic YCQL edge writes**
   YCQL cannot atomically write both the edge table and the reverse-edge table. When the second
   write fails, start an asynchronous retry procedure: up to 5 attempts with exponentially growing
   intervals (via a multiplier). Arrow's `Schedule` primitive covers this pattern.
 
-- **✅ 1.6 Ephemeral node/edge TTL restoration on cache miss**
+- **✅ 1.7 Ephemeral node/edge TTL restoration on cache miss**
   When a cache miss causes a read from YCQL disk, the TTL must be restored correctly before
   populating the cache. This likely requires a technical column `ttl_expiration` (absolute
   timestamp) on the ephemeral node/edge tables, so the remaining TTL can be calculated at
   read time and applied to the cache entry.
 
-- **✅ 1.7 Traversal DSL: non-terminal `nodes` filter + `collectNodes()` terminal**
+- **✅ 1.8 Traversal DSL: non-terminal `nodes` filter + `collectNodes()` terminal**
   `nodes<N>(filter)` in `Extensions.kt:80` is currently a terminal that returns `Flow<N>` directly.
   The desired syntax `outgoing { edgePredicate }; nodes { nodePredicate }; collectNodes()` requires
   a separate non-terminal node-filter step and a no-arg `collectNodes()` terminal. Needs a
   `nodePredicate` field on `TraversalBuilder` (or a staging step) and a `collectNodes()` extension
   that materialises using it.
 
-- **✅ 1.8 Traversal DSL: frontier connectivity filters (`hasOutgoing` / `hasIncoming`)**
+- **✅ 1.9 Traversal DSL: frontier connectivity filters (`hasOutgoing` / `hasIncoming`)**
   Add `hasOutgoing<E>(toId)`, `hasOutgoing<E, N>()` and symmetric `hasIncoming` variants that
   filter the frontier in place (without advancing it), keeping only nodes that have the specified
   edge to a particular target node or to any node of a given type.
 
-- **✅ 1.9 Add modifyNode + unify modifyEdge to lambda pattern**
+- **✅ 1.10 Add modifyNode + unify modifyEdge to lambda pattern**
   `AbyssTransactionLike` and `AbyssEphemeralTransactionLike` expose `modifyEdge(old, new)` requiring
   the caller to pre-fetch the old edge. Replace with a consistent read-modify-write lambda pattern:
   `suspend fun modifyNode(id, transform: (NodeLike?) -> NodeLike)` and
@@ -57,7 +68,7 @@
   Both fetch the current value internally. `BufferedTransaction` and `BufferedEphemeralTransaction`
   gain `readNode`/`readEdge` constructor params; four test call sites updated; two new `modifyNode` tests added.
 
-- **✅ 1.10 Generic ID refactor**
+- **✅ 1.11 Generic ID refactor**
   Introduce `NodeId(ByteArray)` as the internal universal key (content-based equals/hashCode) and
   `KeyAdapter<ID>` to bridge domain ID types. Make `AbyssGraph<ID>` typed per instance with the
   adapter injected at construction and invisible to callers. All interfaces become generic:

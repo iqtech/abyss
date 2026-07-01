@@ -21,14 +21,14 @@ class LongPerformanceTest {
         private const val EDGES_PER_NODE = 5
 
         private val perfGraph: AbyssGraph<Long> by lazy {
-            AbyssGraph(LongKeyAdapter, graphTestHz, "perf-long-nodes", "perf-long-edges")
+            AbyssGraph(LongKeyAdapter, longTestHz, "perf-long-nodes", "perf-long-edges")
         }
 
         private val nodeIds: List<Long> by lazy {
             val ids = (1L..NODE_COUNT.toLong()).toList()
-            val nodesMap = graphTestHz.getMap<NodeId, NodeLike<*>>("perf-long-nodes")
-            val edgesMap = graphTestHz.getMap<EdgeKey, EdgeLike<*>>("perf-long-edges")
-            val reverseMap = graphTestHz.getMap<ReverseEdgeKey, Unit>("perf-long-edges-reverse")
+            val nodesMap = longTestHz.getMap<NodeId, NodeLike<*>>("perf-long-nodes")
+            val edgesMap = longTestHz.getMap<EdgeKey, EdgeLike<*>>("perf-long-edges")
+            val reverseMap = longTestHz.getMap<ReverseEdgeKey, Unit>("perf-long-edges-reverse")
             ids.forEach { id ->
                 nodesMap[LongKeyAdapter.toNodeId(id)] = LongTestNode(id = id, name = id.toString())
             }

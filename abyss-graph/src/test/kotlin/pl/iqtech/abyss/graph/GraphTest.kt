@@ -28,6 +28,8 @@ import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.LongKeyAdapter
+import pl.iqtech.abyss.store.api.StringKeyAdapter
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -70,7 +72,25 @@ val graphTestModule = SerializersModule {
 
 val graphTestHz by lazy {
     System.setProperty("hazelcast.logging.type", "none")
-    Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(graphTestModule))
+    Hazelcast.newHazelcastInstance(
+        Config().setClusterName("graph-test-uuid").registerAbyssSerializers(UuidKeyAdapter, graphTestModule)
+    )
+}
+
+// EdgeKey/ReverseEdgeKey compact serialization is bound to one KeyAdapter per HazelcastInstance,
+// so Long/String performance tests get their own instances rather than sharing graphTestHz.
+val longTestHz by lazy {
+    System.setProperty("hazelcast.logging.type", "none")
+    Hazelcast.newHazelcastInstance(
+        Config().setClusterName("graph-test-long").registerAbyssSerializers(LongKeyAdapter, graphTestModule)
+    )
+}
+
+val stringTestHz by lazy {
+    System.setProperty("hazelcast.logging.type", "none")
+    Hazelcast.newHazelcastInstance(
+        Config().setClusterName("graph-test-string").registerAbyssSerializers(StringKeyAdapter, graphTestModule)
+    )
 }
 
 val graphTest by lazy { AbyssGraph(UuidKeyAdapter, graphTestHz, "g-nodes", "g-edges") }
