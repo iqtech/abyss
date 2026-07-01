@@ -217,7 +217,7 @@
   Uuid 3-hop gap comes from elsewhere (candidate: `Uuid`/`NodeId` hashCode+equals cost across the
   ~125 edge/node lookups a 3-hop × 5-fanout traversal touches) — not further investigated here.
 
-- **➡️ 3.6 Prove Uuid hashCode/equals cost drives the remaining 3-hop gap**
+- **✅ 3.6 Prove Uuid hashCode/equals cost drives the remaining 3-hop gap**
   TODO 3.5's `SerdeRoundtripPerformanceTest` showed value-payload serde only accounts for
   ~1.8x (edge) / ~1.2x (node) of the ~5-7x Uuid vs Long/String 3-hop traversal gap, leaving most
   of the slowdown unexplained. Candidate cause: `Uuid`/`NodeId` hashCode+equals cost across the
@@ -226,6 +226,21 @@
   benchmark isolating hashCode/equals + HashMap get/put cost for `NodeId(Uuid)` vs `NodeId(Long)`
   vs `NodeId(String)` at the volumes a 3-hop traversal touches, independent of serde, to confirm
   or refute.
+  **Result: refuted.** `NodeIdHashPerformanceTest` isolates hashCode/equals + HashMap/HashSet
+  cost independent of Hazelcast/serde (plain JVM `HashMap`/`HashSet`, no `IMap`). Raw
+  `NodeId.hashCode()`+`equals()` calls confirm the premise in isolation: `NodeId(Uuid)` costs
+  ~4-12x more per call than `NodeId(Long)` (~30-54ns vs ~4-15ns across runs), consistent with
+  uncached `ByteArray.contentHashCode()`/`contentEquals()` scanning 16 bytes vs 8. But that cost
+  does not survive into real container operations: `HashMap<NodeId, V>.get`/`.put` at 10k-200k
+  entries show `NodeId(Uuid)` costing 0.4-0.6x of `NodeId(Long)` (Uuid *faster*, not slower)
+  consistently across repeated runs, and domain-ID (`Uuid`/`Long`/`String`) `frontier.toSet()`
+  rebuild at 3-hop volumes (sizes 5/25/125) is noisy with no consistent direction (0.7x-1.9x,
+  dominated by allocation/GC at these sub-microsecond operation sizes, not by hashCode/equals).
+  Combined with 3.5's serde findings (~1.8x/1.2x), neither serde nor hashCode/equals+HashMap
+  cost explains the ~5-7x 3-hop gap — the cause remains open. Candidate not investigated here:
+  coroutine/`Flow` fan-out overhead in `TraversalBuilder.addHop`'s
+  `coroutineScope { frontier.map { async {...} } }.awaitAll()`, which runs once per hop
+  regardless of ID type but whose per-task overhead could dominate at these small per-node costs.
 
 ## 4. Uncategorized
 
