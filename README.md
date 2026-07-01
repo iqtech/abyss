@@ -651,10 +651,15 @@ char-by-char hex scan at 2× the byte length. This closed most of the gap betwee
 `inEdges` is slower than `outEdges` for all adapters: it resolves edge data via `IMap.getAll`
 point-lookups after the reverse-key scan — the reverse map holds only keys, not payloads.
 
-The UUID 3-hop figure is still higher than Long/String due to Hazelcast compact serialization
-cost of the edge *values* (`NodeLike`/`EdgeLike` payloads, unrelated to the `EdgeKey` encoding
-above): `Uuid` fields require more bytes to encode than `Long` or short `String` fields, and that
-cost compounds across three hops × 5 edges/node (tracked separately in `TODO.md` 3.5).
+The UUID 3-hop figure is still higher than Long/String, but not mainly because of value serde:
+`NodeLike`/`EdgeLike` payloads go through a custom JSON `StreamSerializer`
+(`NodeLikeHzSerializer`/`EdgeLikeHzSerializer`), not Hazelcast Compact — only `NodeId`/`EdgeKey`/
+`ReverseEdgeKey` use real Compact. Isolating that JSON roundtrip from `IMap`/partition routing
+entirely (`SerdeRoundtripPerformanceTest`, no `HazelcastInstance` involved) measures only a
+~1.8x (edge) / ~1.2x (node) Uuid cost — far short of the ~5-7x gap above, so value serde is a
+minor contributor and most of the gap comes from elsewhere (candidate: `Uuid` hashCode/equals
+cost across the ~125 edge/node lookups a 3-hop × 5-fanout traversal touches, unconfirmed — see
+`TODO.md` 3.5).
 
 To reproduce:
 
@@ -662,6 +667,7 @@ To reproduce:
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.UuidPerformanceTest" -Pperf
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongPerformanceTest" -Pperf
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.StringPerformanceTest" -Pperf
+./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.SerdeRoundtripPerformanceTest" -Pperf
 ```
 
 ---

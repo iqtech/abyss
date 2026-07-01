@@ -184,11 +184,31 @@
   climbing (expected: ~4 parallel callers on Oracle Ampere A1 before CPU becomes the ceiling).
   Cover `outEdges`, `inEdges`, and 3-hop traversal.
 
-- **➡️ 3.5 Prove serde cost drives Uuid 3-hop slowdown**
+- **✅ 3.5 Prove serde cost drives Uuid 3-hop slowdown**
   UUID 3-hop traversal consistently runs ~4 ms vs ~0.6 ms for Long/String. Hypothesis: deserializing
   `Uuid` fields in `TestEdge` costs more than `Long`/`String` fields in `LongTestEdge`/`StrTestEdge`.
   Write a focused benchmark that measures Hazelcast compact serde roundtrip cost in isolation for
   each ID type, independent of partition routing, to confirm or refute the hypothesis.
+  **Result: mostly refuted.** `SerdeRoundtripPerformanceTest` isolates value-payload serde by
+  building a bare `DefaultSerializationServiceBuilder` (no `HazelcastInstance`/`IMap`/partition
+  routing at all) and timing `toData`/`toObject` roundtrips directly. Measured cost for Uuid vs
+  Long/String is only ~1.8x (edge) / ~1.2x (node) — nowhere near the ~5-7x gap seen in the 3-hop
+  benchmark (3.5ms vs 0.7ms/0.5ms, same machine, same run). Also corrects a mislabel: `NodeLike`/
+  `EdgeLike` payloads are **not** Hazelcast Compact serialized — they go through a custom JSON
+  `StreamSerializer` (`NodeLikeHzSerializer`/`EdgeLikeHzSerializer`); only `NodeId`/`EdgeKey`/
+  `ReverseEdgeKey` use real Compact. Value serde is a real but minor contributor; the bulk of the
+  Uuid 3-hop gap comes from elsewhere (candidate: `Uuid`/`NodeId` hashCode+equals cost across the
+  ~125 edge/node lookups a 3-hop × 5-fanout traversal touches) — not further investigated here.
+
+- **➡️ 3.6 Prove Uuid hashCode/equals cost drives the remaining 3-hop gap**
+  TODO 3.5's `SerdeRoundtripPerformanceTest` showed value-payload serde only accounts for
+  ~1.8x (edge) / ~1.2x (node) of the ~5-7x Uuid vs Long/String 3-hop traversal gap, leaving most
+  of the slowdown unexplained. Candidate cause: `Uuid`/`NodeId` hashCode+equals cost across the
+  ~125 edge/node lookups (HashMap/Set operations in frontier dedup, IMap key lookups) a
+  3-hop × 5-fanout traversal touches, compared to Long/String's cheaper hashCode. Write a focused
+  benchmark isolating hashCode/equals + HashMap get/put cost for `NodeId(Uuid)` vs `NodeId(Long)`
+  vs `NodeId(String)` at the volumes a 3-hop traversal touches, independent of serde, to confirm
+  or refute.
 
 ## 4. Uncategorized
 
