@@ -21,8 +21,8 @@ class UuidPerformanceTest {
         private const val NODE_COUNT = 10_000
         private const val EDGES_PER_NODE = 5
 
-        private val perfGraph: AbyssGraph<Uuid> by lazy {
-            AbyssGraph(UuidKeyAdapter, graphTestHz, "perf-uuid-nodes", "perf-uuid-edges")
+        private val perfGraph: AbyssGraphSchema<Uuid> by lazy {
+            AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "perf-uuid-nodes", "perf-uuid-edges")
         }
 
         private val nodeIds: List<Uuid> by lazy {

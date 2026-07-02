@@ -4,7 +4,16 @@ import kotlin.uuid.Uuid
 import kotlin.uuid.toJavaUuid
 import kotlin.uuid.toKotlinUuid
 import java.nio.ByteBuffer
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 
+// Serialized as its lowercase-hex string, so cross-schema edges (EdgeLike<NodeId>) round-trip
+// through the JSON edge serializer.
+@Serializable(with = NodeIdHexSerializer::class)
 class NodeId(val bytes: ByteArray) : Comparable<NodeId> {
     override fun equals(other: Any?) = other is NodeId && bytes.contentEquals(other.bytes)
     override fun hashCode() = bytes.contentHashCode()
@@ -20,6 +29,12 @@ class NodeId(val bytes: ByteArray) : Comparable<NodeId> {
     companion object {
         fun fromHex(hex: String) = NodeId(ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() })
     }
+}
+
+object NodeIdHexSerializer : KSerializer<NodeId> {
+    override val descriptor = PrimitiveSerialDescriptor("NodeId", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: NodeId) = encoder.encodeString(value.toString())
+    override fun deserialize(decoder: Decoder): NodeId = NodeId.fromHex(decoder.decodeString())
 }
 
 sealed interface NodeKeyEncoding {
@@ -94,5 +109,55 @@ object StringKeyAdapter : KeyAdapter<String> {
     override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
         require(encoding is NodeKeyEncoding.Str) { "StringKeyAdapter expects Str, got $encoding" }
         return toNodeId(encoding.value)
+    }
+}
+
+// Width of the schema-tag prefix a multi-schema graph stamps onto every NodeId. BYTE = 256 schemas.
+enum class SchemaTagWidth(val bytes: Int) { BYTE(1), SHORT(2), INT(4), LONG(8) }
+
+// Adapter-independent edge-key encoding for multi-schema graphs. A single Hazelcast Compact
+// serializer per class cannot express multiple native shapes, so the container encodes every
+// (self-describing) tagged NodeId as its hex string, riding the existing STRING/Str shape.
+object UniformHexAdapter : EdgeAdapter {
+    override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
+    override val keyEncodingShape = KeyEncodingShape.STRING
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKeyEncoding.Str(nodeId.toString())
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
+        require(encoding is NodeKeyEncoding.Str) { "UniformHexAdapter expects Str, got $encoding" }
+        return NodeId.fromHex(encoding.value)
+    }
+}
+
+// Wraps an inner KeyAdapter, prefixing every NodeId with a big-endian schema tag (`width` bytes)
+// so schemas coexist in shared maps with globally-unique, self-describing keys. Edge-key encoding
+// is uniform hex (see UniformHexAdapter), required because heterogeneous inner shapes can't share
+// one Compact schema.
+class SchemaKeyAdapter<ID>(
+    val tag: Long,
+    val width: SchemaTagWidth,
+    val inner: KeyAdapter<ID>,
+) : KeyAdapter<ID> {
+    private val prefix: ByteArray =
+        ByteBuffer.allocate(8).putLong(tag).array().copyOfRange(8 - width.bytes, 8)
+
+    init { require(tag >= 0 && (width.bytes == 8 || tag < (1L shl (width.bytes * 8)))) { "tag $tag does not fit in $width" } }
+
+    override fun toNodeId(id: ID): NodeId = NodeId(prefix + inner.toNodeId(id).bytes)
+    override fun fromNodeId(nodeId: NodeId): ID =
+        inner.fromNodeId(NodeId(nodeId.bytes.copyOfRange(width.bytes, nodeId.bytes.size)))
+
+    override fun partitionKey(nodeId: NodeId): Any = UniformHexAdapter.partitionKey(nodeId)
+    override val keyEncodingShape = UniformHexAdapter.keyEncodingShape
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = UniformHexAdapter.encodeKey(nodeId)
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId = UniformHexAdapter.decodeKey(encoding)
+
+    companion object {
+        // Reads the schema-tag prefix from a tagged NodeId without needing the inner adapter.
+        fun readTag(nodeId: NodeId, width: SchemaTagWidth): Long {
+            require(nodeId.bytes.size >= width.bytes) { "NodeId too short for $width tag" }
+            var v = 0L
+            for (i in 0 until width.bytes) v = (v shl 8) or (nodeId.bytes[i].toLong() and 0xFF)
+            return v
+        }
     }
 }

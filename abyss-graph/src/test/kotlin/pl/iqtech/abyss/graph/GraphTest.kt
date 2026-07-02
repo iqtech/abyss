@@ -67,6 +67,7 @@ val graphTestModule = SerializersModule {
     polymorphic(EdgeLike::class) {
         subclass(TestEdge::class); subclass(TypedEdge::class)
         subclass(LongTestEdge::class); subclass(StrTestEdge::class)
+        subclass(CrossRefEdge::class)
     }
 }
 
@@ -93,7 +94,7 @@ val stringTestHz by lazy {
     )
 }
 
-val graphTest by lazy { AbyssGraph(UuidKeyAdapter, graphTestHz, "g-nodes", "g-edges") }
+val graphTest by lazy { AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "g-nodes", "g-edges") }
 
 private fun Uuid.toNodeId() = UuidKeyAdapter.toNodeId(this)
 private fun edgeKey(fromId: Uuid, toId: Uuid, type: String): EdgeKey {
@@ -487,7 +488,7 @@ class GraphTest {
     @Test fun `ephemeral with store commits to store with ttl`() {
         runBlocking {
             val fake = FakeEphemeralStore()
-            val storeGraph = AbyssGraph(UuidKeyAdapter, graphTestHz, "eph-s-nodes", "eph-s-edges", ephemeralStore = fake)
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "eph-s-nodes", "eph-s-edges", ephemeralStore = fake)
             val node = TestNode(id = Uuid.random(), name = "eph-stored")
 
             storeGraph.ephemeral(60.seconds) { addNode(node) }
@@ -563,7 +564,7 @@ class GraphTest {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "warm-out")
             val fake = WarmingFakeStore(outEdges = listOf(edge))
-            val g = AbyssGraph(UuidKeyAdapter, graphTestHz, "w-out-nodes", "w-out-edges", fake)
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "w-out-nodes", "w-out-edges", fake)
             val result = g.outEdges(edge.fromId).toList()
             assertEquals(1, result.size)
             graphTestHz.getMap<Any, Any>("w-out-nodes").clear()
@@ -575,7 +576,7 @@ class GraphTest {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "warm-in")
             val fake = WarmingFakeStore(inEdges = listOf(edge))
-            val g = AbyssGraph(UuidKeyAdapter, graphTestHz, "w-in-nodes", "w-in-edges", fake)
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "w-in-nodes", "w-in-edges", fake)
             val result = g.inEdges(edge.toId).toList()
             assertEquals(1, result.size)
             graphTestHz.getMap<Any, Any>("w-in-nodes").clear()
@@ -587,7 +588,7 @@ class GraphTest {
     @Test fun `transaction with store commits to store before cache`() {
         runBlocking {
             val fake = FakeStore()
-            val storeGraph = AbyssGraph(UuidKeyAdapter, graphTestHz, "s-nodes", "s-edges", fake)
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "s-nodes", "s-edges", fake)
             val node = TestNode(id = Uuid.random(), name = "stored")
 
             storeGraph.transaction { addNode(node) }
@@ -603,7 +604,7 @@ class GraphTest {
     @Test fun `transaction with store returns Left when store fails`() {
         runBlocking {
             val fake = FakeStore(failTx = true)
-            val storeGraph = AbyssGraph(UuidKeyAdapter, graphTestHz, "f-nodes", "f-edges", fake)
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "f-nodes", "f-edges", fake)
             val result = storeGraph.transaction { addNode(TestNode(id = Uuid.random(), name = "x")) }
             assertIs<Either.Left<AbyssError>>(result)
         }

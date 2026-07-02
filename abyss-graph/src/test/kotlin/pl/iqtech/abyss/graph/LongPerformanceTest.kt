@@ -20,8 +20,8 @@ class LongPerformanceTest {
         private const val NODE_COUNT = 10_000
         private const val EDGES_PER_NODE = 5
 
-        private val perfGraph: AbyssGraph<Long> by lazy {
-            AbyssGraph(LongKeyAdapter, longTestHz, "perf-long-nodes", "perf-long-edges")
+        private val perfGraph: AbyssGraphSchema<Long> by lazy {
+            AbyssGraphSchema(LongKeyAdapter, longTestHz, "perf-long-nodes", "perf-long-edges")
         }
 
         private val nodeIds: List<Long> by lazy {

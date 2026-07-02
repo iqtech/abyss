@@ -26,8 +26,8 @@ class StringPerformanceTest {
             (1..len).map { chars[Random.nextInt(chars.size)] }.joinToString("")
         }
 
-        private val perfGraph: AbyssGraph<String> by lazy {
-            AbyssGraph(StringKeyAdapter, stringTestHz, "perf-str-nodes", "perf-str-edges")
+        private val perfGraph: AbyssGraphSchema<String> by lazy {
+            AbyssGraphSchema(StringKeyAdapter, stringTestHz, "perf-str-nodes", "perf-str-edges")
         }
 
         private val nodeIds: List<String> by lazy {

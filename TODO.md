@@ -78,12 +78,28 @@
   must be updated to match the native type. Serializers become per-adapter instances rather than
   global singletons.
 
-- **➡️ 1.12 Schema concept: per-node-ID-type schemas, multi-schema graph, cross-schema edges**
-  Discuss adding a schema concept keyed per node ID type, where a single graph can host multiple
-  schemas concurrently. `NodeId` would carry additional bytes identifying which schema it belongs
-  to. This would also enable cross-schema edges — e.g. an edge from `NodeLike<Long>` to
-  `NodeLike<Uuid>` — which the current generic ID refactor (single adapter per `AbyssGraph<ID>`
-  instance, see 1.10) does not support.
+- **✅ 1.12 Schema concept: per-node-ID-type schemas, multi-schema graph, cross-schema edges**
+  Design in `ai-scripts/SchemaConceptRFC.md`; implemented heterogeneous-first. `AbyssGraph<ID>` was
+  renamed to `AbyssGraphSchema<ID>` (unchanged single-schema engine); a new `AbyssGraph` container
+  holds many schema views keyed by a width-configurable schema tag (`SchemaTagWidth.BYTE` default,
+  `SHORT`/`INT`/`LONG` variants). `SchemaKeyAdapter<ID>` prefixes every `NodeId` with the tag
+  (`[tag | payload]`) so schemas coexist in shared maps with globally-unique, self-describing keys;
+  inner adapters stay schema-agnostic. Cross-schema edges are NodeId-level (`EdgeLike<NodeId>`) in a
+  separate container `<edges>-cross` map, gated by `allowCrossSchemaEdges` (default off =
+  private-by-default), with per-endpoint integrity via `resolveSchema`; `crossHop` advances a NodeId
+  frontier across them. Container edges use uniform hex encoding (via `UniformHexAdapter`, existing
+  `STRING` shape, zero serializer changes) because one Hazelcast instance allows only one Compact
+  schema per class — so heterogeneous ID shapes can't share a native `EdgeKey`. Native `Int64`/
+  `Int64Pair` encoding is preserved for standalone single-schema `AbyssGraphSchema`. Cross edges are
+  cache-only for now (no store persistence). Covered by `MultiSchemaTest`.
+
+- **➡️ 1.13 Outgoing-only traversal for ephemeral edges**
+  Currently YCQL doesn't support transactions on non-transact tables, so writing edge/rev edge is
+  not atomic. If rev edge will not be stored by design, then atomicity will be preserved; caller can easily
+  work around this in graph-style - just add reverse edge explicitly if incoming processing is a
+  must - and follow those edges as outgoing. Example: Person---'IsInGroup'--->G1 and another edge
+  G1---'HasMember'--->Person  as opposite directions outgoing-only design. This way when algorithm
+  expects outgoing edge and this edge is ephemeral - no edges will be found (VERIFY!).
 
 ## 2. Medium
 
