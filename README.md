@@ -8,7 +8,7 @@ User-agnostic in-memory graph library backed by Hazelcast with pluggable durable
 |---|---|
 | `abyss-store-api` | `NodeLike` / `EdgeLike` interfaces, `AbyssStoreLike` (persistent) and `AbyssEphemeralStoreLike` (TTL) contracts |
 | `abyss-dsl` | Engine + traversal interfaces, reified extension functions |
-| `abyss-graph` | Hazelcast `IMap` engine — `AbyssGraph` |
+| `abyss-graph` | Hazelcast `IMap` engine — `AbyssGraphSchema` (single schema); `AbyssGraph` multi-schema container with cross-schema edges |
 | `abyss-store-yugabyte` | YugabyteDB stores — `YugabytePersistentStore` (YSQL) and `YugabyteEphemeralStore` (YCQL) |
 
 ## Quick start
@@ -41,7 +41,7 @@ val module = SerializersModule {
 }
 
 val hz    = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(LongKeyAdapter, module))
-val graph = AbyssGraph(LongKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
+val graph = AbyssGraphSchema(LongKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
 
 graph.transaction {
     addNode(City(id = 1L, name = "Warsaw"))
@@ -58,7 +58,7 @@ graph.outEdges<Road>(1L).collect { road ->
 
 ## Pluggable storage
 
-`AbyssGraph` accepts two independently nullable stores:
+`AbyssGraphSchema` accepts two independently nullable stores:
 
 - **`persistentStore: AbyssStoreLike?`** — durable, no-TTL writes. Any `AbyssStoreLike` works here; the
   reference implementation is `YugabytePersistentStore` (YSQL/PostgreSQL-compatible).
@@ -145,7 +145,7 @@ val module = SerializersModule {
 
 ### Key adapters
 
-`AbyssGraph<ID>` is typed per instance. The `ID` type is fixed at construction via a `KeyAdapter<ID>`:
+`AbyssGraphSchema<ID>` is typed per instance. The `ID` type is fixed at construction via a `KeyAdapter<ID>`:
 
 ```kotlin
 interface KeyAdapter<ID> {
@@ -162,7 +162,7 @@ Three adapters are provided out of the box:
 | `LongKeyAdapter` | `Long` |
 | `StringKeyAdapter` | `String` |
 
-Pass the adapter as the first argument to `AbyssGraph`. All interfaces the graph returns
+Pass the adapter as the first argument to `AbyssGraphSchema`. All interfaces the graph returns
 (`NodeLike<ID>`, `EdgeLike<ID>`, `Subgraph<ID>`, `Path<ID>`) carry the same `ID` type,
 and the internal `NodeId(ByteArray)` key is never exposed to callers.
 
@@ -179,10 +179,92 @@ and the internal `NodeId(ByteArray)` key is never exposed to callers.
 | `StringKeyAdapter` | single `String` field (the raw ID, not hex) |
 
 Because of this, **the `adapter` passed to `registerAbyssSerializers` must match the `KeyAdapter`
-used by every `AbyssGraph<ID>` sharing that `HazelcastInstance`** — one Hazelcast instance can only
-carry one encoding for `EdgeKey`/`ReverseEdgeKey`. Graphs with different `ID` types need separate
-Hazelcast instances (and, if colocated on the same host, distinct `clusterName`s to avoid
-auto-joining).
+used by every `AbyssGraphSchema<ID>` sharing that `HazelcastInstance`** — one Hazelcast instance can
+only carry one Compact schema per class, so only one native `EdgeKey`/`ReverseEdgeKey` encoding.
+Standalone schemas with different `ID` types need separate Hazelcast instances (and, if colocated
+on the same host, distinct `clusterName`s to avoid auto-joining) — or a single [multi-schema
+`AbyssGraph`](#multi-schema-graphs--cross-schema-edges) container, which sidesteps the limitation
+by giving every `ID` type a uniform, tag-prefixed encoding on one shared instance.
+
+---
+
+### Multi-schema graphs & cross-schema edges
+
+A single `AbyssGraph` container hosts several `AbyssGraphSchema` views — each with its own `ID`
+type — over one shared `HazelcastInstance`. Every schema registers under an integer `tag`; the
+container wraps that schema's `KeyAdapter<ID>` in a `SchemaKeyAdapter<ID>` that stamps a
+`tagWidth`-byte prefix (`[tag | payload]`) onto every `NodeId`, so all schemas coexist in the same
+nodes/edges maps with globally-unique, self-describing keys. Inner adapters stay schema-agnostic —
+`LongKeyAdapter`/`UuidKeyAdapter`/`StringKeyAdapter` are unaware they're tagged.
+
+Because heterogeneous ID shapes can't share one Hazelcast Compact schema per class, the container
+encodes `EdgeKey`/`ReverseEdgeKey` uniformly as hex (`UniformHexAdapter`) rather than each adapter's
+native form — register serializers with `UniformHexAdapter`, not a specific `KeyAdapter`, when using
+the container:
+
+Two independent schemas — `City` keyed by `Long`, `Person` keyed by `Uuid` (both defined earlier in
+this README):
+
+```kotlin
+val module = SerializersModule {
+    polymorphic(NodeLike::class) { subclass(City::class); subclass(Person::class) }
+    polymorphic(EdgeLike::class) { subclass(Road::class); subclass(Knows::class); subclass(LivesIn::class) }
+}
+
+val hz = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(UniformHexAdapter, module))
+
+val container = AbyssGraph(hz, SchemaTagWidth.BYTE, "abyss-nodes", "abyss-edges", allowCrossSchemaEdges = true)
+val cities:  AbyssGraphSchema<Long> = container.register(tag = 1L, adapter = LongKeyAdapter)
+val persons: AbyssGraphSchema<Uuid> = container.register(tag = 2L, adapter = UuidKeyAdapter)
+
+val warsaw = City(id = 1L, name = "Warsaw")
+val alice  = Person(name = "Alice")
+cities.transaction { addNode(warsaw) }
+persons.transaction { addNode(alice) }
+```
+
+Each `register()` call also accepts `persistentStore` / `ephemeralStore` / `asyncCachePopulation`,
+same as a standalone `AbyssGraphSchema`. Every registered schema behaves exactly like a standalone
+one — `container.schema<Long>(1L)` returns the same `AbyssGraphSchema<Long>` for `transaction { }`,
+`from { }`, `outEdges`, etc. Intra-schema queries never see another schema's nodes or edges.
+
+#### Cross-schema edges
+
+Edges *between* schemas are `EdgeLike<NodeId>` (untyped domain ID, since the two endpoints may have
+different `ID` types) and live in a separate `<edges>-cross` map, so they never leak into an
+intra-schema `outEdges`/`inEdges` call. They're disabled by default — pass
+`allowCrossSchemaEdges = true` to the container, otherwise `addCrossEdge` returns
+`AbyssError.IntegrityError`:
+
+```kotlin
+@Serializable
+@SerialName("lives_in")
+data class LivesIn(
+    override val fromId: NodeId,   // a Person's tagged NodeId
+    override val toId: NodeId,     // a City's tagged NodeId
+    override val tags: List<String> = emptyList(),
+    override val createdAt: Instant = Clock.System.now(),
+    override val updatedAt: Instant = Clock.System.now(),
+) : EdgeLike<NodeId>
+
+// tag/width must match what was passed to register() — the schema itself keeps its adapter private,
+// so cross-schema code builds the same SchemaKeyAdapter to convert a domain ID to its tagged NodeId.
+val aliceNid  = SchemaKeyAdapter(2L, SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(alice.id)
+val warsawNid = SchemaKeyAdapter(1L, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(warsaw.id)
+container.addCrossEdge(LivesIn(fromId = aliceNid, toId = warsawNid))
+
+container.crossOutEdges(aliceNid).collect { println(it) }   // Alice's cross-schema edges
+
+// walk a NodeId frontier across the cross-schema edge into the target schema
+val reached: Set<NodeId> = container.crossHop(setOf(aliceNid), HopDirection.OUTGOING)
+val target = reached.single()
+container.resolveSchema(target)   // routes back to `cities` by reading the tag prefix
+```
+
+`addCrossEdge` checks both endpoints resolve to a registered schema tag and that the node actually
+exists (via `resolveSchema` + a lookup in the shared nodes map) before writing. Cross-schema edges
+are cache-only in this version — no store persistence, and no automatic cascade on `removeNode`
+from the owning schema's `transaction { }`.
 
 ---
 
@@ -191,7 +273,7 @@ auto-joining).
 ```kotlin
 val config = Config().registerAbyssSerializers(UuidKeyAdapter, module)
 val hz = Hazelcast.newHazelcastInstance(config)
-val graph = AbyssGraph(UuidKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
+val graph = AbyssGraphSchema(UuidKeyAdapter, hz, nodesMapName = "nodes", edgesMapName = "edges")
 
 // write
 graph.transaction {
@@ -260,7 +342,7 @@ val ephemeralStore = YugabyteEphemeralStore.create(
 
 val config = Config().registerAbyssSerializers(UuidKeyAdapter, module)
 val hz     = Hazelcast.newHazelcastInstance(config)
-val graph  = AbyssGraph(UuidKeyAdapter, hz, "nodes", "edges",
+val graph  = AbyssGraphSchema(UuidKeyAdapter, hz, "nodes", "edges",
     persistentStore = persistentStore,
     ephemeralStore  = ephemeralStore,
 )
@@ -285,7 +367,10 @@ parallel and the persistent result wins if both return a hit.
 
 #### Multiple graphs in one application
 
-Each graph needs its own YSQL schema and YCQL keyspace. Pass them to each `create()`:
+Each graph needs its own YSQL schema and YCQL keyspace. Pass them to each `create()`. This pattern
+gives each schema its own independent nodes/edges maps with no cross-graph queries; if the graphs
+need to reference each other's nodes directly, use the [multi-schema
+`AbyssGraph`](#multi-schema-graphs--cross-schema-edges) container instead.
 
 ```kotlin
 val socialPersistent = YugabytePersistentStore.create(
@@ -306,9 +391,9 @@ val productEphemeral = YugabyteEphemeralStore.create(
     module = productModule, ycqlKeyspace = "product_graph",
 )
 
-val socialGraph  = AbyssGraph(UuidKeyAdapter, hz, "social-nodes",  "social-edges",
+val socialGraph  = AbyssGraphSchema(UuidKeyAdapter, hz, "social-nodes",  "social-edges",
     persistentStore = socialPersistent, ephemeralStore = socialEphemeral)
-val productGraph = AbyssGraph(UuidKeyAdapter, hz, "product-nodes", "product-edges",
+val productGraph = AbyssGraphSchema(UuidKeyAdapter, hz, "product-nodes", "product-edges",
     persistentStore = productPersistent, ephemeralStore = productEphemeral)
 ```
 
