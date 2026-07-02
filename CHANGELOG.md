@@ -1,3 +1,7 @@
+## [0.21.0] - 2026-07-02
+
+- Unify the single/multi-schema graph engine (TODO 1.14): `RawEdgeLike`/`SchemaEdgeLike`/`CrossEdgeLike` hierarchy, `SchemaTagWidth.NONE` + `AbyssGraph.singleSchema` zero-overhead entry point, native tag-encoded multi-schema `EdgeKey`, and a universal `NodeId`-frontier traversal engine with first-class cross-schema hops and raw `Path`/`Subgraph`
+
 ## [0.20.0] - 2026-07-01
 
 - Add generic ID support via `KeyAdapter`/`NodeId`, adapter-native `EdgeKey`/`ReverseEdgeKey` Hazelcast Compact encoding (eliminating hex-string predicates), and a unified `modifyNode`/`modifyEdge` read-modify-write lambda pattern
