@@ -78,6 +78,13 @@
   must be updated to match the native type. Serializers become per-adapter instances rather than
   global singletons.
 
+- **➡️ 1.12 Schema concept: per-node-ID-type schemas, multi-schema graph, cross-schema edges**
+  Discuss adding a schema concept keyed per node ID type, where a single graph can host multiple
+  schemas concurrently. `NodeId` would carry additional bytes identifying which schema it belongs
+  to. This would also enable cross-schema edges — e.g. an edge from `NodeLike<Long>` to
+  `NodeLike<Uuid>` — which the current generic ID refactor (single adapter per `AbyssGraph<ID>`
+  instance, see 1.10) does not support.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
