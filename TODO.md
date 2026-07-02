@@ -223,6 +223,13 @@
   Open question: whether `queryNodeIds` needs more than equality (ranges, `IN`) from the start, or
   a flat `(column, value)` pair is enough for v1.
 
+- **➡️ 2.13 Real multi-schema graph test: Universe fixture (users/astronomy/interests)**
+  Add a reusable multi-schema graph test fixture exercising TODO 1.14's engine with real schemas
+  instead of the existing toy `MultiSchemaTest` fixtures — Users (`String` id), Astronomy (`Long`
+  id: `Star`/`Planet`/`Moon`/`Singularity` via `Orbits` edges), Interests (`Uuid` id: hierarchy via
+  `SubdomainOf` edges), plus cross-schema `InterestedIn` and `LivesOn` edges. Builder externalized
+  so other tests can reuse it. Full design in `ai-scripts/UniverseGraphTestPlan.md`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
