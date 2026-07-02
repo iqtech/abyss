@@ -104,7 +104,7 @@
   G1---'HasMember'--->Person  as opposite directions outgoing-only design. This way when algorithm
   expects outgoing edge and this edge is ephemeral - no edges will be found (VERIFY!).
 
-- **➡️ 1.14 Unified single/multi-schema engine with first-class cross-hops**
+- **✅ 1.14 Unified single/multi-schema engine with first-class cross-hops**
   Design in `ai-scripts/UnifiedGraphEngineRFC.md`; supersedes parts of 1.12 (SchemaConceptRFC).
   Replaces `EdgeLike<ID>` with a `RawEdgeLike<FID,TID>` hierarchy (`SchemaEdgeLike<ID>` same-schema,
   new `CrossEdgeLike<FID,TID>` cross-schema). Adds `SchemaTagWidth.NONE` so a single-schema
