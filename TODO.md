@@ -79,6 +79,9 @@
   global singletons.
 
 - **✅ 1.12 Schema concept: per-node-ID-type schemas, multi-schema graph, cross-schema edges**
+  **Superseded by 1.14** (`ai-scripts/UnifiedGraphEngineRFC.md`) — see that entry for the
+  replacement design (`RawEdgeLike` hierarchy, `SchemaTagWidth.NONE`, unified traversal engine,
+  tag+widened-native encoding). Kept here as the historical record of what shipped and why.
   Design in `ai-scripts/SchemaConceptRFC.md`; implemented heterogeneous-first. `AbyssGraph<ID>` was
   renamed to `AbyssGraphSchema<ID>` (unchanged single-schema engine); a new `AbyssGraph` container
   holds many schema views keyed by a width-configurable schema tag (`SchemaTagWidth.BYTE` default,
@@ -100,6 +103,21 @@
   must - and follow those edges as outgoing. Example: Person---'IsInGroup'--->G1 and another edge
   G1---'HasMember'--->Person  as opposite directions outgoing-only design. This way when algorithm
   expects outgoing edge and this edge is ephemeral - no edges will be found (VERIFY!).
+
+- **➡️ 1.14 Unified single/multi-schema engine with first-class cross-hops**
+  Design in `ai-scripts/UnifiedGraphEngineRFC.md`; supersedes parts of 1.12 (SchemaConceptRFC).
+  Replaces `EdgeLike<ID>` with a `RawEdgeLike<FID,TID>` hierarchy (`SchemaEdgeLike<ID>` same-schema,
+  new `CrossEdgeLike<FID,TID>` cross-schema). Adds `SchemaTagWidth.NONE` so a single-schema
+  container degrades byte-for-byte to today's untagged, native-encoded `AbyssGraphSchema` — no hex
+  tax paid unless multi-schema mode is actually used. Traversal frontier becomes universal
+  `Set<NodeId>`; cross-hops become ordinary DSL hops (`outgoing<E>()` dispatches on `E`'s shape) in
+  one engine instead of the standalone `crossHop` escape hatch. Multi-schema storage moves off
+  forced `UniformHexAdapter` hex encoding to tag + widened-native (`Int64`/`Int64Pair`) fields, real
+  predicates instead of string compares for `Long`/`Uuid`-shaped schemas. `Path`/`Subgraph` go raw
+  (`NodeId`-based) with a typed resolve step. Several open questions deferred to build phase
+  (naming, `Path`/`Subgraph` ergonomics, cross-edge construction ergonomics, dispatch caching,
+  `@EdgeConstraint` for cross-edges, Compact field layout, cross-edge persistence, `UnknownEdge`
+  schema-awareness). No production code changes land with the RFC itself.
 
 ## 2. Medium
 
