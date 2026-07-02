@@ -6,11 +6,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerialName
-import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.HopDirection
 import pl.iqtech.abyss.dsl.Path
@@ -18,69 +15,73 @@ import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.dsl.TraversalStrategy
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.graph.Hop
+import pl.iqtech.abyss.graph.NodeIdEngine
+import pl.iqtech.abyss.store.api.KeyAdapter
+import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.RawEdgeLike
 import kotlin.reflect.full.findAnnotation
 
+// The frontier is NodeId-based so a walk can span schemas; homeAdapter converts the home schema's
+// domain ids for the id-valued conveniences (checkReaches, filterFrontierByOutEdgeTo, …).
 class TraversalBuilder<ID>(
-    private val engine: AbyssEngineLike<ID>,
-    startFrontier: Set<ID>
+    private val engine: NodeIdEngine,
+    startFrontier: Set<NodeId>,
+    private val homeAdapter: KeyAdapter<ID>,
 ) : TraversalBuilderLike<ID> {
 
-    var frontier: Set<ID> = startFrontier
+    var frontier: Set<NodeId> = startFrontier
         private set
 
-    private val allVisitedIds: MutableSet<ID> = startFrontier.toMutableSet()
-    private val allTraversedEdges: MutableList<EdgeLike<ID>> = mutableListOf()
-    internal val traversedEdges: List<EdgeLike<ID>> get() = allTraversedEdges
+    private val allVisitedIds: MutableSet<NodeId> = startFrontier.toMutableSet()
+    private val allTraversedEdges: MutableList<RawEdgeLike<*, *>> = mutableListOf()
+    internal val traversedEdges: List<RawEdgeLike<*, *>> get() = allTraversedEdges
 
-    override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike<ID>) -> Boolean)?) {
+    private suspend fun hops(nid: NodeId, direction: HopDirection, type: String?): List<Hop> =
+        if (direction == HopDirection.OUTGOING) engine.outAt(nid, type) else engine.inAt(nid, type)
+
+    private fun Hop.target(direction: HopDirection): NodeId =
+        if (direction == HopDirection.OUTGOING) toId else fromId
+
+    private fun NodeLike<*>.typeName(): String? = this::class.findAnnotation<SerialName>()?.value
+
+    override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((RawEdgeLike<*, *>) -> Boolean)?) {
         val hopEdges = coroutineScope {
-            frontier.map { nodeId ->
-                async {
-                    val edges = when (direction) {
-                        HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
-                        HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
-                    }
-                    edges.filter { edgePredicate == null || edgePredicate(it) }
-                }
+            frontier.map { nid ->
+                async { hops(nid, direction, edgeType).filter { edgePredicate == null || edgePredicate(it.edge) } }
             }.awaitAll().flatten()
         }
-        allTraversedEdges += hopEdges
-        frontier = hopEdges.map { if (direction == HopDirection.OUTGOING) it.toId else it.fromId }.toSet()
+        allTraversedEdges += hopEdges.map { it.edge }
+        frontier = hopEdges.map { it.target(direction) }.toSet()
         allVisitedIds += frontier
     }
 
-    override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<ID>) -> Boolean)?) {
+    override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<*>) -> Boolean)?) {
         val hopEdges = coroutineScope {
-            frontier.map { nodeId ->
+            frontier.map { nid ->
                 async {
-                    val edges = when (direction) {
-                        HopDirection.OUTGOING -> engine.outEdges(nodeId, edgeType).toList()
-                        HopDirection.INCOMING -> engine.inEdges(nodeId, edgeType).toList()
-                    }
-                    edges.filter { edge ->
-                        val endId = if (direction == HopDirection.OUTGOING) edge.toId else edge.fromId
-                        val node = engine.node(endId).getOrNull() ?: return@filter false
-                        if (node::class.findAnnotation<SerialName>()?.value != nodeType) return@filter false
+                    hops(nid, direction, edgeType).filter { hop ->
+                        val node = engine.nodeAt(hop.target(direction)) ?: return@filter false
+                        if (node.typeName() != nodeType) return@filter false
                         nodePredicate == null || nodePredicate(node)
                     }
                 }
             }.awaitAll().flatten()
         }
-        allTraversedEdges += hopEdges
-        frontier = hopEdges.map { if (direction == HopDirection.OUTGOING) it.toId else it.fromId }.toSet()
+        allTraversedEdges += hopEdges.map { it.edge }
+        frontier = hopEdges.map { it.target(direction) }.toSet()
         allVisitedIds += frontier
     }
 
-    override suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<ID>) -> Boolean)?) {
+    override suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<*>) -> Boolean)?) {
         val matchingIds = coroutineScope {
-            frontier.map { id ->
+            frontier.map { nid ->
                 async(Dispatchers.IO) {
-                    val node = engine.node(id).getOrNull() ?: return@async null
-                    if (node::class.findAnnotation<SerialName>()?.value != nodeType) return@async null
+                    val node = engine.nodeAt(nid) ?: return@async null
+                    if (node.typeName() != nodeType) return@async null
                     if (predicate != null && !predicate(node)) return@async null
-                    id
+                    nid
                 }
             }.awaitAll()
         }.filterNotNull().toSet()
@@ -88,11 +89,22 @@ class TraversalBuilder<ID>(
         frontier = matchingIds
     }
 
-    override suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID) {
+    private suspend fun filterFrontierByEdge(direction: HopDirection, edgeType: String, endpoint: NodeId) {
         val matching = coroutineScope {
-            frontier.map { id ->
+            frontier.map { nid ->
+                async(Dispatchers.IO) { if (hops(nid, direction, edgeType).any { it.target(direction) == endpoint }) nid else null }
+            }.awaitAll()
+        }.filterNotNull().toSet()
+        allVisitedIds -= (frontier - matching)
+        frontier = matching
+    }
+
+    private suspend fun filterFrontierByEdgeType(direction: HopDirection, edgeType: String, nodeType: String) {
+        val matching = coroutineScope {
+            frontier.map { nid ->
                 async(Dispatchers.IO) {
-                    if (engine.outEdges(id, edgeType).toList().any { it.toId == toId }) id else null
+                    val has = hops(nid, direction, edgeType).any { engine.nodeAt(it.target(direction))?.typeName() == nodeType }
+                    if (has) nid else null
                 }
             }.awaitAll()
         }.filterNotNull().toSet()
@@ -100,57 +112,25 @@ class TraversalBuilder<ID>(
         frontier = matching
     }
 
-    override suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String) {
-        val matching = coroutineScope {
-            frontier.map { id ->
-                async(Dispatchers.IO) {
-                    val hasMatch = engine.outEdges(id, edgeType).toList().any { edge ->
-                        engine.node(edge.toId).getOrNull()
-                            ?.let { it::class.findAnnotation<SerialName>()?.value == nodeType } == true
-                    }
-                    if (hasMatch) id else null
-                }
-            }.awaitAll()
-        }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matching)
-        frontier = matching
-    }
+    override suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID) =
+        filterFrontierByEdge(HopDirection.OUTGOING, edgeType, homeAdapter.toNodeId(toId))
 
-    override suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: ID) {
-        val matching = coroutineScope {
-            frontier.map { id ->
-                async(Dispatchers.IO) {
-                    if (engine.inEdges(id, edgeType).toList().any { it.fromId == fromId }) id else null
-                }
-            }.awaitAll()
-        }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matching)
-        frontier = matching
-    }
+    override suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String) =
+        filterFrontierByEdgeType(HopDirection.OUTGOING, edgeType, nodeType)
 
-    override suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String) {
-        val matching = coroutineScope {
-            frontier.map { id ->
-                async(Dispatchers.IO) {
-                    val hasMatch = engine.inEdges(id, edgeType).toList().any { edge ->
-                        engine.node(edge.fromId).getOrNull()
-                            ?.let { it::class.findAnnotation<SerialName>()?.value == nodeType } == true
-                    }
-                    if (hasMatch) id else null
-                }
-            }.awaitAll()
-        }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matching)
-        frontier = matching
-    }
+    override suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: ID) =
+        filterFrontierByEdge(HopDirection.INCOMING, edgeType, homeAdapter.toNodeId(fromId))
+
+    override suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String) =
+        filterFrontierByEdgeType(HopDirection.INCOMING, edgeType, nodeType)
 
     override suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit) {
         val matching = coroutineScope {
-            frontier.map { id ->
+            frontier.map { nid ->
                 async {
-                    val sub = TraversalBuilder(engine, setOf(id))
+                    val sub = TraversalBuilder(engine, setOf(nid), homeAdapter)
                     sub.block()
-                    if (sub.frontier.isNotEmpty()) id else null
+                    if (sub.frontier.isNotEmpty()) nid else null
                 }
             }.awaitAll()
         }.filterNotNull().toSet()
@@ -158,40 +138,25 @@ class TraversalBuilder<ID>(
         frontier = matching
     }
 
-    override suspend fun flushFrontierNodes(): Flow<NodeLike<ID>> = flow {
-        for (id in frontier) engine.node(id).getOrNull()?.let { emit(it) }
+    override suspend fun flushFrontierNodes(): Flow<NodeLike<*>> = flow {
+        for (nid in frontier) engine.nodeAt(nid)?.let { emit(it) }
     }
 
-    @Suppress("unused")
-    private suspend fun collectNodes(nodeType: String): Flow<NodeLike<ID>> {
+    override suspend fun collectSubgraph(nodeType: String?): Subgraph {
         val nodes = coroutineScope {
-            frontier.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
-        }
-        return flow {
-            for (node in nodes) {
-                if (node == null) continue
-                if (node::class.findAnnotation<SerialName>()?.value != nodeType) continue
-                emit(node)
-            }
-        }
-    }
-
-    override suspend fun collectSubgraph(nodeType: String?): Subgraph<ID> {
-        val nodes = coroutineScope {
-            allVisitedIds.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
+            allVisitedIds.map { nid -> async(Dispatchers.IO) { engine.nodeAt(nid) } }.awaitAll()
         }.filterNotNull().let { all ->
-            if (nodeType == null) all
-            else all.filter { it::class.findAnnotation<SerialName>()?.value == nodeType }
+            if (nodeType == null) all else all.filter { it.typeName() == nodeType }
         }
         return Subgraph(nodes, allTraversedEdges.toList())
     }
 
-    override suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph<ID> {
-        val visited = mutableSetOf<ID>(); visited += frontier
-        val allEdges = mutableListOf<EdgeLike<ID>>()
+    override suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph {
+        val visited = mutableSetOf<NodeId>(); visited += frontier
+        val allEdges = mutableListOf<RawEdgeLike<*, *>>()
         var current = frontier.toSet()
         while (current.isNotEmpty()) {
-            val sub = TraversalBuilder(engine, current)
+            val sub = TraversalBuilder(engine, current, homeAdapter)
             sub.block()
             allEdges += sub.traversedEdges
             val next = sub.frontier - visited
@@ -199,13 +164,13 @@ class TraversalBuilder<ID>(
             current = next
         }
         val nodes = coroutineScope {
-            visited.map { id -> async(Dispatchers.IO) { engine.node(id).getOrNull() } }.awaitAll()
+            visited.map { nid -> async(Dispatchers.IO) { engine.nodeAt(nid) } }.awaitAll()
         }.filterNotNull()
         return Subgraph(nodes, allEdges)
     }
 
     override suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean {
-        val visited = mutableSetOf<ID>()
+        val visited = mutableSetOf<NodeId>()
         for (start in frontier) {
             if (start !in visited && dfsCycle(start, visited, mutableSetOf(), block)) return true
         }
@@ -213,13 +178,13 @@ class TraversalBuilder<ID>(
     }
 
     private suspend fun dfsCycle(
-        nodeId: ID,
-        visited: MutableSet<ID>,
-        inStack: MutableSet<ID>,
+        nodeId: NodeId,
+        visited: MutableSet<NodeId>,
+        inStack: MutableSet<NodeId>,
         block: suspend TraversalBuilderLike<ID>.() -> Unit
     ): Boolean {
         visited += nodeId; inStack += nodeId
-        val sub = TraversalBuilder(engine, setOf(nodeId))
+        val sub = TraversalBuilder(engine, setOf(nodeId), homeAdapter)
         sub.block()
         for (neighbor in sub.frontier) {
             if (neighbor in inStack) return true
@@ -233,104 +198,106 @@ class TraversalBuilder<ID>(
         strategy: TraversalStrategy,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
-        edgeVisitor: (Path<ID>, EdgeLike<ID>) -> Boolean,
-        nodeEvaluator: (Path<ID>, NodeLike<ID>) -> Evaluation
-    ): Flow<Path<ID>> = flow {
-        val origin = frontier.mapNotNull { engine.node(it).getOrNull() }
+        edgeVisitor: (Path, RawEdgeLike<*, *>) -> Boolean,
+        nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
+    ): Flow<Path> = flow {
+        val origin = frontier.mapNotNull { nid -> engine.nodeAt(nid)?.let { nid to it } }
         when (strategy) {
-            TraversalStrategy.DFS -> for (node in origin)
-                dfsLoop(Path(listOf(node), emptyList()), node.id, setOf(node.id), direction, maxDepth, 0, edgeVisitor, nodeEvaluator)
+            TraversalStrategy.DFS -> for ((nid, node) in origin)
+                dfsLoop(Path(listOf(node), emptyList()), nid, nid, setOf(nid), direction, maxDepth, 0, edgeVisitor, nodeEvaluator)
             TraversalStrategy.BFS -> bfsLoop(origin, direction, maxDepth, edgeVisitor, nodeEvaluator)
         }
     }
 
-    private suspend fun edgesFrom(fromId: ID, direction: EdgeTraversalDirection): List<EdgeLike<ID>> = when (direction) {
-        EdgeTraversalDirection.OUT  -> engine.outEdges(fromId).toList()
-        EdgeTraversalDirection.IN   -> engine.inEdges(fromId).toList()
-        EdgeTraversalDirection.BOTH -> engine.outEdges(fromId).toList() + engine.inEdges(fromId).toList()
+    private suspend fun edgesFrom(fromNid: NodeId, direction: EdgeTraversalDirection): List<Hop> = when (direction) {
+        EdgeTraversalDirection.OUT  -> engine.outAt(fromNid, null)
+        EdgeTraversalDirection.IN   -> engine.inAt(fromNid, null)
+        EdgeTraversalDirection.BOTH -> engine.outAt(fromNid, null) + engine.inAt(fromNid, null)
     }
 
-    // fromId: physical traversal position (may differ from currentPath.head when a node was EXCLUDE_AND_CONTINUE)
-    // depth:  hop count (not path depth) — counts all hops including through excluded nodes
-    // seen:   mutable within each call level to prevent re-processing the same neighbour via different edges
-    private suspend fun FlowCollector<Path<ID>>.dfsLoop(
-        currentPath: Path<ID>,
-        fromId: ID,
-        visited: Set<ID>,
+    // headNid: NodeId of the last accepted node (currentPath.head); fromNid: physical position (may
+    // differ when a node was EXCLUDE_AND_CONTINUE). depth counts hops. seen prevents re-processing a
+    // neighbour via different edges within a level.
+    private suspend fun FlowCollector<Path>.dfsLoop(
+        currentPath: Path,
+        headNid: NodeId,
+        fromNid: NodeId,
+        visited: Set<NodeId>,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
         depth: Int,
-        edgeVisitor: (Path<ID>, EdgeLike<ID>) -> Boolean,
-        nodeEvaluator: (Path<ID>, NodeLike<ID>) -> Evaluation
+        edgeVisitor: (Path, RawEdgeLike<*, *>) -> Boolean,
+        nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ) {
         if (depth >= maxDepth) return
-        val edges = edgesFrom(fromId, direction)
+        val edges = edgesFrom(fromNid, direction)
         val seen = visited.toMutableSet()
-        for (edge in edges) {
-            if (!edgeVisitor(currentPath, edge)) continue
-            val nextId = if (edge.fromId == fromId) edge.toId else edge.fromId
-            if (nextId in seen) continue
-            seen += nextId  // mark before eval to skip if the same node appears via another edge
-            val nextNode = engine.node(nextId).getOrNull() ?: continue
+        for (hop in edges) {
+            if (!edgeVisitor(currentPath, hop.edge)) continue
+            val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
+            if (nextNid in seen) continue
+            seen += nextNid
+            val nextNode = engine.nodeAt(nextNid) ?: continue
             val eval = nodeEvaluator(currentPath, nextNode)
             val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
             val extendedPath = if (included) {
-                // only add edge when we're travelling directly from the last accepted node
-                val edgePart = if (fromId == currentPath.head.id) listOf(edge) else emptyList()
+                val edgePart = if (fromNid == headNid) listOf(hop.edge) else emptyList()
                 Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
             } else currentPath
+            val nextHeadNid = if (included) nextNid else headNid
             val nextDepth = depth + 1
             if (eval == Evaluation.INCLUDE_AND_PRUNE ||
                 (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) emit(extendedPath)
             if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE))
-                dfsLoop(extendedPath, nextId, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)
+                dfsLoop(extendedPath, nextHeadNid, nextNid, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)
         }
     }
 
-    // BFS queue carries (path, fromId, visited, depth) per entry so paths remain independent
-    private suspend fun FlowCollector<Path<ID>>.bfsLoop(
-        origin: List<NodeLike<ID>>,
+    private suspend fun FlowCollector<Path>.bfsLoop(
+        origin: List<Pair<NodeId, NodeLike<*>>>,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
-        edgeVisitor: (Path<ID>, EdgeLike<ID>) -> Boolean,
-        nodeEvaluator: (Path<ID>, NodeLike<ID>) -> Evaluation
+        edgeVisitor: (Path, RawEdgeLike<*, *>) -> Boolean,
+        nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ) {
-        data class Entry(val path: Path<ID>, val fromId: ID, val visited: Set<ID>, val depth: Int)
+        data class Entry(val path: Path, val headNid: NodeId, val fromNid: NodeId, val visited: Set<NodeId>, val depth: Int)
         val queue = ArrayDeque<Entry>()
-        for (node in origin) queue += Entry(Path(listOf(node), emptyList()), node.id, setOf(node.id), 0)
+        for ((nid, node) in origin) queue += Entry(Path(listOf(node), emptyList()), nid, nid, setOf(nid), 0)
         while (queue.isNotEmpty()) {
-            val (currentPath, fromId, visited, depth) = queue.removeFirst()
+            val (currentPath, headNid, fromNid, visited, depth) = queue.removeFirst()
             if (depth >= maxDepth) continue
-            val edges = edgesFrom(fromId, direction)
-            for (edge in edges) {
-                if (!edgeVisitor(currentPath, edge)) continue
-                val nextId = if (edge.fromId == fromId) edge.toId else edge.fromId
-                if (nextId in visited) continue  // only skip nodes already on this path (prevents cycles)
-                val nextNode = engine.node(nextId).getOrNull() ?: continue
+            val edges = edgesFrom(fromNid, direction)
+            for (hop in edges) {
+                if (!edgeVisitor(currentPath, hop.edge)) continue
+                val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
+                if (nextNid in visited) continue
+                val nextNode = engine.nodeAt(nextNid) ?: continue
                 val eval = nodeEvaluator(currentPath, nextNode)
                 val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
                 val extendedPath = if (included) {
-                    val edgePart = if (fromId == currentPath.head.id) listOf(edge) else emptyList()
+                    val edgePart = if (fromNid == headNid) listOf(hop.edge) else emptyList()
                     Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
                 } else currentPath
+                val nextHeadNid = if (included) nextNid else headNid
                 val nextDepth = depth + 1
                 if (eval == Evaluation.INCLUDE_AND_PRUNE ||
                     (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) emit(extendedPath)
                 if (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)
-                    queue += Entry(extendedPath, nextId, visited + nextId, nextDepth)
+                    queue += Entry(extendedPath, nextHeadNid, nextNid, visited + nextNid, nextDepth)
             }
         }
     }
 
     override suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean {
-        val visited = mutableSetOf<ID>()
+        val target = homeAdapter.toNodeId(targetId)
+        val visited = mutableSetOf<NodeId>()
         visited += frontier
         var current = frontier.toSet()
         while (current.isNotEmpty()) {
-            val sub = TraversalBuilder(engine, current)
+            val sub = TraversalBuilder(engine, current, homeAdapter)
             sub.block()
             val next = sub.frontier - visited
-            if (targetId in next) return true
+            if (target in next) return true
             visited += next
             current = next
         }

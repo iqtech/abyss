@@ -42,7 +42,7 @@ class AlgorithmsTest {
         runBlocking {
             val a = putNode("a")
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph<*>>>(result)
+            assertIs<Either.Right<Subgraph>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(0, subgraph.edges.size)
@@ -56,7 +56,7 @@ class AlgorithmsTest {
             putEdge(a.id, b.id); putEdge(b.id, c.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph<*>>>(result)
+            assertIs<Either.Right<Subgraph>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(2, subgraph.edges.size)
@@ -76,7 +76,7 @@ class AlgorithmsTest {
             putEdge(b.id, d.id); putEdge(c.id, d.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph<*>>>(result)
+            assertIs<Either.Right<Subgraph>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id, d.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(4, subgraph.edges.size)
@@ -90,7 +90,7 @@ class AlgorithmsTest {
             putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, a.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph<*>>>(result)
+            assertIs<Either.Right<Subgraph>>(result)
             val subgraph = result.value
             assertEquals(setOf(a.id, b.id, c.id), subgraph.nodes.map { it.id }.toSet())
             assertEquals(3, subgraph.edges.size)
@@ -176,7 +176,7 @@ class AlgorithmsTest {
             putEdge(a.id, b.id)
 
             val result = graphTest.from(a.id) { allReachable { outgoing<TestEdge>() } }
-            assertIs<Either.Right<Subgraph<*>>>(result)
+            assertIs<Either.Right<Subgraph>>(result)
             assertEquals(setOf(a.id, b.id), result.value.nodes.map { it.id }.toSet())
         }
     }

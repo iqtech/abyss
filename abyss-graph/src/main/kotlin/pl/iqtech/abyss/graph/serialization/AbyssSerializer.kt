@@ -12,7 +12,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.plus
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.uuid.Uuid
 
@@ -31,14 +32,18 @@ data class UnknownNode(val raw: JsonElement) : NodeLike<Uuid> {
     override fun toString() = raw.toString()
 }
 
-data class UnknownEdge(val raw: JsonElement) : EdgeLike<Uuid> {
-    override val fromId: Uuid = raw.jsonObject["fromId"]?.jsonPrimitive?.content?.let(Uuid::parse) ?: Uuid.parse("00000000-0000-0000-0000-000000000000")
-    override val toId: Uuid   = raw.jsonObject["toId"]?.jsonPrimitive?.content?.let(Uuid::parse)   ?: Uuid.parse("00000000-0000-0000-0000-000000000000")
+// Endpoints are NodeId (parsed from the raw hex when present) rather than a hardcoded ID type — an
+// unknown edge may be same- or cross-schema. Endpoints are best-effort; traversal keys on the EdgeKey.
+data class UnknownEdge(val raw: JsonElement) : RawEdgeLike<NodeId, NodeId> {
+    override val fromId: NodeId = raw.jsonObject["fromId"]?.jsonPrimitive?.content?.let(::nodeIdOrEmpty) ?: NodeId(ByteArray(0))
+    override val toId: NodeId   = raw.jsonObject["toId"]?.jsonPrimitive?.content?.let(::nodeIdOrEmpty) ?: NodeId(ByteArray(0))
     override val tags: List<String> = emptyList()
     override val createdAt: Instant = Instant.fromEpochSeconds(0)
     override val updatedAt: Instant = Instant.fromEpochSeconds(0)
     override fun toString() = raw.toString()
 }
+
+private fun nodeIdOrEmpty(s: String): NodeId = runCatching { NodeId.fromHex(s) }.getOrElse { NodeId(ByteArray(0)) }
 
 @Suppress("UNCHECKED_CAST")
 class NodeLikeHzSerializer(extraModule: SerializersModule = EmptySerializersModule()) : StreamSerializer<NodeLike<*>> {
@@ -56,16 +61,16 @@ class NodeLikeHzSerializer(extraModule: SerializersModule = EmptySerializersModu
 }
 
 @Suppress("UNCHECKED_CAST")
-class EdgeLikeHzSerializer(extraModule: SerializersModule = EmptySerializersModule()) : StreamSerializer<EdgeLike<*>> {
-    private val json = createPolymorphicJsonSerializer<EdgeLike<*>>(
+class EdgeLikeHzSerializer(extraModule: SerializersModule = EmptySerializersModule()) : StreamSerializer<RawEdgeLike<*, *>> {
+    private val json = createPolymorphicJsonSerializer<RawEdgeLike<*, *>>(
         baseJsonSerializer = Json(from = customJsonSerializer) { serializersModule = customJsonSerializer.serializersModule + extraModule }
     ) { UnknownEdge(it) }
-    private val kSerializer = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*>>
+    private val kSerializer = PolymorphicSerializer(RawEdgeLike::class) as kotlinx.serialization.KSerializer<RawEdgeLike<*, *>>
 
     override fun getTypeId() = TYPE_ID
     override fun destroy() {}
-    override fun write(out: ObjectDataOutput, obj: EdgeLike<*>) = out.writeString(json.encodeToString(kSerializer, obj))
-    override fun read(`in`: ObjectDataInput): EdgeLike<*> = json.decodeFromString(kSerializer, `in`.readString()!!)
+    override fun write(out: ObjectDataOutput, obj: RawEdgeLike<*, *>) = out.writeString(json.encodeToString(kSerializer, obj))
+    override fun read(`in`: ObjectDataInput): RawEdgeLike<*, *> = json.decodeFromString(kSerializer, `in`.readString()!!)
 
     companion object { const val TYPE_ID = 2002 }
 }

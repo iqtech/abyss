@@ -6,7 +6,7 @@ User-agnostic in-memory graph library backed by Hazelcast with pluggable durable
 
 | Module | Purpose |
 |---|---|
-| `abyss-store-api` | `NodeLike` / `EdgeLike` interfaces, `AbyssStoreLike` (persistent) and `AbyssEphemeralStoreLike` (TTL) contracts |
+| `abyss-store-api` | `NodeLike` / `RawEdgeLike` (with `SchemaEdgeLike` same-schema + `CrossEdgeLike` cross-schema) interfaces, `AbyssStoreLike` (persistent) and `AbyssEphemeralStoreLike` (TTL) contracts |
 | `abyss-dsl` | Engine + traversal interfaces, reified extension functions |
 | `abyss-graph` | Hazelcast `IMap` engine — `AbyssGraphSchema` (single schema); `AbyssGraph` multi-schema container with cross-schema edges |
 | `abyss-store-yugabyte` | YugabyteDB stores — `YugabytePersistentStore` (YSQL) and `YugabyteEphemeralStore` (YCQL) |
@@ -33,11 +33,11 @@ data class Road(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike<Long>
+) : SchemaEdgeLike<Long>
 
 val module = SerializersModule {
     polymorphic(NodeLike::class) { subclass(City::class) }
-    polymorphic(EdgeLike::class) { subclass(Road::class) }
+    polymorphic(RawEdgeLike::class) { subclass(Road::class) }
 }
 
 val hz    = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(LongKeyAdapter, module))
@@ -119,7 +119,7 @@ data class Knows(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike<Uuid>
+) : SchemaEdgeLike<Uuid>
 
 @Serializable
 @SerialName("likes")
@@ -129,7 +129,7 @@ data class Likes(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike<Uuid>
+) : SchemaEdgeLike<Uuid>
 ```
 
 Register them in a `SerializersModule`:
@@ -137,7 +137,7 @@ Register them in a `SerializersModule`:
 ```kotlin
 val module = SerializersModule {
     polymorphic(NodeLike::class) { subclass(Person::class) }
-    polymorphic(EdgeLike::class) { subclass(Knows::class) }
+    polymorphic(RawEdgeLike::class) { subclass(Knows::class) }
 }
 ```
 
@@ -162,9 +162,11 @@ Three adapters are provided out of the box:
 | `LongKeyAdapter` | `Long` |
 | `StringKeyAdapter` | `String` |
 
-Pass the adapter as the first argument to `AbyssGraphSchema`. All interfaces the graph returns
-(`NodeLike<ID>`, `EdgeLike<ID>`, `Subgraph<ID>`, `Path<ID>`) carry the same `ID` type,
-and the internal `NodeId(ByteArray)` key is never exposed to callers.
+Pass the adapter as the first argument to `AbyssGraphSchema`. Node/edge interfaces (`NodeLike<ID>`,
+`SchemaEdgeLike<ID>`) carry the domain `ID` type, and the internal `NodeId(ByteArray)` key is never
+exposed. Traversal **results are raw**: `Subgraph`/`Path` hold heterogeneous `List<NodeLike<*>>` /
+`List<RawEdgeLike<*, *>>` (a walk may cross schemas), and `collectNodes<T>()` / `Subgraph.resolve<T>()`
+narrow them to a concrete type.
 
 #### Edge key encoding
 
@@ -184,7 +186,11 @@ only carry one Compact schema per class, so only one native `EdgeKey`/`ReverseEd
 Standalone schemas with different `ID` types need separate Hazelcast instances (and, if colocated
 on the same host, distinct `clusterName`s to avoid auto-joining) — or a single [multi-schema
 `AbyssGraph`](#multi-schema-graphs--cross-schema-edges) container, which sidesteps the limitation
-by giving every `ID` type a uniform, tag-prefixed encoding on one shared instance.
+with a single `MultiSchemaAdapter` whose `EdgeKey` layout carries the schema tag plus each endpoint's
+native shape. This coexistence is not free — the shared layout is a fixed superset (`tag` + kind +
+`hi`/`lo` + nullable `str`) and its `outEdges`/`inEdges` predicate compares two fields (the tag plus
+the value) instead of one, since two different `ID` shapes can otherwise collide on `lo` within a
+partition. See [Performance](#performance) for the measured overhead versus a standalone schema.
 
 ---
 
@@ -197,10 +203,13 @@ container wraps that schema's `KeyAdapter<ID>` in a `SchemaKeyAdapter<ID>` that 
 nodes/edges maps with globally-unique, self-describing keys. Inner adapters stay schema-agnostic —
 `LongKeyAdapter`/`UuidKeyAdapter`/`StringKeyAdapter` are unaware they're tagged.
 
-Because heterogeneous ID shapes can't share one Hazelcast Compact schema per class, the container
-encodes `EdgeKey`/`ReverseEdgeKey` uniformly as hex (`UniformHexAdapter`) rather than each adapter's
-native form — register serializers with `UniformHexAdapter`, not a specific `KeyAdapter`, when using
-the container:
+Because one Hazelcast Compact schema per class can't express heterogeneous native shapes, the
+container encodes `EdgeKey`/`ReverseEdgeKey` as a fixed self-describing superset — schema tag + a
+kind discriminator + the inner adapter's native fields — via a `MultiSchemaAdapter`. `Long`/`Uuid`
+schemas keep native (non-hex) predicates; only `String` schemas pay a string compare, on their own
+(short) value. Since the Compact layout must know every registered shape before the
+`HazelcastInstance` starts, **declare all `tag → KeyAdapter` up front** and pass them to
+`registerAbyssSerializers`; the same tags must then be `register()`ed on the container:
 
 Two independent schemas — `City` keyed by `Long`, `Person` keyed by `Uuid` (both defined earlier in
 this README):
@@ -208,12 +217,14 @@ this README):
 ```kotlin
 val module = SerializersModule {
     polymorphic(NodeLike::class) { subclass(City::class); subclass(Person::class) }
-    polymorphic(EdgeLike::class) { subclass(Road::class); subclass(Knows::class); subclass(LivesIn::class) }
+    polymorphic(RawEdgeLike::class) { subclass(Road::class); subclass(Knows::class); subclass(LivesIn::class) }
 }
 
-val hz = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(UniformHexAdapter, module))
+val tagWidth = SchemaTagWidth.BYTE
+val edgeAdapter = MultiSchemaAdapter(tagWidth, mapOf(1L to LongKeyAdapter, 2L to UuidKeyAdapter))
+val hz = Hazelcast.newHazelcastInstance(Config().registerAbyssSerializers(edgeAdapter, module))
 
-val container = AbyssGraph(hz, SchemaTagWidth.BYTE, "abyss-nodes", "abyss-edges", allowCrossSchemaEdges = true)
+val container = AbyssGraph(hz, tagWidth, "abyss-nodes", "abyss-edges", allowCrossSchemaEdges = true)
 val cities:  AbyssGraphSchema<Long> = container.register(tag = 1L, adapter = LongKeyAdapter)
 val persons: AbyssGraphSchema<Uuid> = container.register(tag = 2L, adapter = UuidKeyAdapter)
 
@@ -230,9 +241,10 @@ one — `container.schema<Long>(1L)` returns the same `AbyssGraphSchema<Long>` f
 
 #### Cross-schema edges
 
-Edges *between* schemas are `EdgeLike<NodeId>` (untyped domain ID, since the two endpoints may have
-different `ID` types) and live in a separate `<edges>-cross` map, so they never leak into an
-intra-schema `outEdges`/`inEdges` call. They're disabled by default — pass
+Edges *between* schemas are `CrossEdgeLike<FID, TID>` (endpoints may have different `ID` types, so
+they carry tagged `NodeId`s). They live in the **same** shared edge/reverse maps as intra-schema
+edges — their tagged endpoints self-describe (`fromTag != toTag`), so `outgoing<E>()` / `incoming<E>()`
+reach them as **ordinary traversal hops**. They're disabled by default — pass
 `allowCrossSchemaEdges = true` to the container, otherwise `addCrossEdge` returns
 `AbyssError.IntegrityError`:
 
@@ -245,7 +257,7 @@ data class LivesIn(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike<NodeId>
+) : CrossEdgeLike<NodeId, NodeId>
 
 // tag/width must match what was passed to register() — the schema itself keeps its adapter private,
 // so cross-schema code builds the same SchemaKeyAdapter to convert a domain ID to its tagged NodeId.
@@ -253,18 +265,19 @@ val aliceNid  = SchemaKeyAdapter(2L, SchemaTagWidth.BYTE, UuidKeyAdapter).toNode
 val warsawNid = SchemaKeyAdapter(1L, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(warsaw.id)
 container.addCrossEdge(LivesIn(fromId = aliceNid, toId = warsawNid))
 
-container.crossOutEdges(aliceNid).collect { println(it) }   // Alice's cross-schema edges
-
-// walk a NodeId frontier across the cross-schema edge into the target schema
-val reached: Set<NodeId> = container.crossHop(setOf(aliceNid), HopDirection.OUTGOING)
-val target = reached.single()
-container.resolveSchema(target)   // routes back to `cities` by reading the tag prefix
+// A cross-hop is an ordinary DSL hop; the frontier lands in the target schema. A single expression
+// can mix intra- and cross-schema hops, then materialise in whichever schema it ends up in:
+persons.from(alice.id) {
+    outgoing<Knows>()      // intra-schema (stays in `persons`)
+    outgoing<LivesIn>()    // cross-schema (lands in `cities`)
+    collectNodes<City>()   // resolves each reached NodeId to its schema
+}.getOrNull()?.collect { println(it.name) }
 ```
 
 `addCrossEdge` checks both endpoints resolve to a registered schema tag and that the node actually
 exists (via `resolveSchema` + a lookup in the shared nodes map) before writing. Cross-schema edges
-are cache-only in this version — no store persistence, and no automatic cascade on `removeNode`
-from the owning schema's `transaction { }`.
+are cache-only in this version — no store persistence. Because they share the intra-schema maps, an
+untyped whole-node scan (`outEdges(node)` with no type) now includes them; typed hops are unaffected.
 
 ---
 
@@ -297,10 +310,10 @@ graph.from(alice.id) {
 }
 
 // traverse — full subgraph (all visited nodes + all traversed edges)
-val result: Either<AbyssError, Subgraph<Uuid>> = graph.from(alice.id) {
+val result: Either<AbyssError, Subgraph> = graph.from(alice.id) {
     outgoing<Knows>()         // hop 1: alice → bob, alice → charlie
     outgoing<Knows>()         // hop 2: bob → dave
-    subgraph<Person, Uuid>()  // Person nodes only + all 3 Knows edges
+    subgraph()  // Person nodes only + all 3 Knows edges
     // subgraph()             // all visited nodes regardless of type + all 3 Knows edges
 }
 val (persons, edges) = result.getOrNull()!!
@@ -309,12 +322,12 @@ edges.forEach { println("${it.fromId} → ${it.toId}") }
 
 // multi-hop with edge + node filters — collect intermediate nodes via subgraph
 // "Alice's adult acquaintances (known since 2020+) who like Astronomy"
-val astronomers: Either<AbyssError, Subgraph<Uuid>> = graph.from(alice.id) {
+val astronomers: Either<AbyssError, Subgraph> = graph.from(alice.id) {
     outgoing<Knows> { it.since > Instant.parse("2020-01-01T00:00:00Z") }  // edge filter
     nodes<Person> { it.age > 18 }              // narrow frontier to adults
     outgoing<Likes>()                          // hop to their interests
     nodes<Interest> { it.name == "Astronomy" } // narrow to Astronomy
-    subgraph<Person, Uuid>()                   // collect the intermediate Person nodes
+    subgraph()                   // collect the intermediate Person nodes
 }
 val astronomyFans = astronomers.getOrNull()!!.nodes.filterIsInstance<Person>()
 ```
@@ -489,7 +502,7 @@ Annotate an edge class with `@EdgeConstraint` to declare which node types each e
 @Serializable
 @SerialName("knows")
 @EdgeConstraint(fromTypes = [Person::class], toTypes = [Person::class])
-data class Knows(override val fromId: Uuid, override val toId: Uuid, ...) : EdgeLike<Uuid>
+data class Knows(override val fromId: Uuid, override val toId: Uuid, ...) : SchemaEdgeLike<Uuid>
 ```
 
 When `checkIntegrity = true` (the default), `addEdge` checks that the actual node types of both
@@ -547,13 +560,13 @@ nodes<Person> { it.age > 18 }   // non-terminal: narrow frontier
 collectNodes<Person>().toList() // terminal: emit survivors
 ```
 
-`subgraph<T>()` returns a `Subgraph(nodes, edges)` containing every node visited across **all hops**
-(including the start node) and every edge traversed. Nodes are filtered to type `T`; use the
-no-arg `subgraph()` to get all visited nodes regardless of type, or partition the result manually
-to extract multiple types. Nodes are resolved in parallel; edges are already in memory from the
-hop results. Because `nodes<T>` prunes the visited history, `subgraph<Person>()` after a
-multi-hop traversal returns only the Persons that survived node filters — not every Person
-ever reached.
+`subgraph()` returns a raw `Subgraph(nodes, edges)` containing every node visited across **all hops**
+(including the start node) and every edge traversed — heterogeneous `List<NodeLike<*>>` /
+`List<RawEdgeLike<*, *>>`, since a walk may span schemas. Narrow it with `subgraph().resolve<Person>()`
+(filters to `Person`), or partition the raw list manually to extract multiple types. Nodes are
+resolved in parallel; edges are already in memory from the hop results. Because `nodes<T>` prunes the
+visited history, `subgraph().resolve<Person>()` after a multi-hop traversal returns only the Persons
+that survived node filters — not every Person ever reached.
 
 #### Connectivity filters
 
@@ -621,7 +634,7 @@ specifies, and returns a `Subgraph` of all visited nodes and all traversed edges
 `outgoing<E>()` hops, the caller does not need to know the depth in advance.
 
 ```kotlin
-val subgraph: Either<AbyssError, Subgraph<Uuid>> = graph.from(alice.id) {
+val subgraph: Either<AbyssError, Subgraph> = graph.from(alice.id) {
     allReachable { outgoing<Knows>() }
 }
 val (nodes, edges) = subgraph.getOrNull()!!
@@ -675,7 +688,7 @@ context-aware (e.g. prune if a certain node type already appears in the path).
 
 ```kotlin
 // Find all permission paths from alice to any Resource via ACL edges (DFS, outgoing only, max 5 hops)
-val paths: Either<AbyssError, List<Path<Uuid>>> = graph.from(alice.id) {
+val paths: Either<AbyssError, List<Path>> = graph.from(alice.id) {
     paths(
         strategy = TraversalStrategy.DFS,
         direction = EdgeTraversalDirection.OUT,
@@ -701,7 +714,7 @@ paths.getOrNull()!!.forEach { path ->
 
 `BFS` strategy emits shortest paths first. Each emitted `Path` is self-contained: `path.nodes`
 and `path.edges` are ordered from origin to terminal; `path.toEitherList()` interleaves them as
-`List<Either<EdgeLike, NodeLike>>` in traversal order.
+`List<Either<RawEdgeLike<*, *>, NodeLike<*>>>` in traversal order.
 
 **Node uniqueness** is path-local: a node cannot appear twice within a single emitted path, but
 the same node may appear in multiple independently emitted paths (one per branch that reaches it).
@@ -736,8 +749,24 @@ char-by-char hex scan at 2× the byte length. This closed most of the gap betwee
 `inEdges` is slower than `outEdges` for all adapters: it resolves edge data via `IMap.getAll`
 point-lookups after the reverse-key scan — the reverse map holds only keys, not payloads.
 
+### Multi-schema container overhead
+
+A schema registered *inside* an `AbyssGraph` container does not match its standalone throughput. The
+shared `MultiSchemaAdapter` layout is a fixed superset (`tag`/kind/`hi`/`lo`/`str`), and `outEdges`
+evaluates a two-field predicate (`fromIdTag` + `fromIdLo`) over that wider record instead of a
+single-field compare. Measured same-JVM against a standalone `LongKeyAdapter` schema
+(`MultiSchemaPerformanceTest`): `outEdges` runs at **~0.7×** standalone throughput, while `inEdges`
+and 3-hop traversal are **within noise** (the reverse scan and per-node resolution dominate those,
+not the key predicate).
+
+The `tag` clause is not optional — two different `ID` shapes can collide on `lo` within a partition,
+so it is what keeps a `Long` query from matching a `Uuid` edge whose low 64 bits coincide. This means
+the multi-schema container trades the previous uniform-hex encoding for a superset-predicate cost of a
+**similar** order on `outEdges`, rather than a clear win — the native encoding's decisive advantage is
+on the **standalone** single-schema path (the table above), where the key is a single native field.
+
 The UUID 3-hop figure is still higher than Long/String, but not mainly because of value serde:
-`NodeLike`/`EdgeLike` payloads go through a custom JSON `StreamSerializer`
+`NodeLike`/`RawEdgeLike` payloads go through a custom JSON `StreamSerializer`
 (`NodeLikeHzSerializer`/`EdgeLikeHzSerializer`), not Hazelcast Compact — only `NodeId`/`EdgeKey`/
 `ReverseEdgeKey` use real Compact. Isolating that JSON roundtrip from `IMap`/partition routing
 entirely (`SerdeRoundtripPerformanceTest`, no `HazelcastInstance` involved) measures only a
@@ -753,6 +782,7 @@ To reproduce:
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongPerformanceTest" -Pperf
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.StringPerformanceTest" -Pperf
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.SerdeRoundtripPerformanceTest" -Pperf
+./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.MultiSchemaPerformanceTest" -Pperf
 ```
 
 ---
@@ -772,7 +802,7 @@ Three Hazelcast maps:
 
 ```
 nodes map        (IMap<UUID, NodeLike>):          1000 × 500 × 1.5 KB  =  750 MB
-edges map        (IMap<EdgeKey, EdgeLike>):        1000 × 700 × 1.5 KB  = 1050 MB
+edges map        (IMap<EdgeKey, RawEdgeLike>):        1000 × 700 × 1.5 KB  = 1050 MB
 reverse edge map (IMap<ReverseEdgeKey, Unit>):     1000 × 700 × 0.3 KB  =  210 MB  ← keys only
 ────────────────────────────────────────────────────────────────────────────────
 Total graph data in heap                                                 ≈ 2.0 GB

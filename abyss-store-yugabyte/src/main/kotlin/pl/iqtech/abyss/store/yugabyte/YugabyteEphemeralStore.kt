@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
 import pl.iqtech.abyss.store.api.AbyssError
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -41,7 +41,7 @@ import kotlin.time.toKotlinInstant
 
 private sealed interface EphemeralOp<ID> {
     data class SaveNode<ID>(val node: NodeLike<ID>, val ttl: Duration) : EphemeralOp<ID>
-    data class SaveEdge<ID>(val edge: EdgeLike<ID>, val ttl: Duration) : EphemeralOp<ID>
+    data class SaveEdge<ID>(val edge: SchemaEdgeLike<ID>, val ttl: Duration) : EphemeralOp<ID>
     data class DeleteNode<ID>(val id: ID) : EphemeralOp<ID>
     data class DeleteEdge<ID>(val fromId: ID, val toId: ID, val type: String) : EphemeralOp<ID>
 }
@@ -66,7 +66,7 @@ class YugabyteEphemeralStore<ID>(
     @Suppress("UNCHECKED_CAST")
     private val nodeSer = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
     @Suppress("UNCHECKED_CAST")
-    private val edgeSer = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*>>
+    private val edgeSer = PolymorphicSerializer(SchemaEdgeLike::class) as kotlinx.serialization.KSerializer<SchemaEdgeLike<*>>
 
     private val selectNodeYcql: PreparedStatement =
         ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
@@ -91,22 +91,22 @@ class YugabyteEphemeralStore<ID>(
             withContext(Dispatchers.IO) { queryNodeYcql(id)?.let { (node, exp) -> node as NodeLike<ID> to remainingTtl(exp) } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdge(fromId: ID, toId: ID, type: String): Either<AbyssError, Pair<EdgeLike<ID>?, Duration?>> =
+    override suspend fun loadEdge(fromId: ID, toId: ID, type: String): Either<AbyssError, Pair<SchemaEdgeLike<ID>?, Duration?>> =
         Either.catch {
             @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgeYcql(fromId, toId, type)?.let { (edge, exp) -> edge as EdgeLike<ID> to remainingTtl(exp) } ?: (null to null) }
+            withContext(Dispatchers.IO) { queryEdgeYcql(fromId, toId, type)?.let { (edge, exp) -> edge as SchemaEdgeLike<ID> to remainingTtl(exp) } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdges(fromId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> =
+    override suspend fun loadEdges(fromId: ID): Either<AbyssError, List<Pair<SchemaEdgeLike<ID>, Duration?>>> =
         Either.catch {
             @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgesYcql(selectEdgesYcql, fromId).map { (e, exp) -> e as EdgeLike<ID> to remainingTtl(exp) } }
+            withContext(Dispatchers.IO) { queryEdgesYcql(selectEdgesYcql, fromId).map { (e, exp) -> e as SchemaEdgeLike<ID> to remainingTtl(exp) } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> =
+    override suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<SchemaEdgeLike<ID>, Duration?>>> =
         Either.catch {
             @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgesYcql(selectInEdgesYcql, toId).map { (e, exp) -> e as EdgeLike<ID> to remainingTtl(exp) } }
+            withContext(Dispatchers.IO) { queryEdgesYcql(selectInEdgesYcql, toId).map { (e, exp) -> e as SchemaEdgeLike<ID> to remainingTtl(exp) } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> =
@@ -137,7 +137,7 @@ class YugabyteEphemeralStore<ID>(
         return json.decodeFromString(nodeSer, data) to ttlExpiration
     }
 
-    private fun queryEdgeYcql(fromId: ID, toId: ID, type: String): Pair<EdgeLike<*>, java.time.Instant?>? {
+    private fun queryEdgeYcql(fromId: ID, toId: ID, type: String): Pair<SchemaEdgeLike<*>, java.time.Instant?>? {
         val row = ycql.execute(selectEdgeYcql.bind(idBuf(fromId), idBuf(toId), type)).one() ?: return null
         val data = row.getString("data") ?: return null
         val ttlExpiration = row.getInstant("ttl_expiration")
@@ -145,7 +145,7 @@ class YugabyteEphemeralStore<ID>(
         return json.decodeFromString(edgeSer, data) to ttlExpiration
     }
 
-    private fun queryEdgesYcql(stmt: PreparedStatement, id: ID): List<Pair<EdgeLike<*>, java.time.Instant?>> =
+    private fun queryEdgesYcql(stmt: PreparedStatement, id: ID): List<Pair<SchemaEdgeLike<*>, java.time.Instant?>> =
         ycql.execute(stmt.bind(idBuf(id)))
             .mapNotNull { row ->
                 val data = row.getString("data") ?: return@mapNotNull null
@@ -172,7 +172,7 @@ class YugabyteEphemeralStore<ID>(
                 ))
             }
             is EphemeralOp.SaveEdge -> {
-                val (type, data) = jsonPair(edgeSer, op.edge as EdgeLike<*>)
+                val (type, data) = jsonPair(edgeSer, op.edge as SchemaEdgeLike<*>)
                 val ttl = op.ttl.inWholeSeconds.toInt()
                 val expiresAt = java.time.Instant.now().plusSeconds(ttl.toLong())
                 // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
@@ -196,7 +196,7 @@ class YugabyteEphemeralStore<ID>(
 
     @Suppress("UNCHECKED_CAST")
     private fun writePrimaryEdge(op: EphemeralOp.SaveEdge<ID>, ttlSeconds: Int, expiresAt: java.time.Instant) {
-        val (type, data) = jsonPair(edgeSer, op.edge as EdgeLike<*>)
+        val (type, data) = jsonPair(edgeSer, op.edge as SchemaEdgeLike<*>)
         ycql.execute(SimpleStatement.newInstance(
             "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttlSeconds",
             idBuf(op.edge.fromId), idBuf(op.edge.toId), type, data,
@@ -231,7 +231,7 @@ class YugabyteEphemeralStore<ID>(
     private inner class EphemeralTransaction : AbyssEphemeralStoreTransactionLike<ID> {
         val ops = mutableListOf<EphemeralOp<ID>>()
         override fun saveNode(node: NodeLike<ID>, ttl: Duration) { ops += EphemeralOp.SaveNode(node, ttl) }
-        override fun saveEdge(edge: EdgeLike<ID>, ttl: Duration) { ops += EphemeralOp.SaveEdge(edge, ttl) }
+        override fun saveEdge(edge: SchemaEdgeLike<ID>, ttl: Duration) { ops += EphemeralOp.SaveEdge(edge, ttl) }
         override fun deleteNode(id: ID) { ops += EphemeralOp.DeleteNode(id) }
         override fun deleteEdge(fromId: ID, toId: ID, type: String) { ops += EphemeralOp.DeleteEdge(fromId, toId, type) }
     }

@@ -14,7 +14,8 @@ import pl.iqtech.abyss.graph.serialization.UnknownNode
 import pl.iqtech.abyss.graph.serialization.createPolymorphicJsonSerializer
 import pl.iqtech.abyss.graph.serialization.customJsonSerializer
 import pl.iqtech.abyss.store.api.abyssSerializersModule
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlinx.serialization.serializer
 import kotlin.test.Test
@@ -40,7 +41,7 @@ data class LongTestEdge(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
-) : EdgeLike<Long>
+) : SchemaEdgeLike<Long>
 
 @Serializable @SerialName("str_test_node")
 data class StrTestNode(
@@ -58,7 +59,7 @@ data class StrTestEdge(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
-) : EdgeLike<String>
+) : SchemaEdgeLike<String>
 
 @Serializable @SerialName("test_node")
 data class TestNode(
@@ -77,13 +78,13 @@ data class TestEdge(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
-) : EdgeLike<Uuid>
+) : SchemaEdgeLike<Uuid>
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
 private val testModule = SerializersModule {
     polymorphic(NodeLike::class) { subclass(TestNode::class) }
-    polymorphic(EdgeLike::class) { subclass(TestEdge::class) }
+    polymorphic(RawEdgeLike::class) { subclass(TestEdge::class) }
 }
 
 private fun baseJson() = Json(from = customJsonSerializer) {
@@ -93,11 +94,11 @@ private fun baseJson() = Json(from = customJsonSerializer) {
 @Suppress("UNCHECKED_CAST")
 private val nodeJson = createPolymorphicJsonSerializer<NodeLike<*>>(baseJson()) { UnknownNode(it) }
 @Suppress("UNCHECKED_CAST")
-private val edgeJson = createPolymorphicJsonSerializer<EdgeLike<*>>(baseJson()) { UnknownEdge(it) }
+private val edgeJson = createPolymorphicJsonSerializer<RawEdgeLike<*, *>>(baseJson()) { UnknownEdge(it) }
 @Suppress("UNCHECKED_CAST")
 private val nodeSer  = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
 @Suppress("UNCHECKED_CAST")
-private val edgeSer  = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*>>
+private val edgeSer  = PolymorphicSerializer(RawEdgeLike::class) as kotlinx.serialization.KSerializer<RawEdgeLike<*, *>>
 
 // ── tests ────────────────────────────────────────────────────────────────────
 

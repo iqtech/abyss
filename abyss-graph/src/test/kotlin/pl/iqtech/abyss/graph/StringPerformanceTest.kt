@@ -6,7 +6,7 @@ import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.StringKeyAdapter
@@ -33,7 +33,7 @@ class StringPerformanceTest {
         private val nodeIds: List<String> by lazy {
             val ids = (1..NODE_COUNT).map { randomId() }
             val nodesMap = stringTestHz.getMap<NodeId, NodeLike<*>>("perf-str-nodes")
-            val edgesMap = stringTestHz.getMap<EdgeKey, EdgeLike<*>>("perf-str-edges")
+            val edgesMap = stringTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("perf-str-edges")
             val reverseMap = stringTestHz.getMap<ReverseEdgeKey, Unit>("perf-str-edges-reverse")
             ids.forEach { id ->
                 nodesMap[StringKeyAdapter.toNodeId(id)] = StrTestNode(id = id, name = id)

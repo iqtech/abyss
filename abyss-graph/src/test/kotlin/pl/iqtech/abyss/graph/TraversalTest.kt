@@ -14,7 +14,7 @@ import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.reaches
 import pl.iqtech.abyss.dsl.subgraph
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -125,12 +125,12 @@ class TraversalTest {
             val c = putNode("c")
             putEdge(a.id, b.id).also {
                 val fromNid = UuidKeyAdapter.toNodeId(a.id)
-                graphTestHz.getMap<Any, EdgeLike<*>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(b.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
+                graphTestHz.getMap<Any, SchemaEdgeLike<*>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(b.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
                     it.copy(label = "keep")
             }
             putEdge(a.id, c.id).also {
                 val fromNid = UuidKeyAdapter.toNodeId(a.id)
-                graphTestHz.getMap<Any, EdgeLike<*>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(c.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
+                graphTestHz.getMap<Any, SchemaEdgeLike<*>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(c.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
                     it.copy(label = "drop")
             }
 
@@ -193,8 +193,8 @@ class TraversalTest {
     @Test fun `subgraph with no hops returns start node and no edges`() {
         runBlocking {
             val a = putNode("a")
-            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(
-                graphTest.from(a.id) { subgraph<TestNode, Uuid>() }
+            val sg = assertIs<Either.Right<Subgraph>>(
+                graphTest.from(a.id) { subgraph() }
             ).value
             assertEquals(listOf(a), sg.nodes)
             assertEquals(emptyList(), sg.edges)
@@ -209,10 +209,10 @@ class TraversalTest {
             putEdge(a.id, b.id)
             putEdge(b.id, c.id)
 
-            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(graphTest.from(a.id) {
+            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(a.id) {
                 outgoing<TestEdge>()
                 outgoing<TestEdge>()
-                subgraph<TestNode, Uuid>()
+                subgraph()
             }).value
             assertEquals(setOf(a, b, c), sg.nodes.toSet())
         }
@@ -226,10 +226,10 @@ class TraversalTest {
             val ab = putEdge(a.id, b.id)
             val bc = putEdge(b.id, c.id)
 
-            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(graphTest.from(a.id) {
+            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(a.id) {
                 outgoing<TestEdge>()
                 outgoing<TestEdge>()
-                subgraph<TestNode, Uuid>()
+                subgraph()
             }).value
             assertEquals(setOf(ab.fromId to ab.toId, bc.fromId to bc.toId),
                 sg.edges.map { it.fromId to it.toId }.toSet())
@@ -242,7 +242,7 @@ class TraversalTest {
     // bob, charlie, dave →[likes]→ astronomy (OtherNode)
     //
     // edge filter "recent" drops dave; node filter name≠"charlie" drops charlie;
-    // subgraph<TestNode, Uuid>() collects intermediate TestNodes = {alice, bob}
+    // subgraph() collects intermediate TestNodes = {alice, bob}
 
     @Test fun `nodes predicate narrows frontier and subgraph collects surviving intermediate nodes`() {
         runBlocking {
@@ -262,12 +262,12 @@ class TraversalTest {
                 addEdge(TestEdge(fromId = dave.id,    toId = astronomy.id, label = "likes"))
             }
 
-            val sg = assertIs<Either.Right<Subgraph<Uuid>>>(graphTest.from(alice.id) {
+            val sg = assertIs<Either.Right<Subgraph>>(graphTest.from(alice.id) {
                 outgoing<TestEdge> { it.label == "recent" }  // drops dave
                 nodes<TestNode> { it.name != "charlie" }      // drops charlie, removes from visited
                 outgoing<TestEdge> { it.label == "likes" }    // bob → astronomy
                 nodes<OtherNode>()                            // confirm interest type
-                subgraph<TestNode, Uuid>()                          // intermediate TestNodes: alice + bob
+                subgraph()                          // intermediate TestNodes: alice + bob
             }).value
 
             val testNodes = sg.nodes.filterIsInstance<TestNode>().toSet()

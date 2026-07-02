@@ -3,21 +3,21 @@ package pl.iqtech.abyss.dsl
 import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.AbyssError
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.time.Duration
 
 interface AbyssEngineLike<ID> {
 
     suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>>
-    suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, EdgeLike<ID>>
+    suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, SchemaEdgeLike<ID>>
     suspend fun nodeExists(id: ID): Either<AbyssError, Boolean>
     suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean>
 
-    fun outEdges(nodeId: ID, pageSize: Int = 100): Flow<EdgeLike<ID>>
-    fun outEdges(nodeId: ID, type: String, pageSize: Int = 100): Flow<EdgeLike<ID>>
-    fun inEdges(nodeId: ID, pageSize: Int = 100): Flow<EdgeLike<ID>>
-    fun inEdges(nodeId: ID, type: String, pageSize: Int = 100): Flow<EdgeLike<ID>>
+    fun outEdges(nodeId: ID, pageSize: Int = 100): Flow<SchemaEdgeLike<ID>>
+    fun outEdges(nodeId: ID, type: String, pageSize: Int = 100): Flow<SchemaEdgeLike<ID>>
+    fun inEdges(nodeId: ID, pageSize: Int = 100): Flow<SchemaEdgeLike<ID>>
+    fun inEdges(nodeId: ID, type: String, pageSize: Int = 100): Flow<SchemaEdgeLike<ID>>
 
     fun allNodeIds(): Flow<ID>
 
@@ -38,17 +38,17 @@ interface AbyssEngineLike<ID> {
 interface AbyssTransactionLike<ID> {
     fun addNode(node: NodeLike<ID>)
     fun removeNode(id: ID)
-    fun addEdge(edge: EdgeLike<ID>)
+    fun addEdge(edge: SchemaEdgeLike<ID>)
     fun removeEdge(fromId: ID, toId: ID, type: String)
     suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>)
-    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID>?) -> EdgeLike<ID>)
+    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (SchemaEdgeLike<ID>?) -> SchemaEdgeLike<ID>)
 }
 
 interface AbyssEphemeralTransactionLike<ID> {
     fun addNode(node: NodeLike<ID>)
     fun removeNode(id: ID)
-    fun addEdge(edge: EdgeLike<ID>)
+    fun addEdge(edge: SchemaEdgeLike<ID>)
     fun removeEdge(fromId: ID, toId: ID, type: String)
     suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>)
-    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID>?) -> EdgeLike<ID>)
+    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (SchemaEdgeLike<ID>?) -> SchemaEdgeLike<ID>)
 }

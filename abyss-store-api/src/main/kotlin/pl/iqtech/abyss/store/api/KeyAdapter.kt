@@ -11,7 +11,7 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 
-// Serialized as its lowercase-hex string, so cross-schema edges (EdgeLike<NodeId>) round-trip
+// Serialized as its lowercase-hex string, so cross-schema edges (SchemaEdgeLike<NodeId>) round-trip
 // through the JSON edge serializer.
 @Serializable(with = NodeIdHexSerializer::class)
 class NodeId(val bytes: ByteArray) : Comparable<NodeId> {
@@ -41,9 +41,23 @@ sealed interface NodeKeyEncoding {
     data class Int64(val value: Long) : NodeKeyEncoding
     data class Str(val value: String) : NodeKeyEncoding
     data class Int64Pair(val hi: Long, val lo: Long) : NodeKeyEncoding
+    // Multi-schema: a schema tag plus the inner adapter's native encoding. Written to a fixed,
+    // self-describing Compact superset (tag + kind discriminator + hi/lo + nullable str), so one
+    // EdgeKey Compact class serves every registered shape while keeping native (non-hex) predicates.
+    data class Tagged(val tag: Long, val inner: NodeKeyEncoding) : NodeKeyEncoding
 }
 
-enum class KeyEncodingShape { INT64, STRING, INT64_PAIR }
+enum class KeyEncodingShape { INT64, STRING, INT64_PAIR, TAGGED }
+
+// Discriminator persisted in the Tagged Compact record so reads reconstruct the inner shape.
+enum class NodeKeyKind(val id: Byte) { INT64(0), STRING(1), INT64_PAIR(2) }
+
+fun NodeKeyEncoding.kind(): NodeKeyKind = when (this) {
+    is NodeKeyEncoding.Int64 -> NodeKeyKind.INT64
+    is NodeKeyEncoding.Str -> NodeKeyKind.STRING
+    is NodeKeyEncoding.Int64Pair -> NodeKeyKind.INT64_PAIR
+    is NodeKeyEncoding.Tagged -> error("Tagged cannot nest")
+}
 
 interface EdgeAdapter {
     fun partitionKey(nodeId: NodeId): Any
@@ -113,7 +127,9 @@ object StringKeyAdapter : KeyAdapter<String> {
 }
 
 // Width of the schema-tag prefix a multi-schema graph stamps onto every NodeId. BYTE = 256 schemas.
-enum class SchemaTagWidth(val bytes: Int) { BYTE(1), SHORT(2), INT(4), LONG(8) }
+// NONE = single-schema degenerate case: zero-length prefix, NodeIds are untagged and byte-identical
+// to the inner adapter's, so a one-schema container costs nothing over a standalone AbyssGraphSchema.
+enum class SchemaTagWidth(val bytes: Int) { NONE(0), BYTE(1), SHORT(2), INT(4), LONG(8) }
 
 // Adapter-independent edge-key encoding for multi-schema graphs. A single Hazelcast Compact
 // serializer per class cannot express multiple native shapes, so the container encodes every
@@ -129,27 +145,28 @@ object UniformHexAdapter : EdgeAdapter {
 }
 
 // Wraps an inner KeyAdapter, prefixing every NodeId with a big-endian schema tag (`width` bytes)
-// so schemas coexist in shared maps with globally-unique, self-describing keys. Edge-key encoding
-// is uniform hex (see UniformHexAdapter), required because heterogeneous inner shapes can't share
-// one Compact schema.
+// so schemas coexist in shared maps with globally-unique, self-describing keys. Edge-key encoding is
+// tag + the inner adapter's native shape (see NodeKeyEncoding.Tagged) — native predicates, no hex.
 class SchemaKeyAdapter<ID>(
     val tag: Long,
     val width: SchemaTagWidth,
     val inner: KeyAdapter<ID>,
 ) : KeyAdapter<ID> {
-    private val prefix: ByteArray =
-        ByteBuffer.allocate(8).putLong(tag).array().copyOfRange(8 - width.bytes, 8)
+    private val prefix: ByteArray = tagPrefix(tag, width)
 
     init { require(tag >= 0 && (width.bytes == 8 || tag < (1L shl (width.bytes * 8)))) { "tag $tag does not fit in $width" } }
 
     override fun toNodeId(id: ID): NodeId = NodeId(prefix + inner.toNodeId(id).bytes)
-    override fun fromNodeId(nodeId: NodeId): ID =
-        inner.fromNodeId(NodeId(nodeId.bytes.copyOfRange(width.bytes, nodeId.bytes.size)))
+    override fun fromNodeId(nodeId: NodeId): ID = inner.fromNodeId(stripTag(nodeId, width))
 
-    override fun partitionKey(nodeId: NodeId): Any = UniformHexAdapter.partitionKey(nodeId)
-    override val keyEncodingShape = UniformHexAdapter.keyEncodingShape
-    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = UniformHexAdapter.encodeKey(nodeId)
-    override fun decodeKey(encoding: NodeKeyEncoding): NodeId = UniformHexAdapter.decodeKey(encoding)
+    override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
+    override val keyEncodingShape = KeyEncodingShape.TAGGED
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding =
+        NodeKeyEncoding.Tagged(tag, inner.encodeKey(stripTag(nodeId, width)))
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
+        require(encoding is NodeKeyEncoding.Tagged) { "SchemaKeyAdapter expects Tagged, got $encoding" }
+        return NodeId(prefix + inner.decodeKey(encoding.inner).bytes)
+    }
 
     companion object {
         // Reads the schema-tag prefix from a tagged NodeId without needing the inner adapter.
@@ -159,5 +176,34 @@ class SchemaKeyAdapter<ID>(
             for (i in 0 until width.bytes) v = (v shl 8) or (nodeId.bytes[i].toLong() and 0xFF)
             return v
         }
+    }
+}
+
+private fun tagPrefix(tag: Long, width: SchemaTagWidth): ByteArray =
+    ByteBuffer.allocate(8).putLong(tag).array().copyOfRange(8 - width.bytes, 8)
+
+private fun stripTag(nodeId: NodeId, width: SchemaTagWidth): NodeId =
+    NodeId(nodeId.bytes.copyOfRange(width.bytes, nodeId.bytes.size))
+
+// Edge-key adapter for a multi-schema container's SHARED serializer: it must decode edges from every
+// registered schema, so it holds the full tag -> inner-adapter registry. Built once by the caller
+// (before the HazelcastInstance starts) and passed to registerAbyssSerializers; the same tags must be
+// register()ed on the AbyssGraph. Per-schema predicates use each schema's SchemaKeyAdapter instead.
+class MultiSchemaAdapter(
+    val width: SchemaTagWidth,
+    private val registry: Map<Long, KeyAdapter<*>>,
+) : EdgeAdapter {
+    init { require(width != SchemaTagWidth.NONE) { "MultiSchemaAdapter needs a tagged width" } }
+    private fun inner(tag: Long) = registry[tag] ?: error("No adapter registered for schema tag $tag")
+
+    override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
+    override val keyEncodingShape = KeyEncodingShape.TAGGED
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding {
+        val tag = SchemaKeyAdapter.readTag(nodeId, width)
+        return NodeKeyEncoding.Tagged(tag, inner(tag).encodeKey(stripTag(nodeId, width)))
+    }
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
+        require(encoding is NodeKeyEncoding.Tagged) { "MultiSchemaAdapter expects Tagged, got $encoding" }
+        return NodeId(tagPrefix(encoding.tag, width) + inner(encoding.tag).decodeKey(encoding.inner).bytes)
     }
 }

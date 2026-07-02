@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -32,7 +32,7 @@ import kotlin.time.toJavaInstant
 
 private sealed interface PersistentOp<ID> {
     data class SaveNode<ID>(val node: NodeLike<ID>) : PersistentOp<ID>
-    data class SaveEdge<ID>(val edge: EdgeLike<ID>) : PersistentOp<ID>
+    data class SaveEdge<ID>(val edge: SchemaEdgeLike<ID>) : PersistentOp<ID>
     data class DeleteNode<ID>(val id: ID) : PersistentOp<ID>
     data class DeleteEdge<ID>(val fromId: ID, val toId: ID, val type: String) : PersistentOp<ID>
 }
@@ -56,7 +56,7 @@ class YugabytePersistentStore<ID>(
     @Suppress("UNCHECKED_CAST")
     private val nodeSer = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
     @Suppress("UNCHECKED_CAST")
-    private val edgeSer = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*>>
+    private val edgeSer = PolymorphicSerializer(SchemaEdgeLike::class) as kotlinx.serialization.KSerializer<SchemaEdgeLike<*>>
 
     override suspend fun loadNode(id: ID): Either<AbyssError, Pair<NodeLike<ID>?, Duration?>> =
         Either.catch {
@@ -64,22 +64,22 @@ class YugabytePersistentStore<ID>(
             withContext(Dispatchers.IO) { queryNodeYsql(id)?.let { it as NodeLike<ID> to null } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdge(fromId: ID, toId: ID, type: String): Either<AbyssError, Pair<EdgeLike<ID>?, Duration?>> =
+    override suspend fun loadEdge(fromId: ID, toId: ID, type: String): Either<AbyssError, Pair<SchemaEdgeLike<ID>?, Duration?>> =
         Either.catch {
             @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type)?.let { it as EdgeLike<ID> to null } ?: (null to null) }
+            withContext(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type)?.let { it as SchemaEdgeLike<ID> to null } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdges(fromId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> =
+    override suspend fun loadEdges(fromId: ID): Either<AbyssError, List<Pair<SchemaEdgeLike<ID>, Duration?>>> =
         Either.catch {
             @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgesYsql("from_id", fromId).map { it as EdgeLike<ID> to null } }
+            withContext(Dispatchers.IO) { queryEdgesYsql("from_id", fromId).map { it as SchemaEdgeLike<ID> to null } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<EdgeLike<ID>, Duration?>>> =
+    override suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<SchemaEdgeLike<ID>, Duration?>>> =
         Either.catch {
             @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgesYsql("to_id", toId).map { it as EdgeLike<ID> to null } }
+            withContext(Dispatchers.IO) { queryEdgesYsql("to_id", toId).map { it as SchemaEdgeLike<ID> to null } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> =
@@ -105,7 +105,7 @@ class YugabytePersistentStore<ID>(
             }
         }
 
-    private fun queryEdgeYsql(fromId: ID, toId: ID, type: String): EdgeLike<*>? =
+    private fun queryEdgeYsql(fromId: ID, toId: ID, type: String): SchemaEdgeLike<*>? =
         ysql.connection.use { conn ->
             conn.prepareStatement(
                 "SELECT data FROM $ysqlSchema.edges WHERE from_id = ? AND to_id = ? AND type = ?"
@@ -119,7 +119,7 @@ class YugabytePersistentStore<ID>(
             }
         }
 
-    private fun queryEdgesYsql(column: String, id: ID): List<EdgeLike<*>> =
+    private fun queryEdgesYsql(column: String, id: ID): List<SchemaEdgeLike<*>> =
         ysql.connection.use { conn ->
             conn.prepareStatement("SELECT data FROM $ysqlSchema.edges WHERE $column = ?").use { stmt ->
                 stmt.setBytes(1, nodeIdBytes(id))
@@ -160,7 +160,7 @@ class YugabytePersistentStore<ID>(
                         upsertNode.executeUpdate()
                     }
                     is PersistentOp.SaveEdge -> {
-                        val (type, data) = jsonPair(edgeSer, op.edge as EdgeLike<*>)
+                        val (type, data) = jsonPair(edgeSer, op.edge as SchemaEdgeLike<*>)
                         upsertEdge.setBytes(1, nodeIdBytes(op.edge.fromId))
                         upsertEdge.setBytes(2, nodeIdBytes(op.edge.toId))
                         upsertEdge.setString(3, type)
@@ -189,7 +189,7 @@ class YugabytePersistentStore<ID>(
     private inner class PersistentTransaction : AbyssStoreTransactionLike<ID> {
         val ops = mutableListOf<PersistentOp<ID>>()
         override fun saveNode(node: NodeLike<ID>) { ops += PersistentOp.SaveNode(node) }
-        override fun saveEdge(edge: EdgeLike<ID>) { ops += PersistentOp.SaveEdge(edge) }
+        override fun saveEdge(edge: SchemaEdgeLike<ID>) { ops += PersistentOp.SaveEdge(edge) }
         override fun deleteNode(id: ID) { ops += PersistentOp.DeleteNode(id) }
         override fun deleteEdge(fromId: ID, toId: ID, type: String) { ops += PersistentOp.DeleteEdge(fromId, toId, type) }
     }

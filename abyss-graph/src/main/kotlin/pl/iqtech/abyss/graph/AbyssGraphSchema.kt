@@ -43,7 +43,8 @@ import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeAdapter
-import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
@@ -62,12 +63,16 @@ class AbyssGraphSchema<ID>(
     val persistentStore: AbyssStoreLike<ID>? = null,
     val ephemeralStore: AbyssEphemeralStoreLike<ID>? = null,
     private val asyncCachePopulation: Boolean = false
-) : AbyssEngineLike<ID> {
+) : AbyssEngineLike<ID>, NodeIdEngine {
+
+    // Engine a traversal from this schema runs against: the owning container (so a walk can cross
+    // schemas over the shared edge map) when registered in one, else this schema itself.
+    internal var traversalEngine: NodeIdEngine = this
 
     // Hazelcast IMap keys are NodeId (compact-serialized ByteArray wrapper).
     // All public methods accept domain ID and convert at the boundary via adapter.
     private val nodesMap: IMap<NodeId, NodeLike<ID>>
-    private val edgesMap: IMap<EdgeKey, EdgeLike<ID>>
+    private val edgesMap: IMap<EdgeKey, SchemaEdgeLike<ID>>
     private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit>
     init {
         nodesMap = hazelcast.getMap(nodesMapName)
@@ -88,7 +93,7 @@ class AbyssGraphSchema<ID>(
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.NodeNotFound(id as Any).left() }
 
-    override suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, EdgeLike<ID>> =
+    override suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, SchemaEdgeLike<ID>> =
         Either.catch { edgesMap.getAsync(edgeKey(adapter.toNodeId(fromId), adapter.toNodeId(toId), type)).asDeferred().await() ?: loadAndCacheEdge(fromId, toId, type) }
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { it?.right() ?: AbyssError.EdgeNotFound(fromId as Any, toId as Any, type).left() }
@@ -101,29 +106,21 @@ class AbyssGraphSchema<ID>(
         Either.catch { edgesMap.getAsync(edgeKey(adapter.toNodeId(fromId), adapter.toNodeId(toId), type)).asDeferred().await() != null || loadAndCacheEdge(fromId, toId, type) != null }
             .mapLeft { AbyssError.Unexpected(it) }
 
-    override fun outEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID>> {
+    override fun outEdges(nodeId: ID, pageSize: Int): Flow<SchemaEdgeLike<ID>> {
         val nid = adapter.toNodeId(nodeId)
-        return outEdgeFlow(nodeId, nid, keyEq<EdgeKey, EdgeLike<ID>>("fromId", nid))
+        return outEdgeFlow(nodeId, nid, keyEq<EdgeKey, SchemaEdgeLike<ID>>("fromId", nid))
     }
 
-    override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID>> {
+    override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<SchemaEdgeLike<ID>> {
         val nid = adapter.toNodeId(nodeId)
-        return outEdgeFlow(nodeId, nid, Predicates.and(keyEq<EdgeKey, EdgeLike<ID>>("fromId", nid), Predicates.equal<EdgeKey, EdgeLike<ID>>("__key.type", type)))
+        return outEdgeFlow(nodeId, nid, Predicates.and(keyEq<EdgeKey, SchemaEdgeLike<ID>>("fromId", nid), Predicates.equal<EdgeKey, SchemaEdgeLike<ID>>("__key.type", type)))
     }
 
-    override fun inEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID>> = inEdgeFlow(nodeId)
+    override fun inEdges(nodeId: ID, pageSize: Int): Flow<SchemaEdgeLike<ID>> = inEdgeFlow(nodeId)
 
-    override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID>> = inEdgeFlow(nodeId, type)
+    override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<SchemaEdgeLike<ID>> = inEdgeFlow(nodeId, type)
 
-    private fun <K, V> keyEq(field: String, nid: NodeId): Predicate<K, V> =
-        when (val enc = adapter.encodeKey(nid)) {
-            is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.$field", enc.value)
-            is NodeKeyEncoding.Str -> Predicates.equal<K, V>("__key.$field", enc.value)
-            is NodeKeyEncoding.Int64Pair -> Predicates.and<K, V>(
-                Predicates.equal<K, V>("__key.${field}Hi", enc.hi),
-                Predicates.equal<K, V>("__key.${field}Lo", enc.lo)
-            )
-        }
+    private fun <K, V> keyEq(field: String, nid: NodeId): Predicate<K, V> = nativeKeyEq(field, adapter.encodeKey(nid))
 
     private fun edgeKey(fromNid: NodeId, toNid: NodeId, type: String) =
         EdgeKey(fromNid, toNid, type, adapter.partitionKey(fromNid))
@@ -131,53 +128,57 @@ class AbyssGraphSchema<ID>(
     private fun revKey(toNid: NodeId, fromNid: NodeId, type: String) =
         ReverseEdgeKey(toNid, fromNid, type, adapter.partitionKey(toNid))
 
-    private val edgeOrder = Comparator<Map.Entry<EdgeKey, EdgeLike<ID>>> { a, b ->
+    private val edgeOrder = Comparator<Map.Entry<EdgeKey, SchemaEdgeLike<ID>>> { a, b ->
         compareValuesBy(a.key, b.key, { it.fromId.toString() }, { it.toId.toString() }, { it.type })
     }
 
-    private fun outEdgeFlow(nodeId: ID, nid: NodeId, predicate: Predicate<EdgeKey, EdgeLike<ID>>): Flow<EdgeLike<ID>> = flow {
-        withContext(Dispatchers.IO) {
-            persistentStore?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
-                edgesMap.putIfAbsent(edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), edgeType(edge)), edge)
-            }
-            ephemeralStore?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
-                val key = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), edgeType(edge))
-                when {
-                    remaining == null -> edgesMap.putIfAbsent(key, edge)
-                    remaining.inWholeSeconds > 0 -> edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
-                    // remaining <= 0: expired — skip
-                }
+    // Store -> cache preload for a node's outgoing edges (self-healing on cache miss).
+    private suspend fun preloadOut(nodeId: ID) = withContext(Dispatchers.IO) {
+        persistentStore?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
+            edgesMap.putIfAbsent(edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), edgeType(edge)), edge)
+        }
+        ephemeralStore?.loadEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
+            val key = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), edgeType(edge))
+            when {
+                remaining == null -> edgesMap.putIfAbsent(key, edge)
+                remaining.inWholeSeconds > 0 -> edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                // remaining <= 0: expired — skip
             }
         }
-        val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike<ID>>(adapter.partitionKey(nid), predicate)
+    }
+
+    private suspend fun preloadIn(nodeId: ID) = withContext(Dispatchers.IO) {
+        persistentStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
+            val type = edgeType(edge)
+            edgesMap.putIfAbsent(edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), type), edge)
+            reverseEdgesMap.putIfAbsent(revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), type), Unit)
+        }
+        ephemeralStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
+            val type = edgeType(edge)
+            val key    = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), type)
+            val revKey = revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), type)
+            when {
+                remaining == null -> {
+                    edgesMap.putIfAbsent(key, edge); reverseEdgesMap.putIfAbsent(revKey, Unit)
+                }
+                remaining.inWholeSeconds > 0 -> {
+                    edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                    reverseEdgesMap.putIfAbsent(revKey, Unit, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                }
+                // remaining <= 0: expired — skip
+            }
+        }
+    }
+
+    private fun outEdgeFlow(nodeId: ID, nid: NodeId, predicate: Predicate<EdgeKey, SchemaEdgeLike<ID>>): Flow<SchemaEdgeLike<ID>> = flow {
+        preloadOut(nodeId)
+        val partitioned = Predicates.partitionPredicate<EdgeKey, SchemaEdgeLike<ID>>(adapter.partitionKey(nid), predicate)
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
     }
 
-    private fun inEdgeFlow(nodeId: ID, typeFilter: String? = null): Flow<EdgeLike<ID>> = flow {
+    private fun inEdgeFlow(nodeId: ID, typeFilter: String? = null): Flow<SchemaEdgeLike<ID>> = flow {
         val nid = adapter.toNodeId(nodeId)
-        withContext(Dispatchers.IO) {
-            persistentStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
-                val type = edgeType(edge)
-                edgesMap.putIfAbsent(edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), type), edge)
-                reverseEdgesMap.putIfAbsent(revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), type), Unit)
-            }
-            ephemeralStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
-                val type = edgeType(edge)
-                val key    = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), type)
-                val revKey = revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), type)
-                when {
-                    remaining == null -> {
-                        edgesMap.putIfAbsent(key, edge)
-                        reverseEdgesMap.putIfAbsent(revKey, Unit)
-                    }
-                    remaining.inWholeSeconds > 0 -> {
-                        edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
-                        reverseEdgesMap.putIfAbsent(revKey, Unit, remaining.inWholeSeconds, TimeUnit.SECONDS)
-                    }
-                    // remaining <= 0: expired — skip
-                }
-            }
-        }
+        preloadIn(nodeId)
         val revKeys = withContext(Dispatchers.IO) {
             reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
                 adapter.partitionKey(nid), keyEq<ReverseEdgeKey, Unit>("toId", nid)
@@ -190,8 +191,39 @@ class AbyssGraphSchema<ID>(
         }
     }
 
+    // --- NodeIdEngine: NodeId-level views the traversal engine drives (endpoints from EdgeKey) -----
+
+    override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = node(adapter.fromNodeId(nid)).getOrNull()
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun outAt(nid: NodeId, type: String?): List<Hop> {
+        preloadOut(adapter.fromNodeId(nid))
+        val base = keyEq<EdgeKey, Any>("fromId", nid)
+        val pred = if (type == null) base else Predicates.and(base, Predicates.equal<EdgeKey, Any>("__key.type", type))
+        val part = Predicates.partitionPredicate<EdgeKey, Any>(adapter.partitionKey(nid), pred)
+        val map = edgesMap as IMap<EdgeKey, Any>
+        return withContext(Dispatchers.IO) { map.entrySet(part) }.map { Hop(it.key.fromId, it.key.toId, it.value as RawEdgeLike<*, *>) }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun inAt(nid: NodeId, type: String?): List<Hop> {
+        preloadIn(adapter.fromNodeId(nid))
+        val revKeys = withContext(Dispatchers.IO) {
+            reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
+                adapter.partitionKey(nid), keyEq<ReverseEdgeKey, Unit>("toId", nid)
+            ))
+        }
+        val filtered = if (type != null) revKeys.filter { it.type == type } else revKeys
+        val keys = filtered.map { edgeKey(it.fromId, it.toId, it.type) }.toSet()
+        if (keys.isEmpty()) return emptyList()
+        val map = edgesMap as IMap<EdgeKey, Any>
+        return withContext(Dispatchers.IO) { map.getAll(keys) }.entries.map { Hop(it.key.fromId, it.key.toId, it.value as RawEdgeLike<*, *>) }
+    }
+
+    override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
+
     override suspend fun <T> from(nodeId: ID, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T> =
-        Either.catch { TraversalBuilder(this, setOf(nodeId)).block() }
+        Either.catch { TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun ephemeral(ttl: Duration, checkIntegrity: Boolean, block: suspend AbyssEphemeralTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
@@ -215,7 +247,7 @@ class AbyssGraphSchema<ID>(
             val error = withContext(Dispatchers.IO) {
                 @Suppress("UNCHECKED_CAST")
                 ops.filterIsInstance<Op.AddEdge>().firstNotNullOfOrNull { addOp ->
-                    val edge = addOp.edge as EdgeLike<ID>
+                    val edge = addOp.edge as SchemaEdgeLike<ID>
                     val fromNode = addedInTx[edge.fromId] ?: nodesMap[adapter.toNodeId(edge.fromId)]
                     val toNode   = addedInTx[edge.toId]   ?: nodesMap[adapter.toNodeId(edge.toId)]
                     when {
@@ -267,7 +299,7 @@ class AbyssGraphSchema<ID>(
             val error = withContext(Dispatchers.IO) {
                 @Suppress("UNCHECKED_CAST")
                 ops.filterIsInstance<Op.AddEdge>().firstNotNullOfOrNull { addOp ->
-                    val edge = addOp.edge as EdgeLike<ID>
+                    val edge = addOp.edge as SchemaEdgeLike<ID>
                     val fromNode = addedInTx[edge.fromId] ?: nodesMap[adapter.toNodeId(edge.fromId)]
                     val toNode   = addedInTx[edge.toId]   ?: nodesMap[adapter.toNodeId(edge.toId)]
                     when {
@@ -301,14 +333,19 @@ class AbyssGraphSchema<ID>(
         return Unit.right()
     }
 
+    // True when a NodeId belongs to this schema (round-trips through the adapter). Cross-schema edges
+    // in the shared map have a foreign opposite endpoint; cascade skips them (they're cache-only).
+    private fun isHomeNode(x: NodeId): Boolean = runCatching { adapter.toNodeId(adapter.fromNodeId(x)) == x }.getOrDefault(false)
+
     private fun cascadeEdgeRemovals(nodeId: ID): List<Op.RemoveEdge> {
         val nid = adapter.toNodeId(nodeId)
         val pk  = adapter.partitionKey(nid)
-        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<ID>>("fromId", nid)))
+        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, SchemaEdgeLike<ID>>("fromId", nid)))
+            .filter { isHomeNode(it.key.toId) }
             .map { Op.RemoveEdge(adapter.fromNodeId(it.key.fromId), adapter.fromNodeId(it.key.toId), it.key.type) }
         val inc = reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
             pk, keyEq<ReverseEdgeKey, Unit>("toId", nid)
-        )).map { Op.RemoveEdge(adapter.fromNodeId(it.fromId), adapter.fromNodeId(it.toId), it.type) }
+        )).filter { isHomeNode(it.fromId) }.map { Op.RemoveEdge(adapter.fromNodeId(it.fromId), adapter.fromNodeId(it.toId), it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
 
@@ -316,7 +353,7 @@ class AbyssGraphSchema<ID>(
     private fun AbyssStoreTransactionLike<ID>.applyPersistentOp(op: Op) = when (op) {
         is Op.AddNode    -> saveNode(op.node as NodeLike<ID>)
         is Op.RemoveNode -> deleteNode(op.id as ID)
-        is Op.AddEdge    -> saveEdge(op.edge as EdgeLike<ID>)
+        is Op.AddEdge    -> saveEdge(op.edge as SchemaEdgeLike<ID>)
         is Op.RemoveEdge -> deleteEdge(op.fromId as ID, op.toId as ID, op.type)
     }
 
@@ -324,7 +361,7 @@ class AbyssGraphSchema<ID>(
     private fun AbyssEphemeralStoreTransactionLike<ID>.applyEphemeralOp(op: Op) = when (op) {
         is Op.AddNode    -> saveNode(op.node as NodeLike<ID>, op.ttl!!)
         is Op.RemoveNode -> deleteNode(op.id as ID)
-        is Op.AddEdge    -> saveEdge(op.edge as EdgeLike<ID>, op.ttl!!)
+        is Op.AddEdge    -> saveEdge(op.edge as SchemaEdgeLike<ID>, op.ttl!!)
         is Op.RemoveEdge -> deleteEdge(op.fromId as ID, op.toId as ID, op.type)
     }
 
@@ -355,7 +392,7 @@ class AbyssGraphSchema<ID>(
         }
         is Op.RemoveNode -> listOf(nodesMap.removeAsync(adapter.toNodeId(op.id as ID)))
         is Op.AddEdge -> {
-            val edge   = op.edge as EdgeLike<ID>
+            val edge   = op.edge as SchemaEdgeLike<ID>
             val key    = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), edgeType(edge))
             val revKey = revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), edgeType(edge))
             if (op.ttl != null) listOf(
@@ -392,7 +429,7 @@ class AbyssGraphSchema<ID>(
         return node
     }
 
-    private suspend fun loadAndCacheEdge(fromId: ID, toId: ID, type: String): EdgeLike<ID>? {
+    private suspend fun loadAndCacheEdge(fromId: ID, toId: ID, type: String): SchemaEdgeLike<ID>? {
         val (edge, remaining) = coroutineScope {
             val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadEdge(fromId, toId, type)?.getOrNull() }
             val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore?.loadEdge(fromId, toId, type)?.getOrNull() }
@@ -408,10 +445,10 @@ class AbyssGraphSchema<ID>(
         return edge
     }
 
-    private fun edgeType(edge: EdgeLike<*>): String =
+    private fun edgeType(edge: SchemaEdgeLike<*>): String =
         edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
 
-    private fun schemaCheck(edge: EdgeLike<*>, from: NodeLike<*>, to: NodeLike<*>): AbyssError? {
+    private fun schemaCheck(edge: SchemaEdgeLike<*>, from: NodeLike<*>, to: NodeLike<*>): AbyssError? {
         val c = edge::class.findAnnotation<EdgeConstraint>() ?: return null
         if (c.fromTypes.isNotEmpty() && from !is UnknownNode && from::class !in c.fromTypes)
             return AbyssError.SchemaError("Edge ${edgeType(edge)}: fromId is ${from::class.simpleName}, expected ${c.fromTypes.map { it.simpleName }}")
@@ -421,8 +458,33 @@ class AbyssGraphSchema<ID>(
     }
 }
 
+// Builds a Hazelcast key predicate matching an endpoint field against a native encoding. Tagged
+// (multi-schema) always includes the tag clause: it scopes the match to the endpoint's schema and
+// disambiguates two schemas that share a raw shape.
+internal fun <K, V> nativeKeyEq(field: String, enc: NodeKeyEncoding): Predicate<K, V> = when (enc) {
+    is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.$field", enc.value)
+    is NodeKeyEncoding.Str -> Predicates.equal<K, V>("__key.$field", enc.value)
+    is NodeKeyEncoding.Int64Pair -> Predicates.and<K, V>(
+        Predicates.equal<K, V>("__key.${field}Hi", enc.hi),
+        Predicates.equal<K, V>("__key.${field}Lo", enc.lo)
+    )
+    is NodeKeyEncoding.Tagged -> {
+        val tagEq = Predicates.equal<K, V>("__key.${field}Tag", enc.tag)
+        val valEq: Predicate<K, V> = when (val i = enc.inner) {
+            is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.${field}Lo", i.value)
+            is NodeKeyEncoding.Str -> Predicates.equal<K, V>("__key.${field}Str", i.value)
+            is NodeKeyEncoding.Int64Pair -> Predicates.and<K, V>(
+                Predicates.equal<K, V>("__key.${field}Hi", i.hi),
+                Predicates.equal<K, V>("__key.${field}Lo", i.lo)
+            )
+            is NodeKeyEncoding.Tagged -> error("Tagged cannot nest")
+        }
+        Predicates.and<K, V>(tagEq, valEq)
+    }
+}
+
 // Call before creating the HazelcastInstance — serialization config is immutable after startup.
-// Pass the consuming project's SerializersModule so concrete NodeLike/EdgeLike types are known.
+// Pass the consuming project's SerializersModule so concrete NodeLike/SchemaEdgeLike types are known.
 // The adapter must match the KeyAdapter used by every AbyssGraphSchema<ID> sharing this HazelcastInstance:
 // EdgeKey/ReverseEdgeKey compact serialization is bound to one adapter's native field encoding.
 fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersModule = EmptySerializersModule()): Config = apply {
@@ -430,30 +492,30 @@ fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersMod
     serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer(adapter))
     serializationConfig.compactSerializationConfig.addSerializer(ReverseEdgeKeySerializer(adapter))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
-    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
+    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(RawEdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }
 
 
 private sealed interface Op {
     data class AddNode(val node: NodeLike<*>, val ttl: Duration?) : Op
     data class RemoveNode(val id: Any?) : Op
-    data class AddEdge(val edge: EdgeLike<*>, val ttl: Duration?) : Op
+    data class AddEdge(val edge: SchemaEdgeLike<*>, val ttl: Duration?) : Op
     data class RemoveEdge(val fromId: Any?, val toId: Any?, val type: String) : Op
 }
 
 private class BufferedTransaction<ID>(
     private val readNode: suspend (ID) -> NodeLike<ID>?,
-    private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID>?
+    private val readEdge: suspend (ID, ID, String) -> SchemaEdgeLike<ID>?
 ) : AbyssTransactionLike<ID> {
     val ops = mutableListOf<Op>()
     override fun addNode(node: NodeLike<ID>)                          { ops += Op.AddNode(node, null) }
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike<ID>)                          { ops += Op.AddEdge(edge, null) }
+    override fun addEdge(edge: SchemaEdgeLike<ID>)                          { ops += Op.AddEdge(edge, null) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
     override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
         ops += Op.AddNode(transform(readNode(id)), null)
     }
-    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID>?) -> EdgeLike<ID>) {
+    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (SchemaEdgeLike<ID>?) -> SchemaEdgeLike<ID>) {
         ops += Op.RemoveEdge(fromId, toId, type)
         ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), null)
     }
@@ -462,17 +524,17 @@ private class BufferedTransaction<ID>(
 private class BufferedEphemeralTransaction<ID>(
     private val ttl: Duration,
     private val readNode: suspend (ID) -> NodeLike<ID>?,
-    private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID>?
+    private val readEdge: suspend (ID, ID, String) -> SchemaEdgeLike<ID>?
 ) : AbyssEphemeralTransactionLike<ID> {
     val ops = mutableListOf<Op>()
     override fun addNode(node: NodeLike<ID>)                          { ops += Op.AddNode(node, ttl) }
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike<ID>)                          { ops += Op.AddEdge(edge, ttl) }
+    override fun addEdge(edge: SchemaEdgeLike<ID>)                          { ops += Op.AddEdge(edge, ttl) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
     override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
         ops += Op.AddNode(transform(readNode(id)), ttl)
     }
-    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID>?) -> EdgeLike<ID>) {
+    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (SchemaEdgeLike<ID>?) -> SchemaEdgeLike<ID>) {
         ops += Op.RemoveEdge(fromId, toId, type)
         ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), ttl)
     }
