@@ -32,9 +32,12 @@ import pl.iqtech.abyss.store.api.abyssSerializersModule
 import java.io.Closeable
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.isDistantPast
 import kotlin.time.toJavaInstant
+import kotlin.time.toKotlinInstant
 
 private sealed interface EphemeralOp<ID> {
     data class SaveNode<ID>(val node: NodeLike<ID>, val ttl: Duration) : EphemeralOp<ID>
@@ -129,20 +132,26 @@ class YugabyteEphemeralStore<ID>(
     private fun queryNodeYcql(id: ID): Pair<NodeLike<*>, java.time.Instant?>? {
         val row = ycql.execute(selectNodeYcql.bind(idBuf(id))).one() ?: return null
         val data = row.getString("data") ?: return null
-        return json.decodeFromString(nodeSer, data) to row.getInstant("ttl_expiration")
+        val ttlExpiration = row.getInstant("ttl_expiration")
+        if(ttlExpiration?.isBefore(java.time.Instant.now()) ?: false) return null
+        return json.decodeFromString(nodeSer, data) to ttlExpiration
     }
 
     private fun queryEdgeYcql(fromId: ID, toId: ID, type: String): Pair<EdgeLike<*>, java.time.Instant?>? {
         val row = ycql.execute(selectEdgeYcql.bind(idBuf(fromId), idBuf(toId), type)).one() ?: return null
         val data = row.getString("data") ?: return null
-        return json.decodeFromString(edgeSer, data) to row.getInstant("ttl_expiration")
+        val ttlExpiration = row.getInstant("ttl_expiration")
+        if(ttlExpiration?.isBefore(java.time.Instant.now()) ?: false) return null
+        return json.decodeFromString(edgeSer, data) to ttlExpiration
     }
 
     private fun queryEdgesYcql(stmt: PreparedStatement, id: ID): List<Pair<EdgeLike<*>, java.time.Instant?>> =
         ycql.execute(stmt.bind(idBuf(id)))
             .mapNotNull { row ->
                 val data = row.getString("data") ?: return@mapNotNull null
-                json.decodeFromString(edgeSer, data) to row.getInstant("ttl_expiration")
+                val ttlExpiration = row.getInstant("ttl_expiration")
+                if(ttlExpiration?.isBefore(java.time.Instant.now()) ?: false) return@mapNotNull null
+                json.decodeFromString(edgeSer, data) to ttlExpiration
             }
 
     private fun <T> jsonPair(ser: SerializationStrategy<T>, value: T): Pair<String, String> {
@@ -199,7 +208,7 @@ class YugabyteEphemeralStore<ID>(
         val originalTtlSeconds = op.ttl.inWholeSeconds
         var delayMs = 1_000L
         repeat(5) { attempt ->
-            delay(delayMs)
+            delay(delayMs.milliseconds)
             val elapsed = java.time.Duration.between(failedAt, java.time.Instant.now()).seconds
             val remainingTtl = (originalTtlSeconds - elapsed).toInt()
             if (remainingTtl <= 0) {
