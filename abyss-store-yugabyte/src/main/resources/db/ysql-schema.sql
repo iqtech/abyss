@@ -50,5 +50,5 @@ CREATE INDEX IF NOT EXISTS idx_edges_to_id ON abyss.edges (to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_type  ON abyss.edges (type);
 CREATE INDEX IF NOT EXISTS idx_edges_tags  ON abyss.edges USING GIN (tags);
 
-GRANT USAGE ON SCHEMA abyss TO abyss;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA abyss TO abyss;
+--GRANT USAGE ON SCHEMA abyss TO abyss;
+--GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA abyss TO abyss;

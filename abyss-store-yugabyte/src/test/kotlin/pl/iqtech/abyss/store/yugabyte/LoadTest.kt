@@ -12,7 +12,9 @@ import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.sql.DriverManager
 import java.sql.Types
 import kotlin.test.Test
@@ -21,7 +23,6 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
-import kotlin.uuid.toJavaUuid
 
 @Serializable
 @SerialName("yb_test_node")
@@ -31,7 +32,7 @@ data class YbTestNode(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val name: String
-) : NodeLike
+) : NodeLike<Uuid>
 
 @Serializable
 @SerialName("yb_test_edge")
@@ -42,7 +43,7 @@ data class YbTestEdge(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
-) : SchemaEdgeLike
+) : SchemaEdgeLike<Uuid>
 
 private val ybModule = SerializersModule {
     polymorphic(NodeLike::class) { subclass(YbTestNode::class) }
@@ -51,6 +52,7 @@ private val ybModule = SerializersModule {
 
 private val ybPersistentStore by lazy {
     YugabytePersistentStore.create(
+        adapter = UuidKeyAdapter,
         ysqlUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph",
         ysqlUser = "abyss",
         ysqlPassword = "abyss",
@@ -59,7 +61,7 @@ private val ybPersistentStore by lazy {
 }
 
 private val ybEphemeralStore by lazy {
-    YugabyteEphemeralStore.create(module = ybModule)
+    YugabyteEphemeralStore.create(adapter = UuidKeyAdapter, module = ybModule)
 }
 
 class LoadTest {
@@ -69,14 +71,14 @@ class LoadTest {
         insertYsqlNode(id, nodeJson(id, "ysql-node"))
 
         val result = runBlocking { ybPersistentStore.loadNode(id) }
-        assertIs<Either.Right<Pair<NodeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
         assertEquals("ysql-node", assertIs<YbTestNode>(result.value.first).name)
         assertEquals(null, result.value.second)
     }
 
     @Test fun `loadNode returns null for absent id`() {
         val result = runBlocking { ybPersistentStore.loadNode(Uuid.random()) }
-        assertIs<Either.Right<Pair<NodeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
         assertEquals(null, result.value.first)
     }
 
@@ -85,7 +87,7 @@ class LoadTest {
         insertYcqlNode(id, nodeJson(id, "ycql-node"))
 
         val result = runBlocking { ybEphemeralStore.loadNode(id) }
-        assertIs<Either.Right<Pair<NodeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
         assertEquals("ycql-node", assertIs<YbTestNode>(result.value.first).name)
     }
 
@@ -94,7 +96,7 @@ class LoadTest {
         assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(node, 3600.seconds) } })
 
         val result = runBlocking { ybEphemeralStore.loadNode(node.id) }
-        assertIs<Either.Right<Pair<NodeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
         assertEquals("ttl-node", assertIs<YbTestNode>(result.value.first).name)
         val remaining = result.value.second as? kotlin.time.Duration
         assertTrue(remaining != null && remaining > 0.seconds, "Expected positive remaining TTL, got $remaining")
@@ -106,14 +108,14 @@ class LoadTest {
         insertYsqlEdge(fromId, toId, edgeJson(fromId, toId, "ysql-edge"))
 
         val result = runBlocking { ybPersistentStore.loadEdge(fromId, toId, "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<SchemaEdgeLike<Uuid>?, *>>>(result)
         assertEquals("ysql-edge", assertIs<YbTestEdge>(result.value.first).label)
         assertEquals(null, result.value.second)
     }
 
     @Test fun `loadEdge returns null for absent key`() {
         val result = runBlocking { ybPersistentStore.loadEdge(Uuid.random(), Uuid.random(), "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<SchemaEdgeLike<Uuid>?, *>>>(result)
         assertEquals(null, result.value.first)
     }
 
@@ -165,7 +167,7 @@ class LoadTest {
         insertYcqlEdge(fromId, toId, edgeJson(fromId, toId, "ycql-edge"))
 
         val result = runBlocking { ybEphemeralStore.loadEdge(fromId, toId, "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike?, *>>>(result)
+        assertIs<Either.Right<Pair<SchemaEdgeLike<Uuid>?, *>>>(result)
         assertEquals("ycql-edge", assertIs<YbTestEdge>(result.value.first).label)
     }
 
@@ -235,7 +237,7 @@ private fun insertYsqlNode(id: Uuid, json: String) {
         conn.prepareStatement(
             "INSERT INTO abyss.nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, '{}', now(), now())"
         ).use { stmt ->
-            stmt.setObject(1, id.toJavaUuid())
+            stmt.setBytes(1, UuidKeyAdapter.toNodeId(id).bytes)
             stmt.setString(2, "yb_test_node")
             stmt.setObject(3, json, Types.OTHER)
             stmt.executeUpdate()
@@ -252,7 +254,7 @@ private fun insertYcqlNode(id: Uuid, json: String) {
             session.execute(
                 SimpleStatement.newInstance(
                     "INSERT INTO abyss_test_graph.ephemeral_nodes (id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    id.toJavaUuid(), "yb_test_node", json, emptyList<String>(), java.time.Instant.EPOCH, java.time.Instant.EPOCH,
+                    ByteBuffer.wrap(UuidKeyAdapter.toNodeId(id).bytes), "yb_test_node", json, emptyList<String>(), java.time.Instant.EPOCH, java.time.Instant.EPOCH,
                     java.time.Instant.now().plusSeconds(3600)
                 )
             )
@@ -264,8 +266,8 @@ private fun insertYsqlEdge(fromId: Uuid, toId: Uuid, json: String) {
         conn.prepareStatement(
             "INSERT INTO abyss.edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, '{}', now(), now())"
         ).use { stmt ->
-            stmt.setObject(1, fromId.toJavaUuid())
-            stmt.setObject(2, toId.toJavaUuid())
+            stmt.setBytes(1, UuidKeyAdapter.toNodeId(fromId).bytes)
+            stmt.setBytes(2, UuidKeyAdapter.toNodeId(toId).bytes)
             stmt.setString(3, "yb_test_edge")
             stmt.setObject(4, json, Types.OTHER)
             stmt.executeUpdate()
@@ -282,7 +284,7 @@ private fun insertYcqlEdge(fromId: Uuid, toId: Uuid, json: String) {
             session.execute(
                 SimpleStatement.newInstance(
                     "INSERT INTO abyss_test_graph.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    fromId.toJavaUuid(), toId.toJavaUuid(), "yb_test_edge", json, emptyList<String>(), java.time.Instant.EPOCH, java.time.Instant.EPOCH,
+                    ByteBuffer.wrap(UuidKeyAdapter.toNodeId(fromId).bytes), ByteBuffer.wrap(UuidKeyAdapter.toNodeId(toId).bytes), "yb_test_edge", json, emptyList<String>(), java.time.Instant.EPOCH, java.time.Instant.EPOCH,
                     java.time.Instant.now().plusSeconds(3600)
                 )
             )

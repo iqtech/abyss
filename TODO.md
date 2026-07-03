@@ -310,6 +310,17 @@
   `coroutineScope { frontier.map { async {...} } }.awaitAll()`, which runs once per hop
   regardless of ID type but whose per-task overhead could dominate at these small per-node costs.
 
+- **🔴 ~~3.7 Explore a single ID-describing bit in the NodeId header byte~~**
+  The 1-byte header from 1.15 (high nibble = `SchemaTagWidth.ordinal`, low nibble = `NodeKeyKind`)
+  has spare bits (low nibble only uses 0/1/2, so `0x04`/`0x08` are free). Explore claiming one bit that
+  self-describes something about the ID — the intended payoff being an ephemeral/persistent flag to
+  route reads and kill 3.2's dual query.
+  **No-go.** Routing an edge read needs ephemerality encoded in the edge's identity — i.e. in an
+  endpoint `NodeId`. But flipping a bit on `fromId` diverges it from the actual FROM-node's `NodeId`
+  (a non-ephemeral node has no such bit), changing its `partitionKey`/`toString`. The ephemeral edge
+  then lands on a different Hazelcast partition than its source node — breaking `PartitionAware`
+  co-location and endpoint integrity. Spare bits stay spare.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
