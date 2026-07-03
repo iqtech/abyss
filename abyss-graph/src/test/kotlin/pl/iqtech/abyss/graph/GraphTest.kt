@@ -14,8 +14,10 @@ import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
 import pl.iqtech.abyss.store.api.EdgeConstraint
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.edge
 import pl.iqtech.abyss.dsl.edgeExists
+import pl.iqtech.abyss.dsl.ensureSubgraph
 import pl.iqtech.abyss.dsl.inEdges
 import pl.iqtech.abyss.dsl.node
 import pl.iqtech.abyss.dsl.outEdges
@@ -510,6 +512,68 @@ class GraphTest {
 
             graphTestHz.getMap<Any, Any>("eph-s-nodes").clear()
             graphTestHz.getMap<Any, Any>("eph-s-edges").clear()
+        }
+    }
+
+    // ── ensureSubgraph (TODO 2.15) ──────────────────────────────────────────────
+
+    @Test fun `ensureSubgraph creates all missing nodes and edges of a path`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            val c = TestNode(id = Uuid.random(), name = "c")
+            val ab = TestEdge(fromId = a.id, toId = b.id, label = "ab")
+            val bc = TestEdge(fromId = b.id, toId = c.id, label = "bc")
+
+            val result = graphTest.ensureSubgraph(Path(listOf(a, b, c), listOf(ab, bc)))
+
+            assertIs<Either.Right<Unit>>(result)
+            assertIs<Either.Right<NodeLike<*>>>(graphTest.node(a.id))
+            assertIs<Either.Right<NodeLike<*>>>(graphTest.node(b.id))
+            assertIs<Either.Right<NodeLike<*>>>(graphTest.node(c.id))
+            assertEquals(Either.Right(true), graphTest.edgeExists<TestEdge>(a.id, b.id))
+            assertEquals(Either.Right(true), graphTest.edgeExists<TestEdge>(b.id, c.id))
+        }
+    }
+
+    @Test fun `ensureSubgraph is idempotent - no duplication on re-run`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            val ab = TestEdge(fromId = a.id, toId = b.id, label = "ab")
+            val path = Path(listOf(a, b), listOf(ab))
+
+            graphTest.ensureSubgraph(path)
+            val second = graphTest.ensureSubgraph(path)
+
+            assertIs<Either.Right<Unit>>(second)
+            assertEquals(1, graphTest.outEdges(a.id).toList().size)
+        }
+    }
+
+    @Test fun `ensureSubgraph leaves existing nodes untouched (create-if-missing)`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            graphTest.ensureSubgraph(Path(listOf(a), emptyList()))
+            graphTest.transaction { modifyNode(a.id) { (it as TestNode).copy(name = "mutated") } }
+
+            // Re-ensure with the original node payload — must not overwrite the mutated one.
+            graphTest.ensureSubgraph(Path(listOf(a), emptyList()))
+
+            val result = graphTest.node<TestNode>(a.id)
+            assertEquals("mutated", (result as Either.Right).value.name)
+        }
+    }
+
+    @Test fun `ensureSubgraph enforces integrity for an edge to an absent node`() {
+        runBlocking {
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val dangling = TestEdge(fromId = a.id, toId = Uuid.random(), label = "dangling")
+
+            val result = graphTest.ensureSubgraph(Path(listOf(a), listOf(dangling)))
+
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<AbyssError.IntegrityError>(result.value)
         }
     }
 

@@ -250,6 +250,11 @@
   `NodeId` (from the `EdgeKey`/`ReverseEdgeKey`) is needed to advance the frontier — the edge
   value fetch should be skipped in that case.
 
+- **✅ 2.15 `ensureSubgraph` — walk a Path array, creating missing nodes**
+  New graph method that guarantees a given subgraph exists. Takes a `Path` array (or similar
+  structure), walks each path, and creates any nodes (and edges along the way) that are missing,
+  leaving existing ones untouched. Effectively an idempotent upsert of a described subgraph.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

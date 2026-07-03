@@ -3,6 +3,7 @@ package pl.iqtech.abyss.dsl
 import arrow.core.Either
 import arrow.core.flatMap
 import arrow.core.left
+import arrow.core.raise.either
 import arrow.core.right
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filterIsInstance
@@ -134,6 +135,35 @@ inline fun <reified T : NodeLike<*>> Path.resolve(): List<T> = nodes.filterIsIns
 suspend fun <ID> TraversalBuilderLike<ID>.subgraph(): Subgraph = collectSubgraph()
 
 // AbyssEngineLike — graph algorithms
+
+private fun edgeType(e: RawEdgeLike<*, *>) = e::class.findAnnotation<SerialName>()!!.value
+
+// Idempotently ensure a described subgraph exists: walk the paths and create only the nodes/edges
+// not already present, leaving existing ones untouched (create-if-missing, not overwrite). Each
+// Path's edge[i] connects node[i]→node[i+1], so committing all missing pieces of a self-consistent
+// path in one transaction satisfies the integrity check. Single-schema only — cross-schema edges
+// live in the AbyssGraph container, not here.
+@Suppress("UNCHECKED_CAST")
+suspend fun <ID> AbyssEngineLike<ID>.ensureSubgraph(
+    vararg paths: Path,
+    checkIntegrity: Boolean = true,
+): Either<AbyssError, Unit> = either {
+    val nodes = paths.flatMap { it.nodes }.associateBy { it.id } as Map<ID, NodeLike<ID>>
+    val edges = paths.flatMap { it.edges }
+        .distinctBy { Triple(it.fromId, it.toId, edgeType(it)) } as List<SchemaEdgeLike<ID>>
+
+    // ponytail: read-before-write TOCTOU window; acceptable for an idempotent ensure —
+    // the store commit is the final arbiter. Tighten only if a concurrent-clobber bug shows up.
+    val missingNodes = buildList { for (n in nodes.values) if (!nodeExists(n.id).bind()) add(n) }
+    val missingEdges = buildList {
+        for (e in edges) if (!edgeExists(e.fromId, e.toId, edgeType(e)).bind()) add(e)
+    }
+
+    transaction(checkIntegrity) {
+        missingNodes.forEach { addNode(it) }
+        missingEdges.forEach { addEdge(it) }
+    }.bind()
+}
 
 suspend fun <ID> AbyssEngineLike<ID>.connectedComponents(): List<Set<ID>> {
     val remaining = allNodeIds().toList().toMutableSet()
