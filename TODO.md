@@ -119,7 +119,7 @@
   `@EdgeConstraint` for cross-edges, Compact field layout, cross-edge persistence, `UnknownEdge`
   schema-awareness). No production code changes land with the RFC itself.
 
-- **➡️ 1.15 Self-describing NodeId keys (1-byte header: tag-width + id-shape)**
+- **✅ 1.15 Self-describing NodeId keys (1-byte header: tag-width + id-shape)**
   Plan in `ai-scripts/SelfDescribingNodeKeyPlan.md`. Prepend one header byte to every `NodeId`
   (high nibble = `SchemaTagWidth.ordinal`, low nibble = `NodeKeyKind`) so keys decode standalone —
   no graph-global `tagWidth` and no tag→schema→adapter lookup to recover width/shape. Drops

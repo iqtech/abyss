@@ -59,6 +59,71 @@ fun NodeKeyEncoding.kind(): NodeKeyKind = when (this) {
     is NodeKeyEncoding.Tagged -> error("Tagged cannot nest")
 }
 
+fun NodeKeyKind.toShape(): KeyEncodingShape = when (this) {
+    NodeKeyKind.INT64 -> KeyEncodingShape.INT64
+    NodeKeyKind.STRING -> KeyEncodingShape.STRING
+    NodeKeyKind.INT64_PAIR -> KeyEncodingShape.INT64_PAIR
+}
+
+// Composes/parses the self-describing NodeId byte layout: a 1-byte header followed by an optional
+// big-endian schema tag and the raw inner id bytes.
+//
+//   [header:1][tag: width.bytes][rawId: variable]
+//     high nibble = SchemaTagWidth.ordinal   (NONE=0, BYTE=1, SHORT=2, INT=4-byte @ ordinal 3, ...)
+//     low  nibble = NodeKeyKind.id            (INT64=0, STRING=1, INT64_PAIR=2)
+//
+// Every key carries the header, tagged or not (NONE = zero tag bytes), so any NodeId decodes standalone
+// — read the header for width + inner shape, skip 1+width.bytes for the tag, decode the tail by kind.
+object NodeKey {
+    fun compose(width: SchemaTagWidth, kind: NodeKeyKind, tag: Long, rawId: ByteArray): NodeId {
+        val header = ((width.ordinal shl 4) or kind.id.toInt()).toByte()
+        val out = ByteArray(1 + width.bytes + rawId.size)
+        out[0] = header
+        for (i in 0 until width.bytes) out[1 + i] = (tag ushr (8 * (width.bytes - 1 - i))).toByte()
+        rawId.copyInto(out, 1 + width.bytes)
+        return NodeId(out)
+    }
+
+    fun width(nodeId: NodeId): SchemaTagWidth {
+        require(nodeId.bytes.isNotEmpty()) { "Empty NodeId has no header" }
+        val o = (nodeId.bytes[0].toInt() ushr 4) and 0x0F
+        require(o < SchemaTagWidth.entries.size) { "Bad tag-width nibble $o in $nodeId" }
+        return SchemaTagWidth.entries[o]
+    }
+
+    fun kind(nodeId: NodeId): NodeKeyKind {
+        require(nodeId.bytes.isNotEmpty()) { "Empty NodeId has no header" }
+        val k = (nodeId.bytes[0].toInt() and 0x0F).toByte()
+        return NodeKeyKind.entries.firstOrNull { it.id == k } ?: error("Bad kind nibble $k in $nodeId")
+    }
+
+    fun tag(nodeId: NodeId): Long {
+        val w = width(nodeId).bytes
+        require(nodeId.bytes.size >= 1 + w) { "NodeId too short for its header: $nodeId" }
+        var v = 0L
+        for (i in 0 until w) v = (v shl 8) or (nodeId.bytes[1 + i].toLong() and 0xFF)
+        return v
+    }
+
+    fun rawId(nodeId: NodeId): ByteArray =
+        nodeId.bytes.copyOfRange(1 + width(nodeId).bytes, nodeId.bytes.size)
+
+    // Registry-free bridges between raw id bytes and the Compact edge-key encoding: the kind alone
+    // fixes the byte layout, so the shared serializer needs no per-schema adapter to decode.
+    fun encoding(kind: NodeKeyKind, rawId: ByteArray): NodeKeyEncoding = when (kind) {
+        NodeKeyKind.INT64 -> NodeKeyEncoding.Int64(ByteBuffer.wrap(rawId).long)
+        NodeKeyKind.STRING -> NodeKeyEncoding.Str(String(rawId, Charsets.UTF_8))
+        NodeKeyKind.INT64_PAIR -> ByteBuffer.wrap(rawId).let { NodeKeyEncoding.Int64Pair(it.long, it.long) }
+    }
+
+    fun rawId(enc: NodeKeyEncoding): ByteArray = when (enc) {
+        is NodeKeyEncoding.Int64 -> ByteBuffer.allocate(8).putLong(enc.value).array()
+        is NodeKeyEncoding.Str -> enc.value.toByteArray(Charsets.UTF_8)
+        is NodeKeyEncoding.Int64Pair -> ByteBuffer.allocate(16).putLong(enc.hi).putLong(enc.lo).array()
+        is NodeKeyEncoding.Tagged -> error("Tagged has no raw id")
+    }
+}
+
 interface EdgeAdapter {
     fun partitionKey(nodeId: NodeId): Any
     val keyEncodingShape: KeyEncodingShape
@@ -66,69 +131,54 @@ interface EdgeAdapter {
     fun decodeKey(encoding: NodeKeyEncoding): NodeId
 }
 
+// A domain-id adapter. Implementations supply only the inner id shape ([nodeKeyKind]) and its raw byte
+// conversion; header composition (self-describing NodeId) and the Compact edge-key bridges are shared
+// defaults here — see [NodeKey]. Bare adapters stamp a NONE-width header (no tag); [SchemaKeyAdapter]
+// overrides to stamp its schema tag.
 interface KeyAdapter<ID> : EdgeAdapter {
-    fun toNodeId(id: ID): NodeId
-    fun fromNodeId(nodeId: NodeId): ID
+    val nodeKeyKind: NodeKeyKind
+    fun encodeIdBytes(id: ID): ByteArray
+    fun decodeIdBytes(bytes: ByteArray): ID
+
+    fun toNodeId(id: ID): NodeId = NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, 0L, encodeIdBytes(id))
+    fun fromNodeId(nodeId: NodeId): ID = decodeIdBytes(NodeKey.rawId(nodeId))
+
     override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
+    override val keyEncodingShape: KeyEncodingShape get() = nodeKeyKind.toShape()
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKey.encoding(nodeKeyKind, NodeKey.rawId(nodeId))
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId =
+        NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, 0L, NodeKey.rawId(encoding))
 }
 
 object UuidKeyAdapter : KeyAdapter<Uuid> {
-    override fun toNodeId(id: Uuid): NodeId {
+    override val nodeKeyKind = NodeKeyKind.INT64_PAIR
+    override fun encodeIdBytes(id: Uuid): ByteArray {
         val jid = id.toJavaUuid()
-        val bb = ByteBuffer.allocate(16)
-        bb.putLong(jid.mostSignificantBits)
-        bb.putLong(jid.leastSignificantBits)
-        return NodeId(bb.array())
+        return ByteBuffer.allocate(16).putLong(jid.mostSignificantBits).putLong(jid.leastSignificantBits).array()
     }
-    override fun fromNodeId(nodeId: NodeId): Uuid {
-        val bb = ByteBuffer.wrap(nodeId.bytes)
-        return java.util.UUID(bb.getLong(), bb.getLong()).toKotlinUuid()
-    }
+    override fun decodeIdBytes(bytes: ByteArray): Uuid =
+        ByteBuffer.wrap(bytes).let { java.util.UUID(it.long, it.long).toKotlinUuid() }
     override fun partitionKey(nodeId: NodeId): Any = fromNodeId(nodeId).toJavaUuid()
-
-    override val keyEncodingShape = KeyEncodingShape.INT64_PAIR
-    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding {
-        val bb = ByteBuffer.wrap(nodeId.bytes)
-        return NodeKeyEncoding.Int64Pair(bb.getLong(), bb.getLong())
-    }
-    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
-        require(encoding is NodeKeyEncoding.Int64Pair) { "UuidKeyAdapter expects Int64Pair, got $encoding" }
-        val bb = ByteBuffer.allocate(16)
-        bb.putLong(encoding.hi)
-        bb.putLong(encoding.lo)
-        return NodeId(bb.array())
-    }
 }
 
 object LongKeyAdapter : KeyAdapter<Long> {
-    override fun toNodeId(id: Long): NodeId = NodeId(ByteBuffer.allocate(8).also { it.putLong(id) }.array())
-    override fun fromNodeId(nodeId: NodeId): Long = ByteBuffer.wrap(nodeId.bytes).getLong()
+    override val nodeKeyKind = NodeKeyKind.INT64
+    override fun encodeIdBytes(id: Long): ByteArray = ByteBuffer.allocate(8).putLong(id).array()
+    override fun decodeIdBytes(bytes: ByteArray): Long = ByteBuffer.wrap(bytes).long
     override fun partitionKey(nodeId: NodeId): Any = fromNodeId(nodeId)
-
-    override val keyEncodingShape = KeyEncodingShape.INT64
-    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKeyEncoding.Int64(fromNodeId(nodeId))
-    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
-        require(encoding is NodeKeyEncoding.Int64) { "LongKeyAdapter expects Int64, got $encoding" }
-        return toNodeId(encoding.value)
-    }
 }
 
 object StringKeyAdapter : KeyAdapter<String> {
-    override fun toNodeId(id: String): NodeId = NodeId(id.toByteArray(Charsets.UTF_8))
-    override fun fromNodeId(nodeId: NodeId): String = String(nodeId.bytes, Charsets.UTF_8)
+    override val nodeKeyKind = NodeKeyKind.STRING
+    override fun encodeIdBytes(id: String): ByteArray = id.toByteArray(Charsets.UTF_8)
+    override fun decodeIdBytes(bytes: ByteArray): String = String(bytes, Charsets.UTF_8)
     override fun partitionKey(nodeId: NodeId): Any = fromNodeId(nodeId)
-
-    override val keyEncodingShape = KeyEncodingShape.STRING
-    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKeyEncoding.Str(fromNodeId(nodeId))
-    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
-        require(encoding is NodeKeyEncoding.Str) { "StringKeyAdapter expects Str, got $encoding" }
-        return toNodeId(encoding.value)
-    }
 }
 
-// Width of the schema-tag prefix a multi-schema graph stamps onto every NodeId. BYTE = 256 schemas.
-// NONE = single-schema degenerate case: zero-length prefix, NodeIds are untagged and byte-identical
-// to the inner adapter's, so a one-schema container costs nothing over a standalone AbyssGraphSchema.
+// Width of the schema tag a multi-schema graph stamps into each NodeId (after the 1-byte header).
+// BYTE = 256 schemas. NONE = single/standalone schema: no tag bytes (the header still rides on every
+// key, so a NONE key is [header][rawId] and still decodes standalone). Encoded in the header as an
+// ordinal, so 16-byte UUID tags fit the 4-bit nibble.
 enum class SchemaTagWidth(val bytes: Int) { NONE(0), BYTE(1), SHORT(2), INT(4), LONG(8), UUID(16) }
 
 // Adapter-independent edge-key encoding for multi-schema graphs. A single Hazelcast Compact
@@ -144,66 +194,48 @@ object UniformHexAdapter : EdgeAdapter {
     }
 }
 
-// Wraps an inner KeyAdapter, prefixing every NodeId with a big-endian schema tag (`width` bytes)
-// so schemas coexist in shared maps with globally-unique, self-describing keys. Edge-key encoding is
-// tag + the inner adapter's native shape (see NodeKeyEncoding.Tagged) — native predicates, no hex.
+// Wraps an inner KeyAdapter, stamping a big-endian schema tag (`width` bytes) into each NodeId's
+// header so schemas coexist in shared maps with globally-unique, self-describing keys. Edge-key
+// encoding is tag + the inner adapter's native shape (see NodeKeyEncoding.Tagged) — native
+// predicates, no hex.
 class SchemaKeyAdapter<ID>(
     val tag: Long,
     val width: SchemaTagWidth,
     val inner: KeyAdapter<ID>,
 ) : KeyAdapter<ID> {
-    private val prefix: ByteArray = tagPrefix(tag, width)
+    init { require(tag >= 0 && (width.bytes >= 8 || tag < (1L shl (width.bytes * 8)))) { "tag $tag does not fit in $width" } }
 
-    init { require(tag >= 0 && (width.bytes == 8 || tag < (1L shl (width.bytes * 8)))) { "tag $tag does not fit in $width" } }
+    override val nodeKeyKind = inner.nodeKeyKind
+    override fun encodeIdBytes(id: ID): ByteArray = inner.encodeIdBytes(id)
+    override fun decodeIdBytes(bytes: ByteArray): ID = inner.decodeIdBytes(bytes)
 
-    override fun toNodeId(id: ID): NodeId = NodeId(prefix + inner.toNodeId(id).bytes)
-    override fun fromNodeId(nodeId: NodeId): ID = inner.fromNodeId(stripTag(nodeId, width))
+    override fun toNodeId(id: ID): NodeId = NodeKey.compose(width, inner.nodeKeyKind, tag, inner.encodeIdBytes(id))
+    override fun fromNodeId(nodeId: NodeId): ID = inner.decodeIdBytes(NodeKey.rawId(nodeId))
 
     override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
     override val keyEncodingShape = KeyEncodingShape.TAGGED
     override fun encodeKey(nodeId: NodeId): NodeKeyEncoding =
-        NodeKeyEncoding.Tagged(tag, inner.encodeKey(stripTag(nodeId, width)))
+        NodeKeyEncoding.Tagged(NodeKey.tag(nodeId), NodeKey.encoding(inner.nodeKeyKind, NodeKey.rawId(nodeId)))
     override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
         require(encoding is NodeKeyEncoding.Tagged) { "SchemaKeyAdapter expects Tagged, got $encoding" }
-        return NodeId(prefix + inner.decodeKey(encoding.inner).bytes)
-    }
-
-    companion object {
-        // Reads the schema-tag prefix from a tagged NodeId without needing the inner adapter.
-        fun readTag(nodeId: NodeId, width: SchemaTagWidth): Long {
-            require(nodeId.bytes.size >= width.bytes) { "NodeId too short for $width tag" }
-            var v = 0L
-            for (i in 0 until width.bytes) v = (v shl 8) or (nodeId.bytes[i].toLong() and 0xFF)
-            return v
-        }
+        return NodeKey.compose(width, inner.nodeKeyKind, encoding.tag, NodeKey.rawId(encoding.inner))
     }
 }
 
-private fun tagPrefix(tag: Long, width: SchemaTagWidth): ByteArray =
-    ByteBuffer.allocate(8).putLong(tag).array().copyOfRange(8 - width.bytes, 8)
-
-private fun stripTag(nodeId: NodeId, width: SchemaTagWidth): NodeId =
-    NodeId(nodeId.bytes.copyOfRange(width.bytes, nodeId.bytes.size))
-
-// Edge-key adapter for a multi-schema container's SHARED serializer: it must decode edges from every
-// registered schema, so it holds the full tag -> inner-adapter registry. Built once by the caller
-// (before the HazelcastInstance starts) and passed to registerAbyssSerializers; the same tags must be
-// register()ed on the AbyssGraph. Per-schema predicates use each schema's SchemaKeyAdapter instead.
-class MultiSchemaAdapter(
-    val width: SchemaTagWidth,
-    private val registry: Map<Long, KeyAdapter<*>>,
-) : EdgeAdapter {
+// Edge-key adapter for a multi-schema container's SHARED serializer: it decodes edges from every
+// registered schema. Self-describing keys make it stateless bar the tag `width` (which the Compact
+// Tagged form doesn't carry, so it's needed to rebuild the NodeId prefix) — the inner shape comes
+// straight off the key/encoding kind, no per-schema adapter registry. Per-schema predicates still use
+// each schema's own SchemaKeyAdapter.
+class MultiSchemaAdapter(val width: SchemaTagWidth) : EdgeAdapter {
     init { require(width != SchemaTagWidth.NONE) { "MultiSchemaAdapter needs a tagged width" } }
-    private fun inner(tag: Long) = registry[tag] ?: error("No adapter registered for schema tag $tag")
 
     override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
     override val keyEncodingShape = KeyEncodingShape.TAGGED
-    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding {
-        val tag = SchemaKeyAdapter.readTag(nodeId, width)
-        return NodeKeyEncoding.Tagged(tag, inner(tag).encodeKey(stripTag(nodeId, width)))
-    }
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding =
+        NodeKeyEncoding.Tagged(NodeKey.tag(nodeId), NodeKey.encoding(NodeKey.kind(nodeId), NodeKey.rawId(nodeId)))
     override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
         require(encoding is NodeKeyEncoding.Tagged) { "MultiSchemaAdapter expects Tagged, got $encoding" }
-        return NodeId(tagPrefix(encoding.tag, width) + inner(encoding.tag).decodeKey(encoding.inner).bytes)
+        return NodeKey.compose(width, encoding.inner.kind(), encoding.tag, NodeKey.rawId(encoding.inner))
     }
 }

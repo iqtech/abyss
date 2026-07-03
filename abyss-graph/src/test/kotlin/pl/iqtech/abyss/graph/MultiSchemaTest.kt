@@ -15,6 +15,8 @@ import pl.iqtech.abyss.store.api.CrossEdgeLike
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.MultiSchemaAdapter
 import pl.iqtech.abyss.store.api.NodeId
+import pl.iqtech.abyss.store.api.NodeKey
+import pl.iqtech.abyss.store.api.NodeKeyKind
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -45,7 +47,7 @@ val multiSchemaHz by lazy {
     System.setProperty("hazelcast.logging.type", "none")
     Hazelcast.newHazelcastInstance(
         Config().setClusterName("graph-test-multi").registerAbyssSerializers(
-            MultiSchemaAdapter(SchemaTagWidth.BYTE, mapOf(LONG_TAG to LongKeyAdapter, UUID_TAG to UuidKeyAdapter, LONG_TAG_B to LongKeyAdapter)),
+            MultiSchemaAdapter(SchemaTagWidth.BYTE),
             graphTestModule
         )
     )
@@ -189,13 +191,23 @@ class MultiSchemaTest {
     }
 
     @Test fun demo() {
-        // Tag round-trips through the schema adapter, and the prefix reads back to its tag.
+        // Tag round-trips through the schema adapter, and the header reads back to its tag.
         val adapter = SchemaKeyAdapter(LONG_TAG, SchemaTagWidth.BYTE, LongKeyAdapter)
         val nid = adapter.toNodeId(7L)
         assert(adapter.fromNodeId(nid) == 7L)
-        assert(SchemaKeyAdapter.readTag(nid, SchemaTagWidth.BYTE) == LONG_TAG)
+        assert(NodeKey.tag(nid) == LONG_TAG)
         // Wider tag widths preserve the value too.
         val wide = SchemaKeyAdapter(300L, SchemaTagWidth.SHORT, LongKeyAdapter)
-        assert(SchemaKeyAdapter.readTag(wide.toNodeId(9L), SchemaTagWidth.SHORT) == 300L)
+        assert(NodeKey.tag(wide.toNodeId(9L)) == 300L)
+
+        // Self-decoding: recover (width, kind, tag, rawId) from the bytes alone — no adapter, no graph.
+        assert(NodeKey.width(nid) == SchemaTagWidth.BYTE)
+        assert(NodeKey.kind(nid) == NodeKeyKind.INT64)
+        assert(LongKeyAdapter.decodeIdBytes(NodeKey.rawId(nid)) == 7L)
+        // A bare (untagged) key still carries a NONE-width header and decodes standalone.
+        val bare = LongKeyAdapter.toNodeId(42L)
+        assert(NodeKey.width(bare) == SchemaTagWidth.NONE)
+        assert(NodeKey.kind(bare) == NodeKeyKind.INT64)
+        assert(LongKeyAdapter.fromNodeId(bare) == 42L)
     }
 }

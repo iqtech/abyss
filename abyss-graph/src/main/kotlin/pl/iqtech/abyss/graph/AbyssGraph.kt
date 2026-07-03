@@ -15,6 +15,7 @@ import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
+import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.RawEdgeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
@@ -90,7 +91,7 @@ class AbyssGraph(
     fun resolveSchema(nodeId: NodeId): AbyssGraphSchema<*> =
         if (tagWidth == SchemaTagWidth.NONE) fallback ?: error("No single schema registered")
         else {
-            val tag = SchemaKeyAdapter.readTag(nodeId, tagWidth)
+            val tag = NodeKey.tag(nodeId)
             schemas[tag] ?: error("No schema registered for tag $tag (from NodeId $nodeId)")
         }
 
@@ -138,7 +139,7 @@ class AbyssGraph(
     }
 
     private fun schemaTagOf(nid: NodeId): Long? =
-        if (nid.bytes.size >= tagWidth.bytes) SchemaKeyAdapter.readTag(nid, tagWidth) else null
+        if (nid.bytes.isNotEmpty() && NodeKey.width(nid) != SchemaTagWidth.NONE) NodeKey.tag(nid) else null
 
     private fun edgeType(edge: RawEdgeLike<*, *>): String =
         edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
