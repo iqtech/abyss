@@ -133,6 +133,19 @@
   no graph-global `tagWidth` and no tag→schema→adapter lookup to recover width/shape. Drops
   `MultiSchemaAdapter`'s registry; format break (pre-1.0, no migration).
 
+- **✅ 1.16 Untyped `AbyssSchemaWorker`; derive-don't-map container; single shared NodeId store**
+  Design in `ai-scripts/SchemaWorkerRFC.md`. Extracts the whole engine (reads, traversal,
+  transaction/ephemeral commit, cascade, cache population, schema enforcement) into an untyped
+  `AbyssSchemaWorker` operating on `NodeId`/`NodeLike<*>`/`SchemaEdgeLike<*>`; `AbyssGraphSchema<ID>`
+  collapses to a typed `ID⇄NodeId` facade over it. `SchemaDescriptor.of(nid)` derives
+  `(edgeAdapter, tagWidth, tag)` straight from the self-describing key, so `AbyssGraph` drops its
+  `schemas`/`fallback`/`resolveSchema` registry — routing is a pure function of the NodeId (the
+  container keeps only a `Set<Long>` of tags for duplicate/cross-edge guards). API change:
+  `schema<ID>(tag)`/`resolveSchema` removed — hold the facade `register`/`singleSchema` returns.
+  Stores unify: `AbyssStoreLike`/`AbyssEphemeralStoreLike` lose `<ID>` and key on `NodeId` (PK is
+  already BYTEA); scans return `StoredEdge` carrying both endpoint NodeIds so preload stays untyped.
+  One shared store per container. Covered by the existing suites + `schemaDescriptorDerivesFromKey…`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

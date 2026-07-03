@@ -247,6 +247,26 @@ class SchemaKeyAdapter<ID>(
     }
 }
 
+// Everything an untyped schema operation needs to touch the shared maps for a given NodeId —
+// derived straight from the self-describing key, never looked up in a registry. `edgeAdapter` is the
+// native canonical adapter for NONE-width keys and the stateless [MultiSchemaAdapter] for tagged keys;
+// both agree with the per-schema [SchemaKeyAdapter] on `partitionKey`/`encodeKey`, so keys built from a
+// derived descriptor match keys built by a typed schema.
+class SchemaDescriptor(
+    val edgeAdapter: EdgeAdapter,
+    val tagWidth: SchemaTagWidth,
+    val tag: Long,
+) {
+    companion object {
+        fun of(nid: NodeId): SchemaDescriptor {
+            val width = NodeKey.width(nid)
+            val edgeAdapter: EdgeAdapter =
+                if (width == SchemaTagWidth.NONE) NodeKey.kind(nid).adapter() else MultiSchemaAdapter(width)
+            return SchemaDescriptor(edgeAdapter, width, NodeKey.tag(nid))
+        }
+    }
+}
+
 // Edge-key adapter for a multi-schema container's SHARED serializer: it decodes edges from every
 // registered schema. Self-describing keys make it stateless bar the tag `width` (which the Compact
 // Tagged form doesn't carry, so it's needed to rebuild the NodeId prefix) — the inner shape comes

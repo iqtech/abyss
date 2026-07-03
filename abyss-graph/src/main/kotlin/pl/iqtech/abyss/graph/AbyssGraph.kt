@@ -3,13 +3,10 @@ package pl.iqtech.abyss.graph
 import arrow.core.Either
 import arrow.core.left
 import com.hazelcast.core.HazelcastInstance
-import com.hazelcast.map.IMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
-import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
@@ -23,88 +20,60 @@ import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.full.findAnnotation
 
 /**
- * Container hosting multiple [AbyssGraphSchema] views over a shared [HazelcastInstance], and the
- * NodeId-level engine that per-schema traversals run against so a walk can span schemas.
+ * Container hosting multiple typed [AbyssGraphSchema] views over one shared [AbyssSchemaWorker], and
+ * the NodeId-level engine that per-schema traversals run against so a walk can span schemas.
  *
- * Each registered schema wraps its domain [KeyAdapter] in a [SchemaKeyAdapter] that stamps a
- * `tagWidth`-byte schema tag onto every [NodeId]. All schemas share one nodes/edges map — the tag
- * prefix keeps keys globally unique and self-describing, so [resolveSchema] routes any NodeId back to
- * its schema by reading the prefix, and [nodeAt]/[outAt]/[inAt] delegate to it.
+ * There is no tag→schema registry: every [NodeId] self-describes (tag width + kind + tag), so the
+ * worker derives what it needs per key and routing is a pure function of the NodeId. [register] hands
+ * back a typed facade the caller holds; the container keeps only the set of registered tags for
+ * duplicate-registration and cross-edge integrity guards.
  *
  * Cross-schema edges live in the SAME shared edges/reverse maps as intra-schema edges (their tagged
  * endpoints self-describe: `fromTag != toTag`), so `outgoing<E>()`/`incoming<E>()` reach them as
  * ordinary hops. They are gated by [allowCrossSchemaEdges] and are cache-only in this version.
  */
 class AbyssGraph(
-    private val hazelcast: HazelcastInstance,
+    hazelcast: HazelcastInstance,
     val tagWidth: SchemaTagWidth = SchemaTagWidth.BYTE,
-    private val nodesMapName: String = "abyss-nodes",
-    private val edgesMapName: String = "abyss-edges",
+    nodesMapName: String = "abyss-nodes",
+    edgesMapName: String = "abyss-edges",
     private val allowCrossSchemaEdges: Boolean = false,
+    persistentStore: AbyssStoreLike? = null,
+    ephemeralStore: AbyssEphemeralStoreLike? = null,
+    asyncCachePopulation: Boolean = false,
 ) : NodeIdEngine {
-    private val schemas = mutableMapOf<Long, AbyssGraphSchema<*>>()
 
-    // Populated only when tagWidth == NONE: the single, untagged schema this container fronts.
-    private var fallback: AbyssGraphSchema<*>? = null
+    private val worker = AbyssSchemaWorker(hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation)
 
-    private val nodesMap: IMap<NodeId, Any> by lazy { hazelcast.getMap(nodesMapName) }
-    private val edgesMap: IMap<EdgeKey, Any> by lazy { hazelcast.getMap(edgesMapName) }
-    private val reverseMap: IMap<ReverseEdgeKey, Unit> by lazy { hazelcast.getMap("$edgesMapName-reverse") }
+    private val registeredTags = mutableSetOf<Long>()
+    private var singleSchemaSet = false
 
-    fun <ID> register(
-        tag: Long,
-        adapter: KeyAdapter<ID>,
-        persistentStore: AbyssStoreLike<ID>? = null,
-        ephemeralStore: AbyssEphemeralStoreLike<ID>? = null,
-        asyncCachePopulation: Boolean = false,
-    ): AbyssGraphSchema<ID> {
+    fun <ID> register(tag: Long, adapter: KeyAdapter<ID>): AbyssGraphSchema<ID> {
         require(tagWidth != SchemaTagWidth.NONE) { "register requires a tagged width; use singleSchema() for NONE" }
-        require(tag !in schemas) { "Schema tag $tag already registered" }
+        require(registeredTags.add(tag)) { "Schema tag $tag already registered" }
         val tagged = SchemaKeyAdapter(tag, tagWidth, adapter)
-        return AbyssGraphSchema(tagged, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation)
-            .also { it.traversalEngine = this; schemas[tag] = it }
+        return AbyssGraphSchema(tagged, worker).also { it.traversalEngine = this }
     }
 
     /**
      * Single-schema entry point ([tagWidth] must be [SchemaTagWidth.NONE]). Holds the caller's raw
-     * [adapter] directly — no [SchemaKeyAdapter] wrapping — so edge-key Compact serialization uses
-     * the adapter's native shape (Int32/Int64/Uuid/Str), never the hex fallback. NodeIds are untagged
-     * and byte-identical to a standalone `AbyssGraphSchema(adapter, …)`.
+     * [adapter] directly — no [SchemaKeyAdapter] wrapping — so edge-key Compact serialization uses the
+     * adapter's native shape. NodeIds are untagged and byte-identical to a standalone `AbyssGraphSchema`.
      */
-    fun <ID> singleSchema(
-        adapter: KeyAdapter<ID>,
-        persistentStore: AbyssStoreLike<ID>? = null,
-        ephemeralStore: AbyssEphemeralStoreLike<ID>? = null,
-        asyncCachePopulation: Boolean = false,
-    ): AbyssGraphSchema<ID> {
+    fun <ID> singleSchema(adapter: KeyAdapter<ID>): AbyssGraphSchema<ID> {
         require(tagWidth == SchemaTagWidth.NONE) { "singleSchema requires SchemaTagWidth.NONE, got $tagWidth" }
-        require(fallback == null) { "singleSchema already set" }
-        return AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation)
-            .also { it.traversalEngine = this; fallback = it }
+        require(!singleSchemaSet) { "singleSchema already set" }
+        singleSchemaSet = true
+        return AbyssGraphSchema(adapter, worker).also { it.traversalEngine = this }
     }
 
-    @Suppress("UNCHECKED_CAST")
-    fun <ID> schema(tag: Long): AbyssGraphSchema<ID> =
-        (schemas[tag] ?: error("No schema registered for tag $tag")) as AbyssGraphSchema<ID>
+    // --- NodeIdEngine: the shared worker self-resolves each NodeId (cross-schema edges share the maps) -
 
-    /** Routes a tagged NodeId back to its owning schema by reading the tag prefix. */
-    fun resolveSchema(nodeId: NodeId): AbyssGraphSchema<*> =
-        if (tagWidth == SchemaTagWidth.NONE) fallback ?: error("No single schema registered")
-        else {
-            val tag = NodeKey.tag(nodeId)
-            schemas[tag] ?: error("No schema registered for tag $tag (from NodeId $nodeId)")
-        }
-
-    // --- NodeIdEngine: route each NodeId to its schema (cross-schema edges share the same maps) -----
-
-    override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = resolveSchema(nid).nodeAt(nid)
-    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = resolveSchema(nid).outAt(nid, type, needValue)
-    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = resolveSchema(nid).inAt(nid, type, needValue)
-    // Any schema owning one of the hops' endpoints resolves the whole batch: the edges map is one
-    // shared instance and edgeKey's partition key is schema-agnostic (SchemaKeyAdapter.partitionKey).
-    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> =
-        if (hops.isEmpty()) emptyMap() else resolveSchema(hops.first().fromId).resolveEdges(hops)
-    override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
+    override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = worker.nodeAt(nid)
+    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = worker.outAt(nid, type, needValue)
+    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = worker.inAt(nid, type, needValue)
+    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = worker.resolveEdges(hops)
+    override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()
 
     // --- Cross-schema edges (NodeId-level, cache-only, in the shared edge/reverse maps) -------------
 
@@ -114,31 +83,25 @@ class AbyssGraph(
         val type = try { edgeType(edge) } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
         if (checkIntegrity) integrityError(edge, type)?.let { return it.left() }
         return Either.catch {
-            withContext(Dispatchers.IO) {
-                edgesMap.set(EdgeKey(edge.fromId, edge.toId, type, edge.fromId.toString()), edge)
-                reverseMap.set(ReverseEdgeKey(edge.toId, edge.fromId, type, edge.toId.toString()), Unit)
-            }
+            withContext(Dispatchers.IO) { worker.putCrossEdge(edge, type) }
         }.mapLeft { AbyssError.Unexpected(it) }
     }
 
     suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> =
         Either.catch {
-            withContext(Dispatchers.IO) {
-                edgesMap.remove(EdgeKey(fromId, toId, type, fromId.toString()))
-                reverseMap.remove(ReverseEdgeKey(toId, fromId, type, toId.toString()))
-            }
+            withContext(Dispatchers.IO) { worker.removeCrossEdge(fromId, toId, type) }
             Unit
         }.mapLeft { AbyssError.Unexpected(it) }
 
     private fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
         val fromTag = schemaTagOf(edge.fromId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: fromId ${edge.fromId} has no valid schema tag")
-        if (fromTag !in schemas) return AbyssError.IntegrityError("Cross-edge $type: fromId schema tag $fromTag not registered")
+        if (fromTag !in registeredTags) return AbyssError.IntegrityError("Cross-edge $type: fromId schema tag $fromTag not registered")
         val toTag = schemaTagOf(edge.toId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: toId ${edge.toId} has no valid schema tag")
-        if (toTag !in schemas) return AbyssError.IntegrityError("Cross-edge $type: toId schema tag $toTag not registered")
-        if (!nodesMap.containsKey(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
-        if (!nodesMap.containsKey(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
+        if (toTag !in registeredTags) return AbyssError.IntegrityError("Cross-edge $type: toId schema tag $toTag not registered")
+        if (!worker.containsNodeInCache(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
+        if (!worker.containsNodeInCache(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
         return null
     }
 

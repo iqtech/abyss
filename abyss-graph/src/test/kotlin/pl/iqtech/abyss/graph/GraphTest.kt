@@ -29,6 +29,7 @@ import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
+import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.LongKeyAdapter
@@ -687,37 +688,39 @@ class GraphTest {
     }
 }
 
-private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike<Uuid> {
+// Fakes speak the untyped NodeId-keyed store API; they convert via UuidKeyAdapter so the tests can
+// still assert against domain Uuids and construct domain edges.
+private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
 
-    override suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike<Uuid>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<SchemaEdgeLike<Uuid>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> = Either.Right(null to null)
 
-    override suspend fun transaction(block: suspend AbyssStoreTransactionLike<Uuid>.() -> Unit): Either<AbyssError, Unit> {
+    override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         if (failTx) return AbyssError.Unexpected(RuntimeException("store down")).left()
-        val tx = object : AbyssStoreTransactionLike<Uuid> {
-            override fun saveNode(node: NodeLike<Uuid>) { saveNodeCalls += node.id }
-            override fun saveEdge(edge: SchemaEdgeLike<Uuid>) {}
-            override fun deleteNode(id: Uuid) { saveNodeCalls -= id }
-            override fun deleteEdge(fromId: Uuid, toId: Uuid, type: String) {}
+        val tx = object : AbyssStoreTransactionLike {
+            override fun saveNode(id: NodeId, node: NodeLike<*>) { saveNodeCalls += UuidKeyAdapter.fromNodeId(id) }
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: SchemaEdgeLike<*>) {}
+            override fun deleteNode(id: NodeId) { saveNodeCalls -= UuidKeyAdapter.fromNodeId(id) }
+            override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
         tx.block()
         return Unit.right()
     }
 }
 
-private class FakeEphemeralStore : AbyssEphemeralStoreLike<Uuid> {
+private class FakeEphemeralStore : AbyssEphemeralStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
 
-    override suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike<Uuid>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<SchemaEdgeLike<Uuid>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> = Either.Right(null to null)
 
-    override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike<Uuid>.() -> Unit): Either<AbyssError, Unit> {
-        val tx = object : AbyssEphemeralStoreTransactionLike<Uuid> {
-            override fun saveNode(node: NodeLike<Uuid>, ttl: Duration) { saveNodeCalls += node.id }
-            override fun saveEdge(edge: SchemaEdgeLike<Uuid>, ttl: Duration) {}
-            override fun deleteNode(id: Uuid) { saveNodeCalls -= id }
-            override fun deleteEdge(fromId: Uuid, toId: Uuid, type: String) {}
+    override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+        val tx = object : AbyssEphemeralStoreTransactionLike {
+            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { saveNodeCalls += UuidKeyAdapter.fromNodeId(id) }
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: SchemaEdgeLike<*>, ttl: Duration) {}
+            override fun deleteNode(id: NodeId) { saveNodeCalls -= UuidKeyAdapter.fromNodeId(id) }
+            override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
         tx.block()
         return Unit.right()
@@ -727,12 +730,14 @@ private class FakeEphemeralStore : AbyssEphemeralStoreLike<Uuid> {
 private class WarmingFakeStore(
     private val outEdges: List<SchemaEdgeLike<Uuid>> = emptyList(),
     private val inEdges: List<SchemaEdgeLike<Uuid>> = emptyList(),
-) : AbyssStoreLike<Uuid> {
-    override suspend fun loadNode(id: Uuid): Either<AbyssError, Pair<NodeLike<Uuid>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: Uuid, toId: Uuid, type: String): Either<AbyssError, Pair<SchemaEdgeLike<Uuid>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdges(fromId: Uuid): Either<AbyssError, List<Pair<SchemaEdgeLike<Uuid>, Duration?>>> = Either.Right(outEdges.filter { it.fromId == fromId }.map { it to null })
-    override suspend fun loadInEdges(toId: Uuid): Either<AbyssError, List<Pair<SchemaEdgeLike<Uuid>, Duration?>>> = Either.Right(inEdges.filter { it.toId == toId }.map { it to null })
-    override suspend fun transaction(block: suspend AbyssStoreTransactionLike<Uuid>.() -> Unit): Either<AbyssError, Unit> = Unit.right()
+) : AbyssStoreLike {
+    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
+        Either.Right(outEdges.filter { UuidKeyAdapter.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, UuidKeyAdapter.toNodeId(it.toId), it, null) })
+    override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =
+        Either.Right(inEdges.filter { UuidKeyAdapter.toNodeId(it.toId) == toId }.map { StoredEdge(UuidKeyAdapter.toNodeId(it.fromId), toId, it, null) })
+    override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Unit.right()
 }
 
 private fun AbyssError.left(): Either<AbyssError, Nothing> = Either.Left(this)

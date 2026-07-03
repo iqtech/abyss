@@ -19,6 +19,7 @@ import pl.iqtech.abyss.store.api.MultiSchemaAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeKeyKind
+import pl.iqtech.abyss.store.api.SchemaDescriptor
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -57,11 +58,13 @@ val multiSchemaHz by lazy {
 
 class MultiSchemaTest {
 
-    private fun newContainer(allowCross: Boolean = false) =
-        AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", allowCrossSchemaEdges = allowCross).also {
-            it.register(LONG_TAG, LongKeyAdapter)
-            it.register(UUID_TAG, UuidKeyAdapter)
-        }
+    // No tag→schema registry any more: the caller holds the typed facade `register` hands back.
+    private class Ctr(val g: AbyssGraph, val longS: AbyssGraphSchema<Long>, val uuidS: AbyssGraphSchema<Uuid>)
+
+    private fun newContainer(allowCross: Boolean = false): Ctr {
+        val g = AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", allowCrossSchemaEdges = allowCross)
+        return Ctr(g, g.register(LONG_TAG, LongKeyAdapter), g.register(UUID_TAG, UuidKeyAdapter))
+    }
 
     private fun longNodeId(id: Long) = SchemaKeyAdapter(LONG_TAG, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(id)
     private fun uuidNodeId(id: Uuid) = SchemaKeyAdapter(UUID_TAG, SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(id)
@@ -72,9 +75,7 @@ class MultiSchemaTest {
     }
 
     @Test fun twoSchemasCoexistInSharedMaps() = runBlocking {
-        val g = newContainer()
-        val longS = g.schema<Long>(LONG_TAG)
-        val uuidS = g.schema<Uuid>(UUID_TAG)
+        val (longS, uuidS) = newContainer().let { it.longS to it.uuidS }
         val u1 = Uuid.random()
 
         longS.transaction { addNode(LongTestNode(1L, name = "long-one")) }
@@ -88,9 +89,7 @@ class MultiSchemaTest {
     }
 
     @Test fun intraSchemaEdgesStayScoped() = runBlocking {
-        val g = newContainer()
-        val longS = g.schema<Long>(LONG_TAG)
-        val uuidS = g.schema<Uuid>(UUID_TAG)
+        val (longS, uuidS) = newContainer().let { it.longS to it.uuidS }
         val ua = Uuid.random(); val ub = Uuid.random()
 
         longS.transaction {
@@ -110,18 +109,25 @@ class MultiSchemaTest {
         assertEquals(ub, uuidOut.single().toId)
     }
 
-    @Test fun resolveSchemaRoutesByTagPrefix() {
-        val g = newContainer()
-        val longNid = SchemaKeyAdapter(LONG_TAG, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(42L)
-        val uuidNid = SchemaKeyAdapter(UUID_TAG, SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(Uuid.random())
-        assertTrue(g.resolveSchema(longNid) === g.schema<Long>(LONG_TAG))
-        assertTrue(g.resolveSchema(uuidNid) === g.schema<Uuid>(UUID_TAG))
+    @Test fun resolveSchemaRoutesByTagPrefix() = runBlocking {
+        val c = newContainer()
+        val u = Uuid.random()
+        c.longS.transaction { addNode(LongTestNode(42L, name = "L")) }
+        c.uuidS.transaction { addNode(TestNode(u, name = "U")) }
+        val longNid = longNodeId(42L)
+        val uuidNid = uuidNodeId(u)
+
+        // No registry: the container routes each self-describing NodeId to the right schema's data,
+        // and SchemaDescriptor recovers the routing (tag) from the key bytes alone.
+        assertEquals("L", (c.g.nodeAt(longNid) as LongTestNode).name)
+        assertEquals("U", (c.g.nodeAt(uuidNid) as TestNode).name)
+        assertEquals(LONG_TAG, SchemaDescriptor.of(longNid).tag)
+        assertEquals(UUID_TAG, SchemaDescriptor.of(uuidNid).tag)
     }
 
     @Test fun crossEdgeReachableAsOrdinaryHopAcrossSchemas() = runBlocking {
-        val g = newContainer(allowCross = true)
-        val longS = g.schema<Long>(LONG_TAG)
-        val uuidS = g.schema<Uuid>(UUID_TAG)
+        val c = newContainer(allowCross = true)
+        val g = c.g; val longS = c.longS; val uuidS = c.uuidS
         val u = Uuid.random()
 
         longS.transaction { addNode(LongTestNode(1L)) }
@@ -141,9 +147,8 @@ class MultiSchemaTest {
     }
 
     @Test fun intraThenCrossHopInOneExpression() = runBlocking {
-        val g = newContainer(allowCross = true)
-        val longS = g.schema<Long>(LONG_TAG)
-        val uuidS = g.schema<Uuid>(UUID_TAG)
+        val c = newContainer(allowCross = true)
+        val g = c.g; val longS = c.longS; val uuidS = c.uuidS
         val a = Uuid.random(); val b = Uuid.random()
 
         uuidS.transaction { addNode(TestNode(a, name = "a")); addNode(TestNode(b, name = "b")); addEdge(TestEdge(a, b, label = "x")) }
@@ -158,31 +163,28 @@ class MultiSchemaTest {
     }
 
     @Test fun integrityRejectsMissingEndpoint() = runBlocking {
-        val g = newContainer(allowCross = true)
-        g.schema<Long>(LONG_TAG).transaction { addNode(LongTestNode(1L)) }
+        val c = newContainer(allowCross = true)
+        c.longS.transaction { addNode(LongTestNode(1L)) }
         // toId points at a Uuid node that was never created.
-        val result = g.addCrossEdge(CrossRefEdge(longNodeId(1L), uuidNodeId(Uuid.random())))
+        val result = c.g.addCrossEdge(CrossRefEdge(longNodeId(1L), uuidNodeId(Uuid.random())))
         assertTrue(result.isLeft())
     }
 
     @Test fun crossEdgesDisabledByDefault() = runBlocking {
-        val g = newContainer() // allowCrossSchemaEdges = false
-        g.schema<Long>(LONG_TAG).transaction { addNode(LongTestNode(1L)) }
-        g.schema<Uuid>(UUID_TAG).transaction { addNode(TestNode(Uuid.random(), name = "t")) }
-        val result = g.addCrossEdge(CrossRefEdge(longNodeId(1L), uuidNodeId(Uuid.random())))
+        val c = newContainer() // allowCrossSchemaEdges = false
+        c.longS.transaction { addNode(LongTestNode(1L)) }
+        c.uuidS.transaction { addNode(TestNode(Uuid.random(), name = "t")) }
+        val result = c.g.addCrossEdge(CrossRefEdge(longNodeId(1L), uuidNodeId(Uuid.random())))
         assertTrue(result.isLeft())
         // No cross edge was created, so a cross hop yields nothing.
-        val reached = g.schema<Long>(LONG_TAG).from(1L) { outgoing<CrossRefEdge>(); collectNodes<TestNode>().toList() }.getOrNull()!!
+        val reached = c.longS.from(1L) { outgoing<CrossRefEdge>(); collectNodes<TestNode>().toList() }.getOrNull()!!
         assertEquals(emptyList(), reached)
     }
 
     @Test fun twoLongSchemasDisambiguateByTag() = runBlocking {
-        val g = AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges").also {
-            it.register(LONG_TAG, LongKeyAdapter)
-            it.register(LONG_TAG_B, LongKeyAdapter)
-        }
-        val a = g.schema<Long>(LONG_TAG)
-        val b = g.schema<Long>(LONG_TAG_B)
+        val g = AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges")
+        val a = g.register(LONG_TAG, LongKeyAdapter)
+        val b = g.register(LONG_TAG_B, LongKeyAdapter)
         // Identical numeric ids in both schemas — only the schema tag distinguishes their edge keys.
         a.transaction { addNode(LongTestNode(1L)); addNode(LongTestNode(2L)); addEdge(LongTestEdge(1L, 2L)) }
         b.transaction { addNode(LongTestNode(1L)); addNode(LongTestNode(9L)); addEdge(LongTestEdge(1L, 9L)) }
@@ -211,6 +213,22 @@ class MultiSchemaTest {
         assert(NodeKey.width(bare) == SchemaTagWidth.NONE)
         assert(NodeKey.kind(bare) == NodeKeyKind.INT64)
         assert(LongKeyAdapter.fromNodeId(bare) == 42L)
+    }
+
+    @Test fun schemaDescriptorDerivesFromKeyWithoutRegistry() {
+        // Tagged key: width + tag recovered from the bytes; edgeAdapter is the stateless multi-schema one.
+        val tagged = SchemaKeyAdapter(LONG_TAG, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(7L)
+        val dTagged = SchemaDescriptor.of(tagged)
+        assertEquals(SchemaTagWidth.BYTE, dTagged.tagWidth)
+        assertEquals(LONG_TAG, dTagged.tag)
+        assertTrue(dTagged.edgeAdapter is MultiSchemaAdapter)
+
+        // NONE-width native key: tag 0, canonical native adapter (not the multi-schema one).
+        val bare = LongKeyAdapter.toNodeId(42L)
+        val dBare = SchemaDescriptor.of(bare)
+        assertEquals(SchemaTagWidth.NONE, dBare.tagWidth)
+        assertEquals(0L, dBare.tag)
+        assertTrue(dBare.edgeAdapter === LongKeyAdapter)
     }
 
     @Test fun kindToAdapterIsTotalAndSelfConsistent() {

@@ -11,6 +11,7 @@ import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
+import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import java.net.InetSocketAddress
@@ -52,7 +53,6 @@ private val ybModule = SerializersModule {
 
 private val ybPersistentStore by lazy {
     YugabytePersistentStore.create(
-        adapter = UuidKeyAdapter,
         ysqlUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph",
         ysqlUser = "abyss",
         ysqlPassword = "abyss",
@@ -61,8 +61,11 @@ private val ybPersistentStore by lazy {
 }
 
 private val ybEphemeralStore by lazy {
-    YugabyteEphemeralStore.create(adapter = UuidKeyAdapter, module = ybModule)
+    YugabyteEphemeralStore.create(module = ybModule)
 }
+
+// Stores are NodeId-keyed now; tests convert their domain Uuids at the boundary.
+private fun nid(u: Uuid): NodeId = UuidKeyAdapter.toNodeId(u)
 
 class LoadTest {
 
@@ -70,15 +73,15 @@ class LoadTest {
         val id = Uuid.random()
         insertYsqlNode(id, nodeJson(id, "ysql-node"))
 
-        val result = runBlocking { ybPersistentStore.loadNode(id) }
-        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybPersistentStore.loadNode(nid(id)) }
+        assertIs<Either.Right<Pair<NodeLike<*>?, *>>>(result)
         assertEquals("ysql-node", assertIs<YbTestNode>(result.value.first).name)
         assertEquals(null, result.value.second)
     }
 
     @Test fun `loadNode returns null for absent id`() {
-        val result = runBlocking { ybPersistentStore.loadNode(Uuid.random()) }
-        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybPersistentStore.loadNode(nid(Uuid.random())) }
+        assertIs<Either.Right<Pair<NodeLike<*>?, *>>>(result)
         assertEquals(null, result.value.first)
     }
 
@@ -86,17 +89,17 @@ class LoadTest {
         val id = Uuid.random()
         insertYcqlNode(id, nodeJson(id, "ycql-node"))
 
-        val result = runBlocking { ybEphemeralStore.loadNode(id) }
-        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybEphemeralStore.loadNode(nid(id)) }
+        assertIs<Either.Right<Pair<NodeLike<*>?, *>>>(result)
         assertEquals("ycql-node", assertIs<YbTestNode>(result.value.first).name)
     }
 
     @Test fun `loadNode from ycql returns positive remaining TTL`() {
         val node = YbTestNode(id = Uuid.random(), name = "ttl-node")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(node, 3600.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds) } })
 
-        val result = runBlocking { ybEphemeralStore.loadNode(node.id) }
-        assertIs<Either.Right<Pair<NodeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
+        assertIs<Either.Right<Pair<NodeLike<*>?, *>>>(result)
         assertEquals("ttl-node", assertIs<YbTestNode>(result.value.first).name)
         val remaining = result.value.second as? kotlin.time.Duration
         assertTrue(remaining != null && remaining > 0.seconds, "Expected positive remaining TTL, got $remaining")
@@ -107,57 +110,57 @@ class LoadTest {
         val toId = Uuid.random()
         insertYsqlEdge(fromId, toId, edgeJson(fromId, toId, "ysql-edge"))
 
-        val result = runBlocking { ybPersistentStore.loadEdge(fromId, toId, "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybPersistentStore.loadEdge(nid(fromId), nid(toId), "yb_test_edge") }
+        assertIs<Either.Right<Pair<SchemaEdgeLike<*>?, *>>>(result)
         assertEquals("ysql-edge", assertIs<YbTestEdge>(result.value.first).label)
         assertEquals(null, result.value.second)
     }
 
     @Test fun `loadEdge returns null for absent key`() {
-        val result = runBlocking { ybPersistentStore.loadEdge(Uuid.random(), Uuid.random(), "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybPersistentStore.loadEdge(nid(Uuid.random()), nid(Uuid.random()), "yb_test_edge") }
+        assertIs<Either.Right<Pair<SchemaEdgeLike<*>?, *>>>(result)
         assertEquals(null, result.value.first)
     }
 
     @Test fun `transaction saveNode persists to ysql`() {
         val node = YbTestNode(id = Uuid.random(), name = "tx-ysql-node")
-        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveNode(node) } })
-        val loaded = runBlocking { ybPersistentStore.loadNode(node.id) }
+        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node) } })
+        val loaded = runBlocking { ybPersistentStore.loadNode(nid(node.id)) }
         assertEquals("tx-ysql-node", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
     }
 
     @Test fun `transaction saveNode with ttl persists to ycql`() {
         val node = YbTestNode(id = Uuid.random(), name = "tx-ycql-node")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(node, 3600.seconds) } })
-        val loaded = runBlocking { ybEphemeralStore.loadNode(node.id) }
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds) } })
+        val loaded = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
         assertEquals("tx-ycql-node", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
     }
 
     @Test fun `transaction saveEdge persists to ysql`() {
         val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tx-ysql-edge")
-        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveEdge(edge) } })
-        val loaded = runBlocking { ybPersistentStore.loadEdge(edge.fromId, edge.toId, "yb_test_edge") }
+        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge) } })
+        val loaded = runBlocking { ybPersistentStore.loadEdge(nid(edge.fromId), nid(edge.toId), "yb_test_edge") }
         assertEquals("tx-ysql-edge", assertIs<YbTestEdge>((loaded as Either.Right).value.first).label)
     }
 
     @Test fun `ephemeral node with ttl is readable before expiry and gone after`() {
         val node = YbTestNode(id = Uuid.random(), name = "ephemeral")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(node, 5.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 5.seconds) } })
 
         Thread.sleep(1_000)
-        val before = runBlocking { ybEphemeralStore.loadNode(node.id) }
+        val before = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
         assertEquals("ephemeral", assertIs<YbTestNode>((before as Either.Right).value.first).name)
 
         Thread.sleep(5_000)
-        val after = runBlocking { ybEphemeralStore.loadNode(node.id) }
+        val after = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
         assertEquals(null, (after as Either.Right).value.first)
     }
 
     @Test fun `transaction deleteNode removes from ysql`() {
         val node = YbTestNode(id = Uuid.random(), name = "to-delete")
-        runBlocking { ybPersistentStore.transaction { saveNode(node) } }
-        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { deleteNode(node.id) } })
-        val loaded = runBlocking { ybPersistentStore.loadNode(node.id) }
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node) } }
+        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { deleteNode(nid(node.id)) } })
+        val loaded = runBlocking { ybPersistentStore.loadNode(nid(node.id)) }
         assertEquals(null, (loaded as Either.Right).value.first)
     }
 
@@ -166,8 +169,8 @@ class LoadTest {
         val toId = Uuid.random()
         insertYcqlEdge(fromId, toId, edgeJson(fromId, toId, "ycql-edge"))
 
-        val result = runBlocking { ybEphemeralStore.loadEdge(fromId, toId, "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike<Uuid>?, *>>>(result)
+        val result = runBlocking { ybEphemeralStore.loadEdge(nid(fromId), nid(toId), "yb_test_edge") }
+        assertIs<Either.Right<Pair<SchemaEdgeLike<*>?, *>>>(result)
         assertEquals("ycql-edge", assertIs<YbTestEdge>(result.value.first).label)
     }
 
@@ -178,7 +181,7 @@ class LoadTest {
         insertYsqlEdge(fromId, toId1, edgeJson(fromId, toId1, "edge-1"))
         insertYsqlEdge(fromId, toId2, edgeJson(fromId, toId2, "edge-2"))
 
-        val result = runBlocking { ybPersistentStore.loadEdges(fromId) }
+        val result = runBlocking { ybPersistentStore.loadEdges(nid(fromId)) }
         assertIs<Either.Right<List<*>>>(result)
         assertEquals(2, result.value.size)
     }
@@ -190,7 +193,7 @@ class LoadTest {
         insertYcqlEdge(fromId, toId1, edgeJson(fromId, toId1, "ycql-1"))
         insertYcqlEdge(fromId, toId2, edgeJson(fromId, toId2, "ycql-2"))
 
-        val result = runBlocking { ybEphemeralStore.loadEdges(fromId) }
+        val result = runBlocking { ybEphemeralStore.loadEdges(nid(fromId)) }
         assertIs<Either.Right<List<*>>>(result)
         assertEquals(2, result.value.size)
     }
@@ -202,26 +205,26 @@ class LoadTest {
         insertYsqlEdge(fromId1, toId, edgeJson(fromId1, toId, "in-1"))
         insertYsqlEdge(fromId2, toId, edgeJson(fromId2, toId, "in-2"))
 
-        val result = runBlocking { ybPersistentStore.loadInEdges(toId) }
+        val result = runBlocking { ybPersistentStore.loadInEdges(nid(toId)) }
         assertIs<Either.Right<List<*>>>(result)
         assertEquals(2, result.value.size)
     }
 
     // TODO 1.13: ephemeral edges are outgoing-only — loadInEdges has no reverse index to read.
     @Test fun `loadInEdges is always empty for ycql (outgoing-only)`() {
-        val result = runBlocking { ybEphemeralStore.loadInEdges(Uuid.random()) }
+        val result = runBlocking { ybEphemeralStore.loadInEdges(nid(Uuid.random())) }
         assertIs<Either.Right<List<*>>>(result)
         assertEquals(0, result.value.size)
     }
 
     @Test fun `ephemeral saveEdge is outgoing-only - found via loadEdges, absent via loadInEdges`() {
         val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "outgoing-only")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveEdge(edge, 3600.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, 3600.seconds) } })
 
-        val outResult = runBlocking { ybEphemeralStore.loadEdges(edge.fromId) }
+        val outResult = runBlocking { ybEphemeralStore.loadEdges(nid(edge.fromId)) }
         assertEquals(1, (outResult as Either.Right).value.size)
 
-        val inResult = runBlocking { ybEphemeralStore.loadInEdges(edge.toId) }
+        val inResult = runBlocking { ybEphemeralStore.loadInEdges(nid(edge.toId)) }
         assertEquals(0, (inResult as Either.Right).value.size)
     }
 }
