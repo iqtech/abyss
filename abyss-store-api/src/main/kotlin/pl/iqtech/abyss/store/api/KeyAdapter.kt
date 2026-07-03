@@ -129,7 +129,7 @@ object StringKeyAdapter : KeyAdapter<String> {
 // Width of the schema-tag prefix a multi-schema graph stamps onto every NodeId. BYTE = 256 schemas.
 // NONE = single-schema degenerate case: zero-length prefix, NodeIds are untagged and byte-identical
 // to the inner adapter's, so a one-schema container costs nothing over a standalone AbyssGraphSchema.
-enum class SchemaTagWidth(val bytes: Int) { NONE(0), BYTE(1), SHORT(2), INT(4), LONG(8) }
+enum class SchemaTagWidth(val bytes: Int) { NONE(0), BYTE(1), SHORT(2), INT(4), LONG(8), UUID(16) }
 
 // Adapter-independent edge-key encoding for multi-schema graphs. A single Hazelcast Compact
 // serializer per class cannot express multiple native shapes, so the container encodes every

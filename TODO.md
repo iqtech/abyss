@@ -119,6 +119,12 @@
   `@EdgeConstraint` for cross-edges, Compact field layout, cross-edge persistence, `UnknownEdge`
   schema-awareness). No production code changes land with the RFC itself.
 
+- **➡️ 1.15 Self-describing NodeId keys (1-byte header: tag-width + id-shape)**
+  Plan in `ai-scripts/SelfDescribingNodeKeyPlan.md`. Prepend one header byte to every `NodeId`
+  (high nibble = `SchemaTagWidth.ordinal`, low nibble = `NodeKeyKind`) so keys decode standalone —
+  no graph-global `tagWidth` and no tag→schema→adapter lookup to recover width/shape. Drops
+  `MultiSchemaAdapter`'s registry; format break (pre-1.0, no migration).
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
@@ -229,6 +235,12 @@
   id: `Star`/`Planet`/`Moon`/`Singularity` via `Orbits` edges), Interests (`Uuid` id: hierarchy via
   `SubdomainOf` edges), plus cross-schema `InterestedIn` and `LivesOn` edges. Builder externalized
   so other tests can reuse it. Full design in `ai-scripts/UniverseGraphTestPlan.md`.
+
+- **➡️ 2.14 Edge hops shouldn't always require reading edge data**
+  Traversal hops that advance the frontier via an edge type currently deserialize the full edge
+  payload even when no filter predicate is applied. If the hop has no filter, only the target
+  `NodeId` (from the `EdgeKey`/`ReverseEdgeKey`) is needed to advance the frontier — the edge
+  value fetch should be skipped in that case.
 
 ## 3. Low
 
