@@ -1,3 +1,7 @@
+## [0.23.1] - 2026-07-03
+
+- Fix epoch-0 timestamps in Yugabyte stores: stamp ephemeral `created_at`/`updated_at` columns at write time, and set `encodeDefaults = true` on both store serializers so `createdAt`/`updatedAt`/`tags` always persist in the JSON blob instead of being dropped when they equal their default
+
 ## [0.23.0] - 2026-07-03
 
 - Make ephemeral (TTL) edges outgoing-only (TODO 1.13): a single atomic YCQL row write replaces the non-atomic reverse+primary dual-write, dropping the `ephemeral_reverse_edges` table and the heal machinery; the cache no longer maintains a reverse index for TTL edges, so ephemeral edges are reachable via `outEdges`/`outgoing` only while persistent edges stay bidirectional
