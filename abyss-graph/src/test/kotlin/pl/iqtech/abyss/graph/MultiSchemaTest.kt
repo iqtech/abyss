@@ -12,7 +12,9 @@ import pl.iqtech.abyss.dsl.node
 import pl.iqtech.abyss.dsl.outEdges
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.CrossEdgeLike
+import pl.iqtech.abyss.store.api.IntKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
+import pl.iqtech.abyss.store.api.adapter
 import pl.iqtech.abyss.store.api.MultiSchemaAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKey
@@ -209,5 +211,16 @@ class MultiSchemaTest {
         assert(NodeKey.width(bare) == SchemaTagWidth.NONE)
         assert(NodeKey.kind(bare) == NodeKeyKind.INT64)
         assert(LongKeyAdapter.fromNodeId(bare) == 42L)
+    }
+
+    @Test fun kindToAdapterIsTotalAndSelfConsistent() {
+        // Every kind maps to a canonical adapter that reports the same kind — the 1:1 map is total.
+        for (kind in NodeKeyKind.entries) assert(kind.adapter().nodeKeyKind == kind)
+
+        // INT32 round-trips through its new adapter and self-decodes from the bytes alone.
+        val nid = IntKeyAdapter.toNodeId(42)
+        assert(IntKeyAdapter.fromNodeId(nid) == 42)
+        assert(NodeKey.kind(nid) == NodeKeyKind.INT32)
+        assert(NodeKey.width(nid) == SchemaTagWidth.NONE)
     }
 }

@@ -68,7 +68,7 @@ class AbyssGraph(
     /**
      * Single-schema entry point ([tagWidth] must be [SchemaTagWidth.NONE]). Holds the caller's raw
      * [adapter] directly — no [SchemaKeyAdapter] wrapping — so edge-key Compact serialization uses
-     * the adapter's native shape (Int64/Int64Pair/Str), never the hex fallback. NodeIds are untagged
+     * the adapter's native shape (Int32/Int64/Uuid/Str), never the hex fallback. NodeIds are untagged
      * and byte-identical to a standalone `AbyssGraphSchema(adapter, …)`.
      */
     fun <ID> singleSchema(

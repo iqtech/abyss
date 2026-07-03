@@ -49,11 +49,19 @@ import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.SchemaTagWidth
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.full.findAnnotation
 import kotlin.time.Duration
 
 private val log = LoggerFactory.getLogger(AbyssGraphSchema::class.java)
+
+class SchemaDescriptor<SID, KID>(
+    val keyAdapter: KeyAdapter<KID>,
+    val schemaTagWidth: SchemaTagWidth,
+    val schemaTag: SID
+)
+
 
 class AbyssGraphSchema<ID>(
     private val adapter: KeyAdapter<ID>,
@@ -463,18 +471,20 @@ class AbyssGraphSchema<ID>(
 // (multi-schema) always includes the tag clause: it scopes the match to the endpoint's schema and
 // disambiguates two schemas that share a raw shape.
 internal fun <K, V> nativeKeyEq(field: String, enc: NodeKeyEncoding): Predicate<K, V> = when (enc) {
+    is NodeKeyEncoding.Int32 -> Predicates.equal<K, V>("__key.$field", enc.value)
     is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.$field", enc.value)
     is NodeKeyEncoding.Str -> Predicates.equal<K, V>("__key.$field", enc.value)
-    is NodeKeyEncoding.Int64Pair -> Predicates.and<K, V>(
+    is NodeKeyEncoding.Uuid -> Predicates.and<K, V>(
         Predicates.equal<K, V>("__key.${field}Hi", enc.hi),
         Predicates.equal<K, V>("__key.${field}Lo", enc.lo)
     )
     is NodeKeyEncoding.Tagged -> {
         val tagEq = Predicates.equal<K, V>("__key.${field}Tag", enc.tag)
         val valEq: Predicate<K, V> = when (val i = enc.inner) {
+            is NodeKeyEncoding.Int32 -> Predicates.equal<K, V>("__key.${field}Lo", i.value.toLong())
             is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.${field}Lo", i.value)
             is NodeKeyEncoding.Str -> Predicates.equal<K, V>("__key.${field}Str", i.value)
-            is NodeKeyEncoding.Int64Pair -> Predicates.and<K, V>(
+            is NodeKeyEncoding.Uuid -> Predicates.and<K, V>(
                 Predicates.equal<K, V>("__key.${field}Hi", i.hi),
                 Predicates.equal<K, V>("__key.${field}Lo", i.lo)
             )
