@@ -1,3 +1,7 @@
+## [0.22.0] - 2026-07-03
+
+- Make `NodeId` keys self-describing (TODO 1.15): a 1-byte header (tag-width ordinal + id-shape kind) prefixes every key so it decodes standalone without a graph-global width or a tag→schema→adapter lookup; `KeyAdapter` collapses to `nodeKeyKind` + raw byte conversion with shared header/Compact defaults, and `MultiSchemaAdapter` drops its adapter registry
+
 ## [0.21.0] - 2026-07-02
 
 - Unify the single/multi-schema graph engine (TODO 1.14): `RawEdgeLike`/`SchemaEdgeLike`/`CrossEdgeLike` hierarchy, `SchemaTagWidth.NONE` + `AbyssGraph.singleSchema` zero-overhead entry point, native tag-encoded multi-schema `EdgeKey`, and a universal `NodeId`-frontier traversal engine with first-class cross-schema hops and raw `Path`/`Subgraph`
