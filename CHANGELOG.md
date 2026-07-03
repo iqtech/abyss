@@ -1,3 +1,7 @@
+## [0.23.0] - 2026-07-03
+
+- Make ephemeral (TTL) edges outgoing-only (TODO 1.13): a single atomic YCQL row write replaces the non-atomic reverse+primary dual-write, dropping the `ephemeral_reverse_edges` table and the heal machinery; the cache no longer maintains a reverse index for TTL edges, so ephemeral edges are reachable via `outEdges`/`outgoing` only while persistent edges stay bidirectional
+
 ## [0.22.0] - 2026-07-03
 
 - Make `NodeId` keys self-describing (TODO 1.15): a 1-byte header (tag-width ordinal + id-shape kind) prefixes every key so it decodes standalone without a graph-global width or a tag→schema→adapter lookup; `KeyAdapter` collapses to `nodeKeyKind` + raw byte conversion with shared header/Compact defaults, and `MultiSchemaAdapter` drops its adapter registry
