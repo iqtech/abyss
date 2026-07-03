@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.store.api.AbyssError
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.reflect.full.findAnnotation
@@ -65,30 +65,30 @@ fun <ID> AbyssEphemeralTransactionLike<ID>.removeEdge(edge: SchemaEdgeLike<ID>) 
 // block of a non-inline exhaustReachable/detectCycle call).  TraversalBuilderLike<ConcreteID>
 // is always a subtype of TraversalBuilderLike<*>, so the extension resolves correctly.
 
-suspend inline fun <reified E : RawEdgeLike<*, *>> TraversalBuilderLike<*>.outgoing() =
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing() =
     addHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value)
 
-suspend inline fun <reified E : RawEdgeLike<*, *>> TraversalBuilderLike<*>.incoming() =
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.incoming() =
     addHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value)
 
 @JvmName("outgoingEdgePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : RawEdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(noinline predicate: (E) -> Boolean) =
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(noinline predicate: (E) -> Boolean) =
     addHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value, { predicate(it as E) })
 
 @JvmName("incomingEdgePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : RawEdgeLike<*, *>> TraversalBuilderLike<*>.incoming(noinline predicate: (E) -> Boolean) =
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.incoming(noinline predicate: (E) -> Boolean) =
     addHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, { predicate(it as E) })
 
 @JvmName("outgoingNodePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <ID, reified E : RawEdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.outgoing(noinline predicate: (N) -> Boolean) =
+suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.outgoing(noinline predicate: (N) -> Boolean) =
     addNodeHop(HopDirection.OUTGOING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
 @JvmName("incomingNodePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <ID, reified E : RawEdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.incoming(noinline predicate: (N) -> Boolean) =
+suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.incoming(noinline predicate: (N) -> Boolean) =
     addNodeHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
 suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.nodes() =
@@ -98,19 +98,19 @@ suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.nodes() =
 suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.nodes(noinline filter: (N) -> Boolean) =
     filterFrontierByNode(N::class.findAnnotation<SerialName>()!!.value, { filter(it as N) })
 
-suspend inline fun <reified E : RawEdgeLike<*, *>, ID> TraversalBuilderLike<ID>.hasOutgoing(toId: ID) =
+suspend inline fun <reified E : EdgeLike<*, *>, ID> TraversalBuilderLike<ID>.hasOutgoing(toId: ID) =
     filterFrontierByOutEdgeTo(E::class.findAnnotation<SerialName>()!!.value, toId)
 
-suspend inline fun <reified E : RawEdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<*>.hasOutgoing() =
+suspend inline fun <reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<*>.hasOutgoing() =
     filterFrontierByOutEdgeToType(
         E::class.findAnnotation<SerialName>()!!.value,
         N::class.findAnnotation<SerialName>()!!.value
     )
 
-suspend inline fun <reified E : RawEdgeLike<*, *>, ID> TraversalBuilderLike<ID>.hasIncoming(fromId: ID) =
+suspend inline fun <reified E : EdgeLike<*, *>, ID> TraversalBuilderLike<ID>.hasIncoming(fromId: ID) =
     filterFrontierByInEdgeFrom(E::class.findAnnotation<SerialName>()!!.value, fromId)
 
-suspend inline fun <reified E : RawEdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<*>.hasIncoming() =
+suspend inline fun <reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<*>.hasIncoming() =
     filterFrontierByInEdgeFromType(
         E::class.findAnnotation<SerialName>()!!.value,
         N::class.findAnnotation<SerialName>()!!.value
@@ -136,7 +136,7 @@ suspend fun <ID> TraversalBuilderLike<ID>.subgraph(): Subgraph = collectSubgraph
 
 // AbyssEngineLike — graph algorithms
 
-private fun edgeType(e: RawEdgeLike<*, *>) = e::class.findAnnotation<SerialName>()!!.value
+private fun edgeType(e: EdgeLike<*, *>) = e::class.findAnnotation<SerialName>()!!.value
 
 // Idempotently ensure a described subgraph exists: walk the paths and create only the nodes/edges
 // not already present, leaving existing ones untouched (create-if-missing, not overwrite). Each

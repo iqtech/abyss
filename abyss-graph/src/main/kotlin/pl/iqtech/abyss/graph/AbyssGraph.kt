@@ -17,7 +17,7 @@ import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.full.findAnnotation
@@ -102,13 +102,13 @@ class AbyssGraph(
     override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = resolveSchema(nid).inAt(nid, type, needValue)
     // Any schema owning one of the hops' endpoints resolves the whole batch: the edges map is one
     // shared instance and edgeKey's partition key is schema-agnostic (SchemaKeyAdapter.partitionKey).
-    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, RawEdgeLike<*, *>> =
+    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> =
         if (hops.isEmpty()) emptyMap() else resolveSchema(hops.first().fromId).resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
 
     // --- Cross-schema edges (NodeId-level, cache-only, in the shared edge/reverse maps) -------------
 
-    suspend fun addCrossEdge(edge: RawEdgeLike<NodeId, NodeId>, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
+    suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
         if (!allowCrossSchemaEdges)
             return AbyssError.IntegrityError("Cross-schema edges are disabled (allowCrossSchemaEdges=false)").left()
         val type = try { edgeType(edge) } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
@@ -130,7 +130,7 @@ class AbyssGraph(
             Unit
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    private fun integrityError(edge: RawEdgeLike<NodeId, NodeId>, type: String): AbyssError? {
+    private fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
         val fromTag = schemaTagOf(edge.fromId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: fromId ${edge.fromId} has no valid schema tag")
         if (fromTag !in schemas) return AbyssError.IntegrityError("Cross-edge $type: fromId schema tag $fromTag not registered")
@@ -145,6 +145,6 @@ class AbyssGraph(
     private fun schemaTagOf(nid: NodeId): Long? =
         if (nid.bytes.isNotEmpty() && NodeKey.width(nid) != SchemaTagWidth.NONE) NodeKey.tag(nid) else null
 
-    private fun edgeType(edge: RawEdgeLike<*, *>): String =
+    private fun edgeType(edge: EdgeLike<*, *>): String =
         edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
 }

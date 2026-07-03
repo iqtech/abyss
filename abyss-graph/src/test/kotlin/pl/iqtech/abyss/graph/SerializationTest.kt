@@ -14,7 +14,7 @@ import pl.iqtech.abyss.graph.serialization.UnknownNode
 import pl.iqtech.abyss.graph.serialization.createPolymorphicJsonSerializer
 import pl.iqtech.abyss.graph.serialization.customJsonSerializer
 import pl.iqtech.abyss.store.api.abyssSerializersModule
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlinx.serialization.serializer
@@ -84,7 +84,7 @@ data class TestEdge(
 
 private val testModule = SerializersModule {
     polymorphic(NodeLike::class) { subclass(TestNode::class) }
-    polymorphic(RawEdgeLike::class) { subclass(TestEdge::class) }
+    polymorphic(EdgeLike::class) { subclass(TestEdge::class) }
 }
 
 private fun baseJson() = Json(from = customJsonSerializer) {
@@ -94,11 +94,11 @@ private fun baseJson() = Json(from = customJsonSerializer) {
 @Suppress("UNCHECKED_CAST")
 private val nodeJson = createPolymorphicJsonSerializer<NodeLike<*>>(baseJson()) { UnknownNode(it) }
 @Suppress("UNCHECKED_CAST")
-private val edgeJson = createPolymorphicJsonSerializer<RawEdgeLike<*, *>>(baseJson()) { UnknownEdge(it) }
+private val edgeJson = createPolymorphicJsonSerializer<EdgeLike<*, *>>(baseJson()) { UnknownEdge(it) }
 @Suppress("UNCHECKED_CAST")
 private val nodeSer  = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
 @Suppress("UNCHECKED_CAST")
-private val edgeSer  = PolymorphicSerializer(RawEdgeLike::class) as kotlinx.serialization.KSerializer<RawEdgeLike<*, *>>
+private val edgeSer  = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*, *>>
 
 // ── tests ────────────────────────────────────────────────────────────────────
 

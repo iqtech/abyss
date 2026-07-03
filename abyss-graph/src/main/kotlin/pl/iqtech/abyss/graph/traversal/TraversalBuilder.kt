@@ -20,7 +20,7 @@ import pl.iqtech.abyss.graph.NodeIdEngine
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import kotlin.reflect.full.findAnnotation
 
 // The frontier is NodeId-based so a walk can span schemas; homeAdapter converts the home schema's
@@ -43,7 +43,7 @@ class TraversalBuilder<ID>(
 
     // Fills in edge values for key-only hops (predicate-free hops skip the fetch) in one batched call,
     // preserving input order — the single point where Subgraph.edges is materialized.
-    private suspend fun resolveHopEdges(hops: List<Hop>): List<RawEdgeLike<*, *>> {
+    private suspend fun resolveHopEdges(hops: List<Hop>): List<EdgeLike<*, *>> {
         val unresolved = hops.filter { it.edge == null }
         val resolved = if (unresolved.isEmpty()) emptyMap() else engine.resolveEdges(unresolved)
         return hops.mapNotNull { it.edge ?: resolved[it] }
@@ -54,7 +54,7 @@ class TraversalBuilder<ID>(
 
     private fun NodeLike<*>.typeName(): String? = this::class.findAnnotation<SerialName>()?.value
 
-    override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((RawEdgeLike<*, *>) -> Boolean)?) {
+    override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike<*, *>) -> Boolean)?) {
         val needValue = edgePredicate != null
         val hopEdges = coroutineScope {
             frontier.map { nid ->
@@ -207,7 +207,7 @@ class TraversalBuilder<ID>(
         strategy: TraversalStrategy,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
-        edgeVisitor: (Path, RawEdgeLike<*, *>) -> Boolean,
+        edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ): Flow<Path> = flow {
         val origin = frontier.mapNotNull { nid -> engine.nodeAt(nid)?.let { nid to it } }
@@ -235,7 +235,7 @@ class TraversalBuilder<ID>(
         direction: EdgeTraversalDirection,
         maxDepth: Int,
         depth: Int,
-        edgeVisitor: (Path, RawEdgeLike<*, *>) -> Boolean,
+        edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ) {
         if (depth >= maxDepth) return
@@ -266,7 +266,7 @@ class TraversalBuilder<ID>(
         origin: List<Pair<NodeId, NodeLike<*>>>,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
-        edgeVisitor: (Path, RawEdgeLike<*, *>) -> Boolean,
+        edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ) {
         data class Entry(val path: Path, val headNid: NodeId, val fromNid: NodeId, val visited: Set<NodeId>, val depth: Int)

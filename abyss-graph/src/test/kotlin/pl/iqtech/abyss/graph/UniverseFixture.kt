@@ -10,7 +10,7 @@ import pl.iqtech.abyss.store.api.CrossEdgeLike
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
@@ -73,7 +73,7 @@ val universeModule = SerializersModule {
         subclass(Star::class); subclass(Planet::class); subclass(Moon::class); subclass(Singularity::class)
         subclass(Interest::class)
     }
-    polymorphic(RawEdgeLike::class) {
+    polymorphic(EdgeLike::class) {
         subclass(Orbits::class); subclass(SubdomainOf::class)
         subclass(InterestedIn::class); subclass(LivesOn::class)
     }

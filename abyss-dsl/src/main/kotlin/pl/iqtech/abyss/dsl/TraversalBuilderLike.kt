@@ -2,7 +2,7 @@ package pl.iqtech.abyss.dsl
 
 import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 
 enum class HopDirection { OUTGOING, INCOMING }
@@ -22,12 +22,12 @@ enum class Evaluation {
 // domain ID type. Nodes are star-typed NodeLike<*>; callers narrow with resolve<T>() (filterIsInstance).
 data class Path(
     val nodes: List<NodeLike<*>>,
-    val edges: List<RawEdgeLike<*, *>>
+    val edges: List<EdgeLike<*, *>>
 ) {
     val depth: Int get() = nodes.size - 1
     val head: NodeLike<*> get() = nodes.last()
 
-    fun toEitherList(): List<Either<RawEdgeLike<*, *>, NodeLike<*>>> = buildList {
+    fun toEitherList(): List<Either<EdgeLike<*, *>, NodeLike<*>>> = buildList {
         nodes.forEachIndexed { i, node ->
             add(Either.Right(node))
             if (i < edges.size) add(Either.Left(edges[i]))
@@ -35,13 +35,13 @@ data class Path(
     }
 }
 
-data class Subgraph(val nodes: List<NodeLike<*>>, val edges: List<RawEdgeLike<*, *>>)
+data class Subgraph(val nodes: List<NodeLike<*>>, val edges: List<EdgeLike<*, *>>)
 
 // ID is the "home" schema's domain type — used only by the id-valued conveniences (checkReaches,
 // filterFrontierByOutEdgeTo, …). The traversal frontier itself is NodeId-based internally, so a
 // walk can leave the home schema across a cross-edge.
 interface TraversalBuilderLike<ID> {
-    suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((RawEdgeLike<*, *>) -> Boolean)? = null)
+    suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike<*, *>) -> Boolean)? = null)
     suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<*>) -> Boolean)? = null)
     suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<*>) -> Boolean)? = null)
     suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID)
@@ -58,7 +58,7 @@ interface TraversalBuilderLike<ID> {
         strategy: TraversalStrategy = TraversalStrategy.DFS,
         direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
         maxDepth: Int = Int.MAX_VALUE,
-        edgeVisitor: (path: Path, edge: RawEdgeLike<*, *>) -> Boolean,
+        edgeVisitor: (path: Path, edge: EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (path: Path, node: NodeLike<*>) -> Evaluation
     ): Flow<Path>
 }

@@ -13,7 +13,7 @@ interface NodeLike<ID> {
 
 // Edge serialization root. Endpoints may be different types (FID != TID) for cross-schema edges.
 @Polymorphic
-interface RawEdgeLike<FID, TID> {
+interface EdgeLike<FID, TID> {
     val fromId: FID
     val toId: TID
     val tags: List<String>
@@ -22,7 +22,7 @@ interface RawEdgeLike<FID, TID> {
 }
 
 // Same-schema edge: both endpoints share one ID type. The 99% case (Road, Knows, …).
-interface SchemaEdgeLike<ID> : RawEdgeLike<ID, ID>
+interface SchemaEdgeLike<ID> : EdgeLike<ID, ID>
 
 // Cross-schema edge: endpoints belong to different (or not-statically-fixed) schemas.
-interface CrossEdgeLike<FID, TID> : RawEdgeLike<FID, TID>
+interface CrossEdgeLike<FID, TID> : EdgeLike<FID, TID>

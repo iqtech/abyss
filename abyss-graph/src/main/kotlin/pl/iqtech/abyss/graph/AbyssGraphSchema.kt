@@ -43,7 +43,7 @@ import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeAdapter
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
@@ -190,7 +190,7 @@ class AbyssGraphSchema<ID>(
         val part = Predicates.partitionPredicate<EdgeKey, Any>(adapter.partitionKey(nid), pred)
         val map = edgesMap as IMap<EdgeKey, Any>
         if (!needValue) return withContext(Dispatchers.IO) { map.keySet(part) }.map { Hop(it.fromId, it.toId, it.type, null) }
-        return withContext(Dispatchers.IO) { map.entrySet(part) }.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as RawEdgeLike<*, *>) }
+        return withContext(Dispatchers.IO) { map.entrySet(part) }.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as EdgeLike<*, *>) }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -206,16 +206,16 @@ class AbyssGraphSchema<ID>(
         val keys = filtered.map { edgeKey(it.fromId, it.toId, it.type) }.toSet()
         if (keys.isEmpty()) return emptyList()
         val map = edgesMap as IMap<EdgeKey, Any>
-        return withContext(Dispatchers.IO) { map.getAll(keys) }.entries.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as RawEdgeLike<*, *>) }
+        return withContext(Dispatchers.IO) { map.getAll(keys) }.entries.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as EdgeLike<*, *>) }
     }
 
     @Suppress("UNCHECKED_CAST")
-    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, RawEdgeLike<*, *>> {
+    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> {
         if (hops.isEmpty()) return emptyMap()
         val keyByHop = hops.associateWith { edgeKey(it.fromId, it.toId, it.type) }
         val map = edgesMap as IMap<EdgeKey, Any>
         val values = withContext(Dispatchers.IO) { map.getAll(keyByHop.values.toSet()) }
-        return keyByHop.mapNotNull { (hop, key) -> (values[key] as RawEdgeLike<*, *>?)?.let { hop to it } }.toMap()
+        return keyByHop.mapNotNull { (hop, key) -> (values[key] as EdgeLike<*, *>?)?.let { hop to it } }.toMap()
     }
 
     override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
@@ -493,7 +493,7 @@ fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersMod
     serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer(adapter))
     serializationConfig.compactSerializationConfig.addSerializer(ReverseEdgeKeySerializer(adapter))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
-    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(RawEdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
+    serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }
 
 

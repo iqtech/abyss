@@ -27,7 +27,7 @@ import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -67,7 +67,7 @@ val graphTestModule = SerializersModule {
         subclass(TestNode::class); subclass(OtherNode::class)
         subclass(LongTestNode::class); subclass(StrTestNode::class)
     }
-    polymorphic(RawEdgeLike::class) {
+    polymorphic(EdgeLike::class) {
         subclass(TestEdge::class); subclass(TypedEdge::class)
         subclass(LongTestEdge::class); subclass(StrTestEdge::class)
         subclass(CrossRefEdge::class)

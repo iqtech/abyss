@@ -9,7 +9,7 @@ import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.TraversalStrategy
-import pl.iqtech.abyss.store.api.RawEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -40,7 +40,7 @@ class PathsTraversalTest {
     }
 
     private fun includeAll(path: Path, node: NodeLike<*>) = Evaluation.INCLUDE_AND_PRUNE
-    private fun followAll(path: Path, edge: RawEdgeLike<*, *>) = true
+    private fun followAll(path: Path, edge: EdgeLike<*, *>) = true
 
     // ── basic path finding ────────────────────────────────────────────────────
 
