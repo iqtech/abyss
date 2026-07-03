@@ -67,14 +67,20 @@ graph.outEdges<Road>(1L).collect { road ->
 
 Either store can be `null`. Passing neither gives a pure in-memory (Hazelcast-only) mode.
 
-The store split affects consistency guarantees on bidirectional edge access:
+The store split decides which traversal directions an edge supports:
 
-- **Transactional store (e.g. PostgreSQL / `YugabytePersistentStore`):** a single `edges` table with an
-  index on `to_id` covers both traversal directions in one atomic write. Forward and reverse access are
-  always in sync.
-- **YCQL (`YugabyteEphemeralStore`):** YCQL has no multi-statement transaction support. Efficient reverse
-  lookups on ephemeral data require a denormalized reverse table — and those two writes are best-effort.
-  A failure between them leaves the maps temporarily inconsistent until the next write or eviction.
+- **Transactional store (e.g. PostgreSQL / `YugabytePersistentStore`):** persistent edges are
+  **bidirectional** — a single `edges` table with an index on `to_id` covers both directions in one
+  atomic write, so `outEdges`/`outgoing` and `inEdges`/`incoming` are always in sync.
+- **YCQL (`YugabyteEphemeralStore`):** ephemeral (TTL) edges are **outgoing-only**. YCQL has no
+  multi-statement transactions, so instead of a denormalized reverse table kept in sync by two
+  best-effort writes, an ephemeral edge is a **single atomic row write** — reachable via `outEdges` /
+  `outgoing<E>()` only; `inEdges` / `incoming<E>()` never return it. To walk an ephemeral relationship
+  "backwards", model the reverse direction as an explicit second outgoing edge
+  (`Person —IsInGroup→ G1` **and** `G1 —HasMember→ Person`) and follow it as outgoing. The payoff is
+  atomic, heal-free ephemeral writes with no dangling-entry window. One consequence: a `removeNode`
+  cascades ephemeral edges only on the `fromId` side — an ephemeral edge into a deleted node is left to
+  expire via its TTL.
 
 Delete operations issued from either DSL builder (`transaction { }` or `ephemeral { }`) are fanned out
 to **both** stores, so a node removed via `transaction { removeNode(id) }` is also deleted from the
@@ -465,7 +471,8 @@ graph.ephemeral(ttl = 60.seconds) {
 
 All operations inside `ephemeral { }` share the same TTL. Nodes and edges are stored in
 YCQL and disappear automatically when the TTL elapses. The cache entry also expires at the
-same time.
+same time. Ephemeral **edges are outgoing-only** — reachable via `outEdges`/`outgoing` but never
+`inEdges`/`incoming` (see [Pluggable storage](#pluggable-storage)).
 
 To disable integrity checks for bulk imports:
 
@@ -539,7 +546,7 @@ Both directions are partition-local:
 - **`outEdges`** — `EdgeKey` is `PartitionAware` on `fromId`, so all outgoing edges of a node live on one partition. The query never scatters.
 - **`inEdges`** — a mirrored `IMap<ReverseEdgeKey, Unit>` is maintained in sync with the edge map. `ReverseEdgeKey` is `PartitionAware` on `toId`, so the reverse lookup is also single-partition. The reverse map holds only keys; actual edge data is fetched via `IMap.getAll` point-lookups on the primary map.
 
-Both maps are kept consistent by every `addEdge` / `removeEdge` transaction, including TTL expiry (same TTL is applied to both entries).
+The reverse map is maintained for **persistent** edges only, kept consistent by every `addEdge` / `removeEdge`. Ephemeral (TTL) edges are [outgoing-only](#pluggable-storage) and write no reverse entry, so `inEdges` never returns them.
 
 #### Node collection
 

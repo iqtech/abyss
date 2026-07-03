@@ -96,13 +96,21 @@
   `Int64Pair` encoding is preserved for standalone single-schema `AbyssGraphSchema`. Cross edges are
   cache-only for now (no store persistence). Covered by `MultiSchemaTest`.
 
-- **➡️ 1.13 Outgoing-only traversal for ephemeral edges**
-  Currently YCQL doesn't support transactions on non-transact tables, so writing edge/rev edge is
-  not atomic. If rev edge will not be stored by design, then atomicity will be preserved; caller can easily
-  work around this in graph-style - just add reverse edge explicitly if incoming processing is a
-  must - and follow those edges as outgoing. Example: Person---'IsInGroup'--->G1 and another edge
-  G1---'HasMember'--->Person  as opposite directions outgoing-only design. This way when algorithm
-  expects outgoing edge and this edge is ephemeral - no edges will be found (VERIFY!).
+- **✅ 1.13 Outgoing-only traversal for ephemeral edges**
+  YCQL has no cross-table transactions, so the old ephemeral edge write was two non-atomic INSERTs
+  (reverse row + primary row) guarded by a reverse-first order and a `healEdge` retry loop for the
+  "benign dangling entry" window. Ephemeral (TTL) edges are now **outgoing-only**: a single-row
+  INSERT into `ephemeral_edges`, atomic by construction. Deleted the `ephemeral_reverse_edges` table,
+  its prepares, `healEdge`/`writePrimaryEdge`/`healScope`; `loadInEdges` returns `emptyList`. Cache
+  matches the store — `AbyssGraphSchema.applyToCacheAsync` skips `reverseEdgesMap` when `ttl != null`
+  and `preloadIn` no longer warms ephemeral in-edges — so incoming lookups never see a cached
+  ephemeral edge the store won't return. **Contract (the note's "VERIFY!", with its outgoing/incoming
+  typo corrected):** `outEdges`/`outgoing` find an ephemeral edge; `inEdges`/`incoming` return empty.
+  Reverse traversal is the caller's job via an explicit opposite outgoing edge
+  (`Person —IsInGroup→ G1` **and** `G1 —HasMember→ Person`). Accepted asymmetry: deleting the TO-node
+  can't cascade an ephemeral edge (no reverse index) — it expires via TTL; deleting the FROM-node
+  still cascades. Persistent (YSQL, transactional, `to_id`-scan) edges stay bidirectional, untouched.
+  Covered by `GraphTest` (engine-level) and `LoadTest` (store-level, outgoing-only).
 
 - **✅ 1.14 Unified single/multi-schema engine with first-class cross-hops**
   Design in `ai-scripts/UnifiedGraphEngineRFC.md`; supersedes parts of 1.12 (SchemaConceptRFC).

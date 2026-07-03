@@ -205,27 +205,22 @@ class LoadTest {
         assertEquals(2, result.value.size)
     }
 
-    @Test fun `loadInEdges returns edges by toId from ycql`() {
-        val toId = Uuid.random()
-        val fromId1 = Uuid.random()
-        val fromId2 = Uuid.random()
-        insertYcqlReverseEdge(fromId1, toId, edgeJson(fromId1, toId, "rev-1"))
-        insertYcqlReverseEdge(fromId2, toId, edgeJson(fromId2, toId, "rev-2"))
-
-        val result = runBlocking { ybEphemeralStore.loadInEdges(toId) }
+    // TODO 1.13: ephemeral edges are outgoing-only — loadInEdges has no reverse index to read.
+    @Test fun `loadInEdges is always empty for ycql (outgoing-only)`() {
+        val result = runBlocking { ybEphemeralStore.loadInEdges(Uuid.random()) }
         assertIs<Either.Right<List<*>>>(result)
-        assertEquals(2, result.value.size)
+        assertEquals(0, result.value.size)
     }
 
-    @Test fun `transaction saveEdge with ttl writes to both ycql tables`() {
-        val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "dual-write")
+    @Test fun `ephemeral saveEdge is outgoing-only - found via loadEdges, absent via loadInEdges`() {
+        val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "outgoing-only")
         assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveEdge(edge, 3600.seconds) } })
 
         val outResult = runBlocking { ybEphemeralStore.loadEdges(edge.fromId) }
         assertEquals(1, (outResult as Either.Right).value.size)
 
         val inResult = runBlocking { ybEphemeralStore.loadInEdges(edge.toId) }
-        assertEquals(1, (inResult as Either.Right).value.size)
+        assertEquals(0, (inResult as Either.Right).value.size)
     }
 }
 
@@ -294,18 +289,3 @@ private fun insertYcqlEdge(fromId: Uuid, toId: Uuid, json: String) {
         }
 }
 
-private fun insertYcqlReverseEdge(fromId: Uuid, toId: Uuid, json: String) {
-    CqlSession.builder()
-        .addContactPoint(InetSocketAddress("localhost", 9042))
-        .withLocalDatacenter("datacenter1")
-        .build()
-        .use { session ->
-            session.execute(
-                SimpleStatement.newInstance(
-                    "INSERT INTO abyss_test_graph.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    toId.toJavaUuid(), fromId.toJavaUuid(), "yb_test_edge", json, emptyList<String>(), java.time.Instant.EPOCH, java.time.Instant.EPOCH,
-                    java.time.Instant.now().plusSeconds(3600)
-                )
-            )
-        }
-}

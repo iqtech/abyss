@@ -469,6 +469,17 @@ class GraphTest {
         }
     }
 
+    // TODO 1.13: ephemeral edges are outgoing-only — found via outEdges, invisible to inEdges.
+    @Test fun `ephemeral addEdge is outgoing-only - visible outgoing, empty incoming`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-out-only")
+            graphTest.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
+
+            assertEquals(1, graphTest.outEdges(edge.fromId).toList().size)
+            assertEquals(0, graphTest.inEdges(edge.toId).toList().size)
+        }
+    }
+
     @Test fun `ephemeral addEdge returns IntegrityError when fromId node absent`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-dangling")

@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS ephemeral_nodes (
 -- Clustering columns: (to_id, type) — match EdgeKey ordering.
 -- from_id/to_id are raw NodeId bytes, same rationale as ephemeral_nodes.id above.
 
+-- Ephemeral edges are outgoing-only (TODO 1.13): no reverse table. A single-row INSERT is
+-- atomic, so ephemeral edge writes need no cross-table transaction and no heal machinery.
+-- Reverse traversal is the caller's responsibility via an explicit opposite outgoing edge.
 CREATE TABLE IF NOT EXISTS ephemeral_edges (
     from_id         BLOB,
     to_id           BLOB,
@@ -41,21 +44,4 @@ CREATE TABLE IF NOT EXISTS ephemeral_edges (
     updated_at      TIMESTAMP,
     ttl_expiration  TIMESTAMP,
     PRIMARY KEY ((from_id), to_id, type)
-);
-
--- ── ephemeral_reverse_edges ──────────────────────────────────────────────────
--- Reverse index for inEdges cold-restart warming. Partition key: to_id.
--- Mirrors ephemeral_edges; written/deleted together with same TTL (non-atomic).
--- Secondary indexes can't be used: transactions=true blocks per-row USING TTL.
-
-CREATE TABLE IF NOT EXISTS ephemeral_reverse_edges (
-    to_id           BLOB,
-    from_id         BLOB,
-    type            TEXT,
-    data            TEXT,
-    tags            LIST<TEXT>,
-    created_at      TIMESTAMP,
-    updated_at      TIMESTAMP,
-    ttl_expiration  TIMESTAMP,
-    PRIMARY KEY ((to_id), from_id, type)
 );

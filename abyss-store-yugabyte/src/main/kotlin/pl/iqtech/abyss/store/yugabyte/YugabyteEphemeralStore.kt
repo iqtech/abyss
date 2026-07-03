@@ -4,12 +4,7 @@ import arrow.core.Either
 import com.datastax.oss.driver.api.core.CqlSession
 import com.datastax.oss.driver.api.core.cql.PreparedStatement
 import com.datastax.oss.driver.api.core.cql.SimpleStatement
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
@@ -54,7 +49,6 @@ class YugabyteEphemeralStore<ID>(
 ) : AbyssEphemeralStoreLike<ID>, Closeable {
 
     private val log = LoggerFactory.getLogger(YugabyteEphemeralStore::class.java)
-    private val healScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -74,16 +68,10 @@ class YugabyteEphemeralStore<ID>(
         ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
     private val selectEdgesYcql: PreparedStatement =
         ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ?")
-    private val selectInEdgesYcql: PreparedStatement =
-        ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ?")
     private val deleteNodeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
     private val deleteEdgeYcql: PreparedStatement =
         ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_edges WHERE from_id = ? AND to_id = ? AND type = ?")
-    private val insertReverseEdgeYcql: PreparedStatement =
-        ycql.prepare("INSERT INTO $ycqlKeyspace.ephemeral_reverse_edges (to_id, from_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?")
-    private val deleteReverseEdgeYcql: PreparedStatement =
-        ycql.prepare("DELETE FROM $ycqlKeyspace.ephemeral_reverse_edges WHERE to_id = ? AND from_id = ? AND type = ?")
 
     override suspend fun loadNode(id: ID): Either<AbyssError, Pair<NodeLike<ID>?, Duration?>> =
         Either.catch {
@@ -103,11 +91,11 @@ class YugabyteEphemeralStore<ID>(
             withContext(Dispatchers.IO) { queryEdgesYcql(selectEdgesYcql, fromId).map { (e, exp) -> e as SchemaEdgeLike<ID> to remainingTtl(exp) } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
+    // Ephemeral edges are outgoing-only (TODO 1.13): no reverse index is stored, so incoming
+    // lookups have nothing to warm from. Callers needing reverse traversal model an explicit
+    // opposite outgoing edge. Persistent in-edges are unaffected (YSQL scans the edges table).
     override suspend fun loadInEdges(toId: ID): Either<AbyssError, List<Pair<SchemaEdgeLike<ID>, Duration?>>> =
-        Either.catch {
-            @Suppress("UNCHECKED_CAST")
-            withContext(Dispatchers.IO) { queryEdgesYcql(selectInEdgesYcql, toId).map { (e, exp) -> e as SchemaEdgeLike<ID> to remainingTtl(exp) } }
-        }.mapLeft { AbyssError.Unexpected(it) }
+        Either.Right(emptyList())
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> =
         Either.catch {
@@ -117,7 +105,6 @@ class YugabyteEphemeralStore<ID>(
         }.mapLeft { AbyssError.Unexpected(it) }
 
     override fun close() {
-        healScope.cancel()
         runCatching { ycql.close() }.onFailure { log.warn("Failed to close YCQL session", it) }
     }
 
@@ -171,61 +158,21 @@ class YugabyteEphemeralStore<ID>(
                     idBuf(op.node.id), type, data, op.node.tags, op.node.createdAt.toJavaInstant(), op.node.updatedAt.toJavaInstant(), expiresAt
                 ))
             }
+            // Outgoing-only (TODO 1.13): a single-row INSERT is atomic in YCQL, so no reverse
+            // write, no heal machinery, no dangling window.
             is EphemeralOp.SaveEdge -> {
                 val (type, data) = jsonPair(edgeSer, op.edge as SchemaEdgeLike<*>)
                 val ttl = op.ttl.inWholeSeconds.toInt()
                 val expiresAt = java.time.Instant.now().plusSeconds(ttl.toLong())
-                // reverse table first: if this fails nothing is visible; primary failure leaves a benign dangling entry
-                ycql.execute(insertReverseEdgeYcql.bind(idBuf(op.edge.toId), idBuf(op.edge.fromId), type, data, op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), expiresAt, ttl))
-                try {
-                    writePrimaryEdge(op, ttl, expiresAt)
-                } catch (e: Exception) {
-                    val failedAt = java.time.Instant.now()
-                    log.error("Primary edge write failed, scheduling heal for ${op.edge.fromId}→${op.edge.toId}", e)
-                    healScope.launch { healEdge(op, failedAt) }
-                    throw e
-                }
+                ycql.execute(SimpleStatement.newInstance(
+                    "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
+                    idBuf(op.edge.fromId), idBuf(op.edge.toId), type, data,
+                    op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), expiresAt
+                ))
             }
             is EphemeralOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(idBuf(op.id)))
-            is EphemeralOp.DeleteEdge -> {
-                ycql.execute(deleteReverseEdgeYcql.bind(idBuf(op.toId), idBuf(op.fromId), op.type))
-                ycql.execute(deleteEdgeYcql.bind(idBuf(op.fromId), idBuf(op.toId), op.type))
-            }
+            is EphemeralOp.DeleteEdge -> ycql.execute(deleteEdgeYcql.bind(idBuf(op.fromId), idBuf(op.toId), op.type))
         }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun writePrimaryEdge(op: EphemeralOp.SaveEdge<ID>, ttlSeconds: Int, expiresAt: java.time.Instant) {
-        val (type, data) = jsonPair(edgeSer, op.edge as SchemaEdgeLike<*>)
-        ycql.execute(SimpleStatement.newInstance(
-            "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttlSeconds",
-            idBuf(op.edge.fromId), idBuf(op.edge.toId), type, data,
-            op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), expiresAt
-        ))
-    }
-
-    private suspend fun healEdge(op: EphemeralOp.SaveEdge<ID>, failedAt: java.time.Instant) {
-        val originalTtlSeconds = op.ttl.inWholeSeconds
-        var delayMs = 1_000L
-        repeat(5) { attempt ->
-            delay(delayMs.milliseconds)
-            val elapsed = java.time.Duration.between(failedAt, java.time.Instant.now()).seconds
-            val remainingTtl = (originalTtlSeconds - elapsed).toInt()
-            if (remainingTtl <= 0) {
-                log.warn("TTL exceeded for edge ${op.edge.fromId}→${op.edge.toId}, dropping heal — reverse entry will expire naturally")
-                return
-            }
-            try {
-                val healExpiresAt = java.time.Instant.now().plusSeconds(remainingTtl.toLong())
-                withContext(Dispatchers.IO) { writePrimaryEdge(op, remainingTtl, healExpiresAt) }
-                log.info("Healed edge ${op.edge.fromId}→${op.edge.toId} on attempt ${attempt + 1}")
-                return
-            } catch (e: Exception) {
-                log.warn("Heal attempt ${attempt + 1}/5 failed for ${op.edge.fromId}→${op.edge.toId}", e)
-                delayMs *= 2
-            }
-        }
-        log.error("Failed to heal edge ${op.edge.fromId}→${op.edge.toId} after 5 attempts — reverse entry will expire via TTL")
     }
 
     private inner class EphemeralTransaction : AbyssEphemeralStoreTransactionLike<ID> {

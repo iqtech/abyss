@@ -59,16 +59,4 @@ class ConnectionTest {
                 assertNotNull(rs.columnDefinitions)
             }
     }
-
-    @Test
-    fun `ycql - can select from ephemeral reverse edges`() {
-        CqlSession.builder()
-            .addContactPoint(InetSocketAddress("localhost", 9042))
-            .withLocalDatacenter("datacenter1")
-            .build()
-            .use { session ->
-                val rs = session.execute("SELECT * FROM abyss_test_graph.ephemeral_reverse_edges LIMIT 1")
-                assertNotNull(rs.columnDefinitions)
-            }
-    }
 }

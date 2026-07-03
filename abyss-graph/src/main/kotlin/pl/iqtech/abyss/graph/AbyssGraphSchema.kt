@@ -147,26 +147,13 @@ class AbyssGraphSchema<ID>(
         }
     }
 
+    // Only persistent edges have a reverse index to warm. Ephemeral edges are outgoing-only
+    // (TODO 1.13) — no reverse rows exist to load, so incoming lookups never see them.
     private suspend fun preloadIn(nodeId: ID) = withContext(Dispatchers.IO) {
         persistentStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, _) ->
             val type = edgeType(edge)
             edgesMap.putIfAbsent(edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), type), edge)
             reverseEdgesMap.putIfAbsent(revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), type), Unit)
-        }
-        ephemeralStore?.loadInEdges(nodeId)?.getOrNull()?.forEach { (edge, remaining) ->
-            val type = edgeType(edge)
-            val key    = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), type)
-            val revKey = revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), type)
-            when {
-                remaining == null -> {
-                    edgesMap.putIfAbsent(key, edge); reverseEdgesMap.putIfAbsent(revKey, Unit)
-                }
-                remaining.inWholeSeconds > 0 -> {
-                    edgesMap.putIfAbsent(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
-                    reverseEdgesMap.putIfAbsent(revKey, Unit, remaining.inWholeSeconds, TimeUnit.SECONDS)
-                }
-                // remaining <= 0: expired — skip
-            }
         }
     }
 
@@ -343,6 +330,8 @@ class AbyssGraphSchema<ID>(
         val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, SchemaEdgeLike<ID>>("fromId", nid)))
             .filter { isHomeNode(it.key.toId) }
             .map { Op.RemoveEdge(adapter.fromNodeId(it.key.fromId), adapter.fromNodeId(it.key.toId), it.key.type) }
+        // ponytail: ephemeral edges are outgoing-only (TODO 1.13) — no reverse index, so deleting the
+        // TO-node can't cascade them; they expire via TTL. Deleting the FROM-node still cascades (out).
         val inc = reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
             pk, keyEq<ReverseEdgeKey, Unit>("toId", nid)
         )).filter { isHomeNode(it.fromId) }.map { Op.RemoveEdge(adapter.fromNodeId(it.fromId), adapter.fromNodeId(it.toId), it.type) }
@@ -395,9 +384,10 @@ class AbyssGraphSchema<ID>(
             val edge   = op.edge as SchemaEdgeLike<ID>
             val key    = edgeKey(adapter.toNodeId(edge.fromId), adapter.toNodeId(edge.toId), edgeType(edge))
             val revKey = revKey(adapter.toNodeId(edge.toId), adapter.toNodeId(edge.fromId), edgeType(edge))
+            // Ephemeral (TTL) edges are outgoing-only (TODO 1.13): no reverse index, matching the
+            // store — so incoming lookups can't see a cached ephemeral edge the store won't return.
             if (op.ttl != null) listOf(
-                edgesMap.setAsync(key, edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS),
-                reverseEdgesMap.setAsync(revKey, Unit, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
+                edgesMap.setAsync(key, edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS)
             ) else listOf(
                 edgesMap.setAsync(key, edge),
                 reverseEdgesMap.setAsync(revKey, Unit)
