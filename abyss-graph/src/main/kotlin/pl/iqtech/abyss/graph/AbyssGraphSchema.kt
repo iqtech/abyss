@@ -183,17 +183,18 @@ class AbyssGraphSchema<ID>(
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = node(adapter.fromNodeId(nid)).getOrNull()
 
     @Suppress("UNCHECKED_CAST")
-    override suspend fun outAt(nid: NodeId, type: String?): List<Hop> {
+    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
         preloadOut(adapter.fromNodeId(nid))
         val base = keyEq<EdgeKey, Any>("fromId", nid)
         val pred = if (type == null) base else Predicates.and(base, Predicates.equal<EdgeKey, Any>("__key.type", type))
         val part = Predicates.partitionPredicate<EdgeKey, Any>(adapter.partitionKey(nid), pred)
         val map = edgesMap as IMap<EdgeKey, Any>
-        return withContext(Dispatchers.IO) { map.entrySet(part) }.map { Hop(it.key.fromId, it.key.toId, it.value as RawEdgeLike<*, *>) }
+        if (!needValue) return withContext(Dispatchers.IO) { map.keySet(part) }.map { Hop(it.fromId, it.toId, it.type, null) }
+        return withContext(Dispatchers.IO) { map.entrySet(part) }.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as RawEdgeLike<*, *>) }
     }
 
     @Suppress("UNCHECKED_CAST")
-    override suspend fun inAt(nid: NodeId, type: String?): List<Hop> {
+    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
         preloadIn(adapter.fromNodeId(nid))
         val revKeys = withContext(Dispatchers.IO) {
             reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
@@ -201,10 +202,20 @@ class AbyssGraphSchema<ID>(
             ))
         }
         val filtered = if (type != null) revKeys.filter { it.type == type } else revKeys
+        if (!needValue) return filtered.map { Hop(it.fromId, it.toId, it.type, null) }
         val keys = filtered.map { edgeKey(it.fromId, it.toId, it.type) }.toSet()
         if (keys.isEmpty()) return emptyList()
         val map = edgesMap as IMap<EdgeKey, Any>
-        return withContext(Dispatchers.IO) { map.getAll(keys) }.entries.map { Hop(it.key.fromId, it.key.toId, it.value as RawEdgeLike<*, *>) }
+        return withContext(Dispatchers.IO) { map.getAll(keys) }.entries.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as RawEdgeLike<*, *>) }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, RawEdgeLike<*, *>> {
+        if (hops.isEmpty()) return emptyMap()
+        val keyByHop = hops.associateWith { edgeKey(it.fromId, it.toId, it.type) }
+        val map = edgesMap as IMap<EdgeKey, Any>
+        val values = withContext(Dispatchers.IO) { map.getAll(keyByHop.values.toSet()) }
+        return keyByHop.mapNotNull { (hop, key) -> (values[key] as RawEdgeLike<*, *>?)?.let { hop to it } }.toMap()
     }
 
     override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }

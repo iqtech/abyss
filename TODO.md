@@ -244,7 +244,7 @@
   `SubdomainOf` edges), plus cross-schema `InterestedIn` and `LivesOn` edges. Builder externalized
   so other tests can reuse it. Full design in `ai-scripts/UniverseGraphTestPlan.md`.
 
-- **➡️ 2.14 Edge hops shouldn't always require reading edge data**
+- **✅ 2.14 Edge hops shouldn't always require reading edge data**
   Traversal hops that advance the frontier via an edge type currently deserialize the full edge
   payload even when no filter predicate is applied. If the hop has no filter, only the target
   `NodeId` (from the `EdgeKey`/`ReverseEdgeKey`) is needed to advance the frontier — the edge

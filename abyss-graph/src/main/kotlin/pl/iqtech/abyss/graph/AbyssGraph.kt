@@ -98,8 +98,12 @@ class AbyssGraph(
     // --- NodeIdEngine: route each NodeId to its schema (cross-schema edges share the same maps) -----
 
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = resolveSchema(nid).nodeAt(nid)
-    override suspend fun outAt(nid: NodeId, type: String?): List<Hop> = resolveSchema(nid).outAt(nid, type)
-    override suspend fun inAt(nid: NodeId, type: String?): List<Hop> = resolveSchema(nid).inAt(nid, type)
+    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = resolveSchema(nid).outAt(nid, type, needValue)
+    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = resolveSchema(nid).inAt(nid, type, needValue)
+    // Any schema owning one of the hops' endpoints resolves the whole batch: the edges map is one
+    // shared instance and edgeKey's partition key is schema-agnostic (SchemaKeyAdapter.partitionKey).
+    override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, RawEdgeLike<*, *>> =
+        if (hops.isEmpty()) emptyMap() else resolveSchema(hops.first().fromId).resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
 
     // --- Cross-schema edges (NodeId-level, cache-only, in the shared edge/reverse maps) -------------
