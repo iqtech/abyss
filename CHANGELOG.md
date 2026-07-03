@@ -1,3 +1,7 @@
+## [0.24.0] - 2026-07-03
+
+- Replace the typed schema registry with an untyped worker over self-describing NodeIds: `NodeKeyKind` becomes a domain type with a 1:1 canonical `KeyAdapter` map, `RawEdgeLike` is renamed to `EdgeLike`, and `ensureSubgraph` is added for idempotent create-if-missing of a described subgraph
+
 ## [0.23.1] - 2026-07-03
 
 - Fix epoch-0 timestamps in Yugabyte stores: stamp ephemeral `created_at`/`updated_at` columns at write time, and set `encodeDefaults = true` on both store serializers so `createdAt`/`updatedAt`/`tags` always persist in the JSON blob instead of being dropped when they equal their default
