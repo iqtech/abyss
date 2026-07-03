@@ -49,6 +49,7 @@ class YugabytePersistentStore<ID>(
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
+        encodeDefaults = true
         classDiscriminator = "type"
         serializersModule = abyssSerializersModule + module
     }

@@ -53,6 +53,7 @@ class YugabyteEphemeralStore<ID>(
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
+        encodeDefaults = true
         classDiscriminator = "type"
         serializersModule = abyssSerializersModule + module
     }
@@ -152,10 +153,11 @@ class YugabyteEphemeralStore<ID>(
             is EphemeralOp.SaveNode -> {
                 val (type, data) = jsonPair(nodeSer, op.node as NodeLike<*>)
                 val ttl = op.ttl.inWholeSeconds
-                val expiresAt = java.time.Instant.now().plusSeconds(ttl)
+                val now = java.time.Instant.now()
+                val expiresAt = now.plusSeconds(ttl)
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO $ycqlKeyspace.ephemeral_nodes (id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    idBuf(op.node.id), type, data, op.node.tags, op.node.createdAt.toJavaInstant(), op.node.updatedAt.toJavaInstant(), expiresAt
+                    idBuf(op.node.id), type, data, op.node.tags, now, now, expiresAt
                 ))
             }
             // Outgoing-only (TODO 1.13): a single-row INSERT is atomic in YCQL, so no reverse
@@ -163,11 +165,12 @@ class YugabyteEphemeralStore<ID>(
             is EphemeralOp.SaveEdge -> {
                 val (type, data) = jsonPair(edgeSer, op.edge as SchemaEdgeLike<*>)
                 val ttl = op.ttl.inWholeSeconds.toInt()
-                val expiresAt = java.time.Instant.now().plusSeconds(ttl.toLong())
+                val now = java.time.Instant.now()
+                val expiresAt = now.plusSeconds(ttl.toLong())
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     idBuf(op.edge.fromId), idBuf(op.edge.toId), type, data,
-                    op.edge.tags, op.edge.createdAt.toJavaInstant(), op.edge.updatedAt.toJavaInstant(), expiresAt
+                    op.edge.tags, now, now, expiresAt
                 ))
             }
             is EphemeralOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(idBuf(op.id)))
