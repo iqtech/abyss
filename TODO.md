@@ -229,7 +229,7 @@
   Open question: whether `queryNodeIds` needs more than equality (ranges, `IN`) from the start, or
   a flat `(column, value)` pair is enough for v1.
 
-- **➡️ 2.13 Real multi-schema graph test: Universe fixture (users/astronomy/interests)**
+- **✅ 2.13 Real multi-schema graph test: Universe fixture (users/astronomy/interests)**
   Add a reusable multi-schema graph test fixture exercising TODO 1.14's engine with real schemas
   instead of the existing toy `MultiSchemaTest` fixtures — Users (`String` id), Astronomy (`Long`
   id: `Star`/`Planet`/`Moon`/`Singularity` via `Orbits` edges), Interests (`Uuid` id: hierarchy via
