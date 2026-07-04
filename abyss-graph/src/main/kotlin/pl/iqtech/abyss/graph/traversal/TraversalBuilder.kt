@@ -153,6 +153,10 @@ class TraversalBuilder<ID>(
 
     override suspend fun count(): Int = frontier.size
 
+    override suspend fun countEdges(direction: HopDirection, edgeType: String): Int = coroutineScope {
+        frontier.map { nid -> async { hops(nid, direction, edgeType, needValue = false).size } }.awaitAll()
+    }.sum()
+
     override suspend fun collectSubgraph(nodeType: String?): Subgraph {
         val nodes = coroutineScope {
             allVisitedIds.map { nid -> async(Dispatchers.IO) { engine.nodeAt(nid) } }.awaitAll()

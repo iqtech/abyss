@@ -91,6 +91,9 @@ suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> Tra
 suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.incoming(noinline predicate: (N) -> Boolean) =
     addNodeHop(HopDirection.INCOMING, E::class.findAnnotation<SerialName>()!!.value, N::class.findAnnotation<SerialName>()!!.value, { predicate(it as N) })
 
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.countEdges(direction: HopDirection = HopDirection.OUTGOING) =
+    countEdges(direction, E::class.findAnnotation<SerialName>()!!.value)
+
 suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.nodes() =
     filterFrontierByNode(N::class.findAnnotation<SerialName>()!!.value, null)
 

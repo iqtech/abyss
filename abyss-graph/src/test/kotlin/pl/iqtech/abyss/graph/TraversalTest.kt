@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.collectNodes
+import pl.iqtech.abyss.dsl.countEdges
 import pl.iqtech.abyss.dsl.hasIncoming
 import pl.iqtech.abyss.dsl.hasOutgoing
 import pl.iqtech.abyss.dsl.hasTraversal
@@ -95,6 +96,33 @@ class TraversalTest {
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(listOf(c), result.value)
+        }
+    }
+
+    // ── count terminals ──────────────────────────────────────────────────────
+
+    @Test fun `countEdges counts raw edges where count collapses fan-in to distinct targets`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            val d = putNode("d")
+            putEdge(a.id, b.id)
+            putEdge(a.id, c.id)
+            putEdge(b.id, d.id)
+            putEdge(c.id, d.id)
+
+            val edgeCount = graphTest.from(a.id) {
+                outgoing<TestEdge>()   // frontier {b, c}
+                countEdges<TestEdge>() // b→d, c→d: 2 raw edges
+            }
+            val nodeCount = graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                outgoing<TestEdge>()   // frontier {d}
+                count()
+            }
+            assertEquals(Either.Right(2), edgeCount)
+            assertEquals(Either.Right(1), nodeCount)
         }
     }
 

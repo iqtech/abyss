@@ -52,6 +52,8 @@ interface TraversalBuilderLike<ID> {
     suspend fun flushFrontierNodes(): Flow<NodeLike<*>>
     /** Terminal: number of distinct nodes in the current frontier (no node materialization). */
     suspend fun count(): Int
+    /** Terminal: number of [edgeType] edges from the frontier in [direction] (no edge value or node materialization). */
+    suspend fun countEdges(direction: HopDirection, edgeType: String): Int
     suspend fun collectSubgraph(nodeType: String? = null): Subgraph
     suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph

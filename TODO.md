@@ -291,6 +291,12 @@
   current frontier without materializing any node (`frontier.size`). Usage:
   `from(id) { outgoing<E>(); count() }` → `Either<AbyssError, Int>`.
 
+- **✅ 2.17 Traversal DSL: `countEdges<E>()` terminal**
+  Add a `countEdges<E>(direction = OUTGOING)` terminal counting raw edges of type `E` from the
+  current frontier, without fetching edge values or target nodes. Unlike `outgoing<E>(); count()`,
+  it doesn't collapse fan-in (multiple frontier nodes sharing a target) into one. Usage:
+  `from(id) { countEdges<E>() }` or `from(id) { countEdges<E>(HopDirection.INCOMING) }`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
