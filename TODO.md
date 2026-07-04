@@ -153,6 +153,17 @@
   Yugabyte stores' `SchemaEdgeLike::class` polymorphic base onto `EdgeLike`).
   Plan: `ai-scripts/RemoveSchemaAndCrossEdgeLikePlan.md`.
 
+- **✅ 1.18 `paths()` drops natural-terminal INCLUDE_AND_CONTINUE paths**
+  Emission fires only on `INCLUDE_AND_PRUNE` and on `INCLUDE_AND_CONTINUE` at the depth cap. An
+  included node *below* `maxDepth` with no followable edge (edges exhausted / all visited / all
+  continuations pruned) is a natural terminal that is never emitted — e.g. chain `a→b→c` all
+  `INCLUDE_AND_CONTINUE` with large `maxDepth` emits nothing. Fix: `dfsLoop` returns a Boolean
+  ("did this subtree emit?") and emits an `INCLUDE_AND_CONTINUE` node's own path when its expansion
+  emitted nothing; `bfsLoop` mirrors this with a per-entry "produced continuation" flag plus a
+  `nextDepth < maxDepth` enqueue guard. Must not emit per-prefix paths. Add DFS/BFS regression tests
+  + update the `paths()` doc (emission fires on prune, depth cap, natural terminal).
+  Plan: `ai-scripts/PathsNaturalTerminalPlan.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

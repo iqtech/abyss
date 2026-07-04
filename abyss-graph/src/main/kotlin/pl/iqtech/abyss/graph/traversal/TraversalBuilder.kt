@@ -226,7 +226,8 @@ class TraversalBuilder<ID>(
 
     // headNid: NodeId of the last accepted node (currentPath.head); fromNid: physical position (may
     // differ when a node was EXCLUDE_AND_CONTINUE). depth counts hops. seen prevents re-processing a
-    // neighbour via different edges within a level.
+    // neighbour via different edges within a level. Returns whether this subtree emitted any path —
+    // the caller uses it to decide if an INCLUDE_AND_CONTINUE head is itself a natural terminal.
     private suspend fun FlowCollector<Path>.dfsLoop(
         currentPath: Path,
         headNid: NodeId,
@@ -237,10 +238,11 @@ class TraversalBuilder<ID>(
         depth: Int,
         edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
-    ) {
-        if (depth >= maxDepth) return
+    ): Boolean {
+        if (depth >= maxDepth) return false
         val edges = edgesFrom(fromNid, direction)
         val seen = visited.toMutableSet()
+        var emitted = false
         for (hop in edges) {
             if (!edgeVisitor(currentPath, hop.edge!!)) continue
             val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
@@ -255,11 +257,20 @@ class TraversalBuilder<ID>(
             } else currentPath
             val nextHeadNid = if (included) nextNid else headNid
             val nextDepth = depth + 1
-            if (eval == Evaluation.INCLUDE_AND_PRUNE ||
-                (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) emit(extendedPath)
-            if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE))
-                dfsLoop(extendedPath, nextHeadNid, nextNid, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)
+            when {
+                eval == Evaluation.INCLUDE_AND_PRUNE -> { emit(extendedPath); emitted = true }
+                eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth -> { emit(extendedPath); emitted = true }
+                eval == Evaluation.INCLUDE_AND_CONTINUE -> {
+                    val childEmitted = dfsLoop(extendedPath, nextHeadNid, nextNid, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)
+                    if (!childEmitted) emit(extendedPath) // natural terminal: included head with no emitting expansion
+                    emitted = true
+                }
+                eval == Evaluation.EXCLUDE_AND_CONTINUE && nextDepth < maxDepth ->
+                    if (dfsLoop(extendedPath, nextHeadNid, nextNid, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)) emitted = true
+                // else: EXCLUDE_AND_PRUNE, or EXCLUDE_AND_CONTINUE at cap → nothing
+            }
         }
+        return emitted
     }
 
     private suspend fun FlowCollector<Path>.bfsLoop(
@@ -274,8 +285,9 @@ class TraversalBuilder<ID>(
         for ((nid, node) in origin) queue += Entry(Path(listOf(node), emptyList()), nid, nid, setOf(nid), 0)
         while (queue.isNotEmpty()) {
             val (currentPath, headNid, fromNid, visited, depth) = queue.removeFirst()
-            if (depth >= maxDepth) continue
+            if (depth >= maxDepth) continue // safety guard; with the enqueue guard below only fires for maxDepth == 0
             val edges = edgesFrom(fromNid, direction)
+            var produced = false // this entry emitted a path or enqueued a continuation
             for (hop in edges) {
                 if (!edgeVisitor(currentPath, hop.edge!!)) continue
                 val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
@@ -290,10 +302,13 @@ class TraversalBuilder<ID>(
                 val nextHeadNid = if (included) nextNid else headNid
                 val nextDepth = depth + 1
                 if (eval == Evaluation.INCLUDE_AND_PRUNE ||
-                    (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) emit(extendedPath)
-                if (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)
+                    (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) { emit(extendedPath); produced = true }
+                if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)) {
                     queue += Entry(extendedPath, nextHeadNid, nextNid, visited + nextNid, nextDepth)
+                    produced = true
+                }
             }
+            if (!produced && currentPath.nodes.size > 1) emit(currentPath) // natural terminal (excludes lone origin)
         }
     }
 

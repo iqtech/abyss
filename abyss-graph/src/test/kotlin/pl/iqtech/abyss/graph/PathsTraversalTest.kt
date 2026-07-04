@@ -160,6 +160,48 @@ class PathsTraversalTest {
         assertEquals(d, result[1].nodes.last())
     }
 
+    // ── natural terminal (INCLUDE_AND_CONTINUE below maxDepth) ───────────────
+
+    @Test fun `DFS emits natural-terminal INCLUDE_AND_CONTINUE path`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+        putEdge(a.id, b.id); putEdge(b.id, c.id)
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.DFS, maxDepth = 10,
+                edgeVisitor = ::followAll,
+                nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_CONTINUE }
+            ).toList()
+        } as Either.Right).value
+        // c is a natural terminal below the cap — the full chain must be emitted once
+        assertEquals(1, paths.size)
+        assertEquals(listOf(a, b, c), paths[0].nodes)
+    }
+
+    @Test fun `BFS emits natural-terminal INCLUDE_AND_CONTINUE path`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+        putEdge(a.id, b.id); putEdge(b.id, c.id)
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.BFS, maxDepth = 10,
+                edgeVisitor = ::followAll,
+                nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_CONTINUE }
+            ).toList()
+        } as Either.Right).value
+        assertEquals(1, paths.size)
+        assertEquals(listOf(a, b, c), paths[0].nodes)
+    }
+
+    @Test fun `natural terminal does not emit intermediate prefixes`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+        putEdge(a.id, b.id); putEdge(b.id, c.id)
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.DFS, maxDepth = 10,
+                edgeVisitor = ::followAll,
+                nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_CONTINUE }
+            ).toList()
+        } as Either.Right).value
+        // only the maximal path, no [a] or [a,b] prefixes
+        assertEquals(listOf(listOf(a, b, c)), paths.map { it.nodes })
+    }
+
     // ── EdgeTraversalDirection ───────────────────────────────────────────────
 
     @Test fun `OUT direction does not follow incoming edges`() = runBlocking {

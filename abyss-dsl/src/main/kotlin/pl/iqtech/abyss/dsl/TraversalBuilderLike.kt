@@ -54,6 +54,17 @@ interface TraversalBuilderLike<ID> {
     suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph
     suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
+    /**
+     * Walks the graph emitting one [Path] per maximal accepted path — a path whose included head
+     * cannot be extended. Emission fires when that head is:
+     * - **pruned** — evaluated `INCLUDE_AND_PRUNE`;
+     * - at the **depth cap** — `INCLUDE_AND_CONTINUE` reached at `maxDepth`;
+     * - a **natural terminal** — `INCLUDE_AND_CONTINUE` below the cap whose expansion follows no
+     *   further edge (edges exhausted, all neighbours visited, edges rejected, or all continuations
+     *   dead-end).
+     *
+     * Intermediate prefixes are never emitted; a lone origin (single-node path) is never emitted.
+     */
     fun paths(
         strategy: TraversalStrategy = TraversalStrategy.DFS,
         direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
