@@ -1,3 +1,7 @@
+## [0.27.0] - 2026-07-04
+
+- Make `HomogeneousSchemaGraph` registry-free with 128-bit, headerless tags: widens schema tags from `Long` to a real 128-bit `SchemaTag` (fixing a dead, previously-broken `SchemaTagWidth.UUID` path) so a `Uuid` can be used directly as a per-tenant tag; replaces the registration-guard pattern with on-the-fly `forTag()` views; and drops the 1.15 header byte from its keys entirely (like `SingleSchemaGraph`), restoring clean 16/32-byte alignment for `Long`/`Uuid` tag+id combinations
+
 ## [0.26.0] - 2026-07-04
 
 - Split `AbyssGraph` into `SingleSchemaGraph`/`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph` tiers (TODO 1.19): single-schema `NodeId`s drop the 1.15 header byte entirely via a new `HeaderlessKeyAdapter`, and `AbyssSchemaWorker` takes an injectable `SchemaResolution` strategy so each tier resolves its `EdgeAdapter` differently (fixed adapter / one descriptor computed once / today's per-key derivation) while sharing the same untyped engine
