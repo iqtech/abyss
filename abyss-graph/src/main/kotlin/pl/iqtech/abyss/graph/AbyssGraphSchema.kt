@@ -29,6 +29,7 @@ import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.EdgeAdapter
 import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
@@ -40,15 +41,18 @@ import kotlin.time.Duration
  * domain `ID` ⇄ [NodeId] at the boundary via its [adapter] and delegates every operation to the worker;
  * the worker owns the maps, the store, and the whole commit/traversal engine.
  *
- * Standalone (single-schema) use constructs its own worker over the given maps/stores. Inside an
- * [AbyssGraph] container, the container builds facades over one shared worker.
+ * Standalone (single-schema) use constructs its own worker over the given maps/stores. Inside a
+ * [HomogeneousSchemaGraph]/[HeterogeneousSchemaGraph] container, the container builds facades over
+ * one shared worker.
  */
 class AbyssGraphSchema<ID> internal constructor(
     private val adapter: KeyAdapter<ID>,
     private val worker: AbyssSchemaWorker,
 ) : AbyssEngineLike<ID> {
 
-    // Standalone single-schema: owns a worker over the given maps and optional shared store.
+    // Standalone single-schema (TODO 1.19's SingleSchemaGraph tier): owns a worker over the given
+    // maps and optional shared store. Headerless — NodeId is raw adapter-encoded bytes, no 1.15
+    // header byte, since there is exactly one schema and nothing to self-describe against.
     constructor(
         adapter: KeyAdapter<ID>,
         hazelcast: HazelcastInstance,
@@ -57,7 +61,13 @@ class AbyssGraphSchema<ID> internal constructor(
         persistentStore: AbyssStoreLike? = null,
         ephemeralStore: AbyssEphemeralStoreLike? = null,
         asyncCachePopulation: Boolean = false,
-    ) : this(adapter, AbyssSchemaWorker(hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation))
+    ) : this(
+        HeaderlessKeyAdapter(adapter),
+        AbyssSchemaWorker(
+            hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
+            SingleSchemaResolution(HeaderlessKeyAdapter(adapter)),
+        ),
+    )
 
     // Engine a traversal from this schema runs against: the owning container (so a walk can cross
     // schemas over the shared edge map) when registered in one, else this schema's own worker.

@@ -144,7 +144,7 @@ private fun edgeType(e: EdgeLike<*, *>) = e::class.findAnnotation<SerialName>()!
 // not already present, leaving existing ones untouched (create-if-missing, not overwrite). Each
 // Path's edge[i] connects node[i]→node[i+1], so committing all missing pieces of a self-consistent
 // path in one transaction satisfies the integrity check. Single-schema only — cross-schema edges
-// live in the AbyssGraph container, not here.
+// live in the HomogeneousSchemaGraph/HeterogeneousSchemaGraph container, not here.
 @Suppress("UNCHECKED_CAST")
 suspend fun <ID> AbyssEngineLike<ID>.ensureSubgraph(
     vararg paths: Path,

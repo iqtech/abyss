@@ -18,7 +18,6 @@ import pl.iqtech.abyss.dsl.subgraph
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,7 +36,7 @@ class TraversalTest {
 
     private fun putNode(name: String): TestNode {
         val node = TestNode(id = Uuid.random(), name = name)
-        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[UuidKeyAdapter.toNodeId(node.id)] = node
+        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[huid.toNodeId(node.id)] = node
         return node
     }
 
@@ -152,13 +151,13 @@ class TraversalTest {
             val b = putNode("b")
             val c = putNode("c")
             putEdge(a.id, b.id).also {
-                val fromNid = UuidKeyAdapter.toNodeId(a.id)
-                graphTestHz.getMap<Any, EdgeLike<*, *>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(b.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
+                val fromNid = huid.toNodeId(a.id)
+                graphTestHz.getMap<Any, EdgeLike<*, *>>("g-edges")[EdgeKey(fromNid, huid.toNodeId(b.id), "test_edge", huid.partitionKey(fromNid))] =
                     it.copy(label = "keep")
             }
             putEdge(a.id, c.id).also {
-                val fromNid = UuidKeyAdapter.toNodeId(a.id)
-                graphTestHz.getMap<Any, EdgeLike<*, *>>("g-edges")[EdgeKey(fromNid, UuidKeyAdapter.toNodeId(c.id), "test_edge", UuidKeyAdapter.partitionKey(fromNid))] =
+                val fromNid = huid.toNodeId(a.id)
+                graphTestHz.getMap<Any, EdgeLike<*, *>>("g-edges")[EdgeKey(fromNid, huid.toNodeId(c.id), "test_edge", huid.partitionKey(fromNid))] =
                     it.copy(label = "drop")
             }
 

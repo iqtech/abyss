@@ -20,8 +20,10 @@ import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.full.findAnnotation
 
 /**
- * Container hosting multiple typed [AbyssGraphSchema] views over one shared [AbyssSchemaWorker], and
- * the NodeId-level engine that per-schema traversals run against so a walk can span schemas.
+ * Container hosting multiple typed [AbyssGraphSchema] views over one shared [AbyssSchemaWorker],
+ * where every registered schema shares one fixed [HomogeneousSchemaResolution] (TODO 1.19: all tags
+ * have the same [tagWidth], so the EdgeAdapter is computed once at construction and never re-derived
+ * per key — contrast [HeterogeneousSchemaGraph]).
  *
  * There is no tag→schema registry: every [NodeId] self-describes (tag width + kind + tag), so the
  * worker derives what it needs per key and routing is a pure function of the NodeId. [register] hands
@@ -32,7 +34,7 @@ import kotlin.reflect.full.findAnnotation
  * endpoints self-describe: `fromTag != toTag`), so `outgoing<E>()`/`incoming<E>()` reach them as
  * ordinary hops. They are gated by [allowCrossSchemaEdges] and are cache-only in this version.
  */
-class AbyssGraph(
+class HomogeneousSchemaGraph(
     hazelcast: HazelcastInstance,
     val tagWidth: SchemaTagWidth = SchemaTagWidth.BYTE,
     nodesMapName: String = "abyss-nodes",
@@ -43,28 +45,19 @@ class AbyssGraph(
     asyncCachePopulation: Boolean = false,
 ) : NodeIdEngine {
 
-    private val worker = AbyssSchemaWorker(hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation)
+    init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
+
+    private val worker = AbyssSchemaWorker(
+        hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
+        HomogeneousSchemaResolution(tagWidth),
+    )
 
     private val registeredTags = mutableSetOf<Long>()
-    private var singleSchemaSet = false
 
     fun <ID> register(tag: Long, adapter: KeyAdapter<ID>): AbyssGraphSchema<ID> {
-        require(tagWidth != SchemaTagWidth.NONE) { "register requires a tagged width; use singleSchema() for NONE" }
         require(registeredTags.add(tag)) { "Schema tag $tag already registered" }
         val tagged = SchemaKeyAdapter(tag, tagWidth, adapter)
         return AbyssGraphSchema(tagged, worker).also { it.traversalEngine = this }
-    }
-
-    /**
-     * Single-schema entry point ([tagWidth] must be [SchemaTagWidth.NONE]). Holds the caller's raw
-     * [adapter] directly — no [SchemaKeyAdapter] wrapping — so edge-key Compact serialization uses the
-     * adapter's native shape. NodeIds are untagged and byte-identical to a standalone `AbyssGraphSchema`.
-     */
-    fun <ID> singleSchema(adapter: KeyAdapter<ID>): AbyssGraphSchema<ID> {
-        require(tagWidth == SchemaTagWidth.NONE) { "singleSchema requires SchemaTagWidth.NONE, got $tagWidth" }
-        require(!singleSchemaSet) { "singleSchema already set" }
-        singleSchemaSet = true
-        return AbyssGraphSchema(adapter, worker).also { it.traversalEngine = this }
     }
 
     // --- NodeIdEngine: the shared worker self-resolves each NodeId (cross-schema edges share the maps) -

@@ -161,6 +161,10 @@ interface KeyAdapter<ID> : EdgeAdapter {
     fun toNodeId(id: ID): NodeId = NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, 0L, encodeIdBytes(id))
     fun fromNodeId(nodeId: NodeId): ID = decodeIdBytes(NodeKey.rawId(nodeId))
 
+    // Native (non-hex) value the partition key uses. Identity for most kinds; Uuid overrides since
+    // Hazelcast partitions kotlin.uuid.Uuid and java.util.UUID differently (see UuidKeyAdapter).
+    fun nativePartitionValue(id: ID): Any = id as Any
+
     override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
     override val keyEncodingShape: KeyEncodingShape get() = nodeKeyKind.toShape()
     override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKey.encoding(nodeKeyKind, NodeKey.rawId(nodeId))
@@ -177,6 +181,7 @@ object UuidKeyAdapter : KeyAdapter<Uuid> {
     override fun decodeIdBytes(bytes: ByteArray): Uuid =
         ByteBuffer.wrap(bytes).let { java.util.UUID(it.long, it.long).toKotlinUuid() }
     override fun partitionKey(nodeId: NodeId): Any = fromNodeId(nodeId).toJavaUuid()
+    override fun nativePartitionValue(id: Uuid): Any = id.toJavaUuid()
 }
 
 object IntKeyAdapter : KeyAdapter<Int> {
@@ -245,6 +250,23 @@ class SchemaKeyAdapter<ID>(
         require(encoding is NodeKeyEncoding.Tagged) { "SchemaKeyAdapter expects Tagged, got $encoding" }
         return NodeKey.compose(width, inner.nodeKeyKind, encoding.tag, NodeKey.rawId(encoding.inner))
     }
+}
+
+// Zero-header adapter: NodeId.bytes IS encodeIdBytes(id), nothing more — no tag-width/kind byte at
+// all. The single-schema tier (TODO 1.19): fastest path, no NodeKey header parsing/composition on
+// any key. Wraps a canonical KeyAdapter purely for its encodeIdBytes/decodeIdBytes/nodeKeyKind.
+class HeaderlessKeyAdapter<ID>(private val inner: KeyAdapter<ID>) : KeyAdapter<ID> {
+    override val nodeKeyKind = inner.nodeKeyKind
+    override fun encodeIdBytes(id: ID): ByteArray = inner.encodeIdBytes(id)
+    override fun decodeIdBytes(bytes: ByteArray): ID = inner.decodeIdBytes(bytes)
+
+    override fun toNodeId(id: ID): NodeId = NodeId(encodeIdBytes(id))
+    override fun fromNodeId(nodeId: NodeId): ID = decodeIdBytes(nodeId.bytes)
+
+    override fun partitionKey(nodeId: NodeId): Any = inner.nativePartitionValue(fromNodeId(nodeId))
+    override val keyEncodingShape = nodeKeyKind.toShape()
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKey.encoding(nodeKeyKind, nodeId.bytes)
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId = NodeId(NodeKey.rawId(encoding))
 }
 
 // Everything an untyped schema operation needs to touch the shared maps for a given NodeId —

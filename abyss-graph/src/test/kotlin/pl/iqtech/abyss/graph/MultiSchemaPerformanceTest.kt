@@ -27,7 +27,7 @@ class MultiSchemaPerformanceTest {
         private val tagged = SchemaKeyAdapter(TAG, SchemaTagWidth.BYTE, LongKeyAdapter)
 
         private val perfGraph: AbyssGraphSchema<Long> by lazy {
-            AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "perf-ms-nodes", "perf-ms-edges")
+            HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "perf-ms-nodes", "perf-ms-edges")
                 .register(TAG, LongKeyAdapter)
         }
 

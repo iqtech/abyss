@@ -31,6 +31,7 @@ import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.StringKeyAdapter
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -74,10 +75,16 @@ val graphTestModule = SerializersModule {
     }
 }
 
+// TODO 1.19: AbyssGraphSchema's standalone (single-schema) constructor is headerless, so the
+// Compact serializer config and any test code building/decoding a NodeId outside the facade must
+// go through the same HeaderlessKeyAdapter wrapper, not the bare (headered) domain adapter. Shared
+// (not file-private) since several other test files pre-seed graphTestHz's maps directly.
+val huid = HeaderlessKeyAdapter(UuidKeyAdapter)
+
 val graphTestHz by lazy {
     System.setProperty("hazelcast.logging.type", "none")
     Hazelcast.newHazelcastInstance(
-        Config().setClusterName("graph-test-uuid").registerAbyssSerializers(UuidKeyAdapter, graphTestModule)
+        Config().setClusterName("graph-test-uuid").registerAbyssSerializers(huid, graphTestModule)
     )
 }
 
@@ -86,23 +93,23 @@ val graphTestHz by lazy {
 val longTestHz by lazy {
     System.setProperty("hazelcast.logging.type", "none")
     Hazelcast.newHazelcastInstance(
-        Config().setClusterName("graph-test-long").registerAbyssSerializers(LongKeyAdapter, graphTestModule)
+        Config().setClusterName("graph-test-long").registerAbyssSerializers(HeaderlessKeyAdapter(LongKeyAdapter), graphTestModule)
     )
 }
 
 val stringTestHz by lazy {
     System.setProperty("hazelcast.logging.type", "none")
     Hazelcast.newHazelcastInstance(
-        Config().setClusterName("graph-test-string").registerAbyssSerializers(StringKeyAdapter, graphTestModule)
+        Config().setClusterName("graph-test-string").registerAbyssSerializers(HeaderlessKeyAdapter(StringKeyAdapter), graphTestModule)
     )
 }
 
 val graphTest by lazy { AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "g-nodes", "g-edges") }
 
-private fun Uuid.toNodeId() = UuidKeyAdapter.toNodeId(this)
+private fun Uuid.toNodeId() = huid.toNodeId(this)
 private fun edgeKey(fromId: Uuid, toId: Uuid, type: String): EdgeKey {
     val fromNid = fromId.toNodeId()
-    return EdgeKey(fromNid, toId.toNodeId(), type, UuidKeyAdapter.partitionKey(fromNid))
+    return EdgeKey(fromNid, toId.toNodeId(), type, huid.partitionKey(fromNid))
 }
 
 class GraphTest {
@@ -698,9 +705,9 @@ private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         if (failTx) return AbyssError.Unexpected(RuntimeException("store down")).left()
         val tx = object : AbyssStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>) { saveNodeCalls += UuidKeyAdapter.fromNodeId(id) }
+            override fun saveNode(id: NodeId, node: NodeLike<*>) { saveNodeCalls += huid.fromNodeId(id) }
             override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
-            override fun deleteNode(id: NodeId) { saveNodeCalls -= UuidKeyAdapter.fromNodeId(id) }
+            override fun deleteNode(id: NodeId) { saveNodeCalls -= huid.fromNodeId(id) }
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
         tx.block()
@@ -716,9 +723,9 @@ private class FakeEphemeralStore : AbyssEphemeralStoreLike {
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssEphemeralStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { saveNodeCalls += UuidKeyAdapter.fromNodeId(id) }
+            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { saveNodeCalls += huid.fromNodeId(id) }
             override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration) {}
-            override fun deleteNode(id: NodeId) { saveNodeCalls -= UuidKeyAdapter.fromNodeId(id) }
+            override fun deleteNode(id: NodeId) { saveNodeCalls -= huid.fromNodeId(id) }
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
         tx.block()
@@ -733,9 +740,9 @@ private class WarmingFakeStore(
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
     override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
-        Either.Right(outEdges.filter { UuidKeyAdapter.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, UuidKeyAdapter.toNodeId(it.toId), it, null) })
+        Either.Right(outEdges.filter { huid.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, huid.toNodeId(it.toId), it, null) })
     override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =
-        Either.Right(inEdges.filter { UuidKeyAdapter.toNodeId(it.toId) == toId }.map { StoredEdge(UuidKeyAdapter.toNodeId(it.fromId), toId, it, null) })
+        Either.Right(inEdges.filter { huid.toNodeId(it.toId) == toId }.map { StoredEdge(huid.toNodeId(it.fromId), toId, it, null) })
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Unit.right()
 }
 

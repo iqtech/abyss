@@ -9,7 +9,6 @@ import pl.iqtech.abyss.dsl.hasCycle
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,7 +27,7 @@ class AlgorithmsTest {
 
     private fun putNode(name: String): TestNode {
         val node = TestNode(id = Uuid.random(), name = name)
-        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[UuidKeyAdapter.toNodeId(node.id)] = node
+        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[huid.toNodeId(node.id)] = node
         return node
     }
 

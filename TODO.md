@@ -164,6 +164,30 @@
   + update the `paths()` doc (emission fires on prune, depth cap, natural terminal).
   Plan: `ai-scripts/PathsNaturalTerminalPlan.md`.
 
+- **✅ 1.19 Three-tier container specialization: `SingleSchemaGraph` / `HomogeneousSchemaGraph` / `HeterogeneousSchemaGraph`**
+  `AbyssGraph` (single, tagWidth-parameterized container) is replaced by three types. `SingleSchemaGraph`
+  is a thin factory (no state to hold — exactly one schema by definition) over `AbyssGraphSchema`'s
+  standalone constructor, now genuinely headerless: a new `HeaderlessKeyAdapter<ID>` builds `NodeId`
+  as raw `encodeIdBytes(id)` with no 1.15 header byte at all (reverses that 1.15 "deliberate
+  regression" for the single-schema case). `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph` are two
+  independent top-level classes (no shared base, each with its own `register()`/cross-edge logic)
+  replacing `AbyssGraph`'s `register()` path. The one thing that differs across all three tiers —
+  how a worker resolves a key's `EdgeAdapter`, and whether two keys share a schema — is now injected
+  into `AbyssSchemaWorker` as a `SchemaResolution` (new, internal): `SingleSchemaResolution` (fixed
+  adapter, `sameSchema` trivially true — no cross-edges exist), `HomogeneousSchemaResolution`
+  (computes one `MultiSchemaAdapter(tagWidth)` once at construction, returned unconditionally — zero
+  `NodeKey` parsing per key), `HeterogeneousSchemaResolution` (today's unchanged per-key derivation via
+  `SchemaDescriptor.of`). Homogeneous vs Heterogeneous is a real code-path difference, not a cosmetic
+  rename — proven by a reference-identity test (`HomogeneousSchemaTest.homogeneousResolutionIsConstantHeterogeneousIsPerKey`)
+  since `MultiSchemaAdapter` is stateless and width-only, so the two *values* it produces are
+  structurally interchangeable even though the *work done per key* differs. Test fixtures that
+  pre-seed Hazelcast maps directly (bypassing the facade) needed matching updates: any `EdgeKey`/
+  `NodeId` built outside `AbyssGraphSchema` for a single-schema graph must go through
+  `HeaderlessKeyAdapter` too, since it's now the Compact-serializer-bound shape for that Hazelcast
+  instance (`GraphTest.kt`, `LongPerformanceTest.kt`, `StringPerformanceTest.kt`,
+  `UuidPerformanceTest.kt`, `AlgorithmsTest.kt`, `PathsTraversalTest.kt`, `TraversalTest.kt`).
+  Pre-1.0, no migration shims: `AbyssGraph.kt` deleted outright.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

@@ -26,6 +26,7 @@ import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertTrue
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
@@ -59,10 +60,10 @@ val multiSchemaHz by lazy {
 class MultiSchemaTest {
 
     // No tag→schema registry any more: the caller holds the typed facade `register` hands back.
-    private class Ctr(val g: AbyssGraph, val longS: AbyssGraphSchema<Long>, val uuidS: AbyssGraphSchema<Uuid>)
+    private class Ctr(val g: HeterogeneousSchemaGraph, val longS: AbyssGraphSchema<Long>, val uuidS: AbyssGraphSchema<Uuid>)
 
     private fun newContainer(allowCross: Boolean = false): Ctr {
-        val g = AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", allowCrossSchemaEdges = allowCross)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", allowCrossSchemaEdges = allowCross)
         return Ctr(g, g.register(LONG_TAG, LongKeyAdapter), g.register(UUID_TAG, UuidKeyAdapter))
     }
 
@@ -182,7 +183,7 @@ class MultiSchemaTest {
     }
 
     @Test fun twoLongSchemasDisambiguateByTag() = runBlocking {
-        val g = AbyssGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges")
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges")
         val a = g.register(LONG_TAG, LongKeyAdapter)
         val b = g.register(LONG_TAG_B, LongKeyAdapter)
         // Identical numeric ids in both schemas — only the schema tag distinguishes their edge keys.
@@ -229,6 +230,11 @@ class MultiSchemaTest {
         assertEquals(SchemaTagWidth.NONE, dBare.tagWidth)
         assertEquals(0L, dBare.tag)
         assertTrue(dBare.edgeAdapter === LongKeyAdapter)
+    }
+
+    @Test fun taggedContainersRejectNoneTagWidth() {
+        assertFails { HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.NONE, "ms-nodes-x", "ms-edges-x") }
+        assertFails { HomogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.NONE, "ms-nodes-x", "ms-edges-x") }
     }
 
     @Test fun kindToAdapterIsTotalAndSelfConsistent() {

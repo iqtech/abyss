@@ -28,9 +28,7 @@ import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeConstraint
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
-import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.SchemaDescriptor
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.full.findAnnotation
@@ -49,11 +47,12 @@ internal sealed interface NodeOp {
 /**
  * The untyped graph engine. Owns the shared Hazelcast maps and the (optional) single shared store, and
  * performs every schema operation purely on [NodeId] / [NodeLike]/[EdgeLike]. It never holds a
- * per-schema `<ID>` type or a tag→schema registry: each operation derives what it needs (adapter, tag
- * width, tag) straight from the self-describing key via [SchemaDescriptor.of].
+ * per-schema `<ID>` type or a tag→schema registry: each operation resolves the EdgeAdapter for a key,
+ * and whether two keys share a schema, via the injected [resolution] (TODO 1.19: this is the one thing
+ * that differs across the single/homogeneous/heterogeneous container tiers).
  *
  * A typed [AbyssGraphSchema] facade converts domain ids to NodeIds at the boundary and delegates here;
- * the [AbyssGraph] container owns one worker and routes its [NodeIdEngine] surface to it.
+ * a multi-schema container owns one worker and routes its [NodeIdEngine] surface to it.
  */
 internal class AbyssSchemaWorker(
     hazelcast: HazelcastInstance,
@@ -62,6 +61,7 @@ internal class AbyssSchemaWorker(
     private val persistentStore: AbyssStoreLike? = null,
     private val ephemeralStore: AbyssEphemeralStoreLike? = null,
     private val asyncCachePopulation: Boolean = false,
+    private val resolution: SchemaResolution,
 ) : NodeIdEngine {
 
     private val log = LoggerFactory.getLogger(AbyssSchemaWorker::class.java)
@@ -70,9 +70,7 @@ internal class AbyssSchemaWorker(
     private val edgesMap: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(edgesMapName)
     private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit> = hazelcast.getMap("$edgesMapName-reverse")
 
-    // ponytail: derives a descriptor (allocating MultiSchemaAdapter for tagged keys) per key build;
-    // memoize by tag-width if edge-key construction ever shows up in a profile.
-    private fun edgeAdapterOf(nid: NodeId) = SchemaDescriptor.of(nid).edgeAdapter
+    private fun edgeAdapterOf(nid: NodeId) = resolution.edgeAdapterOf(nid)
 
     private fun edgeKey(fromNid: NodeId, toNid: NodeId, type: String) =
         EdgeKey(fromNid, toNid, type, edgeAdapterOf(fromNid).partitionKey(fromNid))
@@ -282,10 +280,7 @@ internal class AbyssSchemaWorker(
         }
     }
 
-    // Two NodeIds belong to the same schema when their self-describing prefixes (tag width + tag) match.
-    // Cross-schema edges in the shared map have a foreign opposite endpoint; cascade skips them.
-    private fun sameSchema(a: NodeId, b: NodeId): Boolean =
-        runCatching { NodeKey.width(a) == NodeKey.width(b) && NodeKey.tag(a) == NodeKey.tag(b) }.getOrDefault(false)
+    private fun sameSchema(a: NodeId, b: NodeId): Boolean = resolution.sameSchema(a, b)
 
     private fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
         val pk = partitionKey(nid)

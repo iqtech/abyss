@@ -7,6 +7,7 @@ import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -20,6 +21,10 @@ class LongPerformanceTest {
         private const val NODE_COUNT = 10_000
         private const val EDGES_PER_NODE = 5
 
+        // AbyssGraphSchema's standalone constructor is headerless (TODO 1.19); pre-seeded maps must
+        // use the same HeaderlessKeyAdapter wrapper, not the bare (headered) LongKeyAdapter.
+        private val hlong = HeaderlessKeyAdapter(LongKeyAdapter)
+
         private val perfGraph: AbyssGraphSchema<Long> by lazy {
             AbyssGraphSchema(LongKeyAdapter, longTestHz, "perf-long-nodes", "perf-long-edges")
         }
@@ -30,16 +35,16 @@ class LongPerformanceTest {
             val edgesMap = longTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-long-edges")
             val reverseMap = longTestHz.getMap<ReverseEdgeKey, Unit>("perf-long-edges-reverse")
             ids.forEach { id ->
-                nodesMap[LongKeyAdapter.toNodeId(id)] = LongTestNode(id = id, name = id.toString())
+                nodesMap[hlong.toNodeId(id)] = LongTestNode(id = id, name = id.toString())
             }
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
-                    val fromNid = LongKeyAdapter.toNodeId(fromId)
-                    val toNid   = LongKeyAdapter.toNodeId(toId)
-                    edgesMap[EdgeKey(fromNid, toNid, "test_edge", LongKeyAdapter.partitionKey(fromNid))] =
+                    val fromNid = hlong.toNodeId(fromId)
+                    val toNid   = hlong.toNodeId(toId)
+                    edgesMap[EdgeKey(fromNid, toNid, "test_edge", hlong.partitionKey(fromNid))] =
                         LongTestEdge(fromId = fromId, toId = toId)
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", LongKeyAdapter.partitionKey(toNid))] = Unit
+                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", hlong.partitionKey(toNid))] = Unit
                 }
             }
             ids

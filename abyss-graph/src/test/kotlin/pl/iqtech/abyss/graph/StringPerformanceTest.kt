@@ -7,6 +7,7 @@ import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.store.api.EdgeLike
+import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.StringKeyAdapter
@@ -22,6 +23,10 @@ class StringPerformanceTest {
         private const val EDGES_PER_NODE = 5
         private val chars = ('a'..'z') + ('0'..'9')
 
+        // AbyssGraphSchema's standalone constructor is headerless (TODO 1.19); pre-seeded maps must
+        // use the same HeaderlessKeyAdapter wrapper, not the bare (headered) StringKeyAdapter.
+        private val hstr = HeaderlessKeyAdapter(StringKeyAdapter)
+
         private fun randomId() = (10 + Random.nextInt(41)).let { len ->
             (1..len).map { chars[Random.nextInt(chars.size)] }.joinToString("")
         }
@@ -36,16 +41,16 @@ class StringPerformanceTest {
             val edgesMap = stringTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-str-edges")
             val reverseMap = stringTestHz.getMap<ReverseEdgeKey, Unit>("perf-str-edges-reverse")
             ids.forEach { id ->
-                nodesMap[StringKeyAdapter.toNodeId(id)] = StrTestNode(id = id, name = id)
+                nodesMap[hstr.toNodeId(id)] = StrTestNode(id = id, name = id)
             }
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
-                    val fromNid = StringKeyAdapter.toNodeId(fromId)
-                    val toNid   = StringKeyAdapter.toNodeId(toId)
-                    edgesMap[EdgeKey(fromNid, toNid, "test_edge", StringKeyAdapter.partitionKey(fromNid))] =
+                    val fromNid = hstr.toNodeId(fromId)
+                    val toNid   = hstr.toNodeId(toId)
+                    edgesMap[EdgeKey(fromNid, toNid, "test_edge", hstr.partitionKey(fromNid))] =
                         StrTestEdge(fromId = fromId, toId = toId)
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", StringKeyAdapter.partitionKey(toNid))] = Unit
+                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", hstr.partitionKey(toNid))] = Unit
                 }
             }
             ids

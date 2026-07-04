@@ -18,7 +18,8 @@ import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 // A reusable, non-toy multi-schema fixture for the TODO 1.14 engine: three real schemas on one
-// AbyssGraph container (users / astronomy / interests), a real type hierarchy in astronomy, and
+// HeterogeneousSchemaGraph container (users / astronomy / interests), a real type hierarchy in
+// astronomy, and
 // cross-schema edges whose target type varies per instance. Same-package convention as
 // GraphTest.kt/MultiSchemaTest.kt: plain @Serializable data classes + a SerializersModule + helpers,
 // no new abstraction.
@@ -88,9 +89,9 @@ data class UniverseData(
     val users: List<User>,
 )
 
-/** One AbyssGraph container fronting the three schemas; cross-schema edges enabled. */
+/** One HeterogeneousSchemaGraph container fronting the three schemas; cross-schema edges enabled. */
 class UniverseGraph(hz: HazelcastInstance, nodesMapName: String = "uni-nodes", edgesMapName: String = "uni-edges") {
-    val container = AbyssGraph(hz, SchemaTagWidth.BYTE, nodesMapName, edgesMapName, allowCrossSchemaEdges = true)
+    val container = HeterogeneousSchemaGraph(hz, SchemaTagWidth.BYTE, nodesMapName, edgesMapName, allowCrossSchemaEdges = true)
     val users = container.register(UniverseTags.USERS, StringKeyAdapter)
     val astronomy = container.register(UniverseTags.ASTRONOMY, LongKeyAdapter)
     val interests = container.register(UniverseTags.INTERESTS, UuidKeyAdapter)
