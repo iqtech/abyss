@@ -146,7 +146,7 @@
   already BYTEA); scans return `StoredEdge` carrying both endpoint NodeIds so preload stays untyped.
   One shared store per container. Covered by the existing suites + `schemaDescriptorDerivesFromKey…`.
 
-- **➡️ 1.17 Remove `SchemaEdgeLike` and `CrossEdgeLike` — `EdgeLike` is enough**
+- **✅ 1.17 Remove `SchemaEdgeLike` and `CrossEdgeLike` — `EdgeLike` is enough**
   Both are zero-member aliases over `EdgeLike<FID,TID>` (`Model.kt:24-28`); cross-edge entry points
   already take `EdgeLike<NodeId,NodeId>` and graph serialization already uses `EdgeLike::class` as the
   polymorphic base. Delete both interfaces and rewrite all references to `EdgeLike` (unifying the

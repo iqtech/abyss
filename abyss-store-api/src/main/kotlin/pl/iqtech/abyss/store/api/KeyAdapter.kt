@@ -11,7 +11,7 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 
-// Serialized as its lowercase-hex string, so cross-schema edges (SchemaEdgeLike<NodeId>) round-trip
+// Serialized as its lowercase-hex string, so cross-schema edges (EdgeLike<NodeId, NodeId>) round-trip
 // through the JSON edge serializer.
 @Serializable(with = NodeIdHexSerializer::class)
 class NodeId(val bytes: ByteArray) : Comparable<NodeId> {

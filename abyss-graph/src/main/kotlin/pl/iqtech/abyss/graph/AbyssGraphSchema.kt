@@ -33,7 +33,6 @@ import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import kotlin.time.Duration
 
 /**
@@ -71,10 +70,10 @@ class AbyssGraphSchema<ID> internal constructor(
             .mapLeft { AbyssError.Unexpected(it) }
             .flatMap { n -> @Suppress("UNCHECKED_CAST") (n as NodeLike<ID>?)?.right() ?: AbyssError.NodeNotFound(id as Any).left() }
 
-    override suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, SchemaEdgeLike<ID>> =
+    override suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, EdgeLike<ID, ID>> =
         Either.catch { worker.readEdge(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }
             .mapLeft { AbyssError.Unexpected(it) }
-            .flatMap { e -> @Suppress("UNCHECKED_CAST") (e as SchemaEdgeLike<ID>?)?.right() ?: AbyssError.EdgeNotFound(fromId as Any, toId as Any, type).left() }
+            .flatMap { e -> @Suppress("UNCHECKED_CAST") (e as EdgeLike<ID, ID>?)?.right() ?: AbyssError.EdgeNotFound(fromId as Any, toId as Any, type).left() }
 
     override suspend fun nodeExists(id: ID): Either<AbyssError, Boolean> =
         Either.catch { worker.nodeExists(adapter.toNodeId(id)) }.mapLeft { AbyssError.Unexpected(it) }
@@ -82,17 +81,17 @@ class AbyssGraphSchema<ID> internal constructor(
     override suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean> =
         Either.catch { worker.edgeExists(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }.mapLeft { AbyssError.Unexpected(it) }
 
-    override fun outEdges(nodeId: ID, pageSize: Int): Flow<SchemaEdgeLike<ID>> =
+    override fun outEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID, ID>> =
         worker.outEdges(adapter.toNodeId(nodeId)).typed()
-    override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<SchemaEdgeLike<ID>> =
+    override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID, ID>> =
         worker.outEdges(adapter.toNodeId(nodeId), type).typed()
-    override fun inEdges(nodeId: ID, pageSize: Int): Flow<SchemaEdgeLike<ID>> =
+    override fun inEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID, ID>> =
         worker.inEdges(adapter.toNodeId(nodeId)).typed()
-    override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<SchemaEdgeLike<ID>> =
+    override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID, ID>> =
         worker.inEdges(adapter.toNodeId(nodeId), type).typed()
 
     @Suppress("UNCHECKED_CAST")
-    private fun Flow<SchemaEdgeLike<*>>.typed(): Flow<SchemaEdgeLike<ID>> = this as Flow<SchemaEdgeLike<ID>>
+    private fun Flow<EdgeLike<*, *>>.typed(): Flow<EdgeLike<ID, ID>> = this as Flow<EdgeLike<ID, ID>>
 
     override suspend fun <T> from(nodeId: ID, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T> =
         Either.catch { TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter).block() }
@@ -101,7 +100,7 @@ class AbyssGraphSchema<ID> internal constructor(
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
         val buffer = BufferedTransaction<ID>(
             readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
-            readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as SchemaEdgeLike<ID>?) }
+            readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
         )
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
         return worker.transaction(buffer.ops.map { it.toNodeOp(adapter) }, checkIntegrity)
@@ -111,7 +110,7 @@ class AbyssGraphSchema<ID> internal constructor(
         val buffer = BufferedEphemeralTransaction<ID>(
             ttl = ttl,
             readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
-            readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as SchemaEdgeLike<ID>?) }
+            readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
         )
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
         return worker.ephemeral(buffer.ops.map { it.toNodeOp(adapter) }, checkIntegrity)
@@ -146,7 +145,7 @@ internal fun <K, V> nativeKeyEq(field: String, enc: NodeKeyEncoding): Predicate<
 }
 
 // Call before creating the HazelcastInstance — serialization config is immutable after startup.
-// Pass the consuming project's SerializersModule so concrete NodeLike/SchemaEdgeLike types are known.
+// Pass the consuming project's SerializersModule so concrete NodeLike/EdgeLike types are known.
 // The adapter must match the KeyAdapter used by every AbyssGraphSchema<ID> sharing this HazelcastInstance:
 // EdgeKey/ReverseEdgeKey compact serialization is bound to one adapter's native field encoding.
 fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersModule = EmptySerializersModule()): Config = apply {
@@ -162,7 +161,7 @@ fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersMod
 private sealed interface Op {
     data class AddNode(val node: NodeLike<*>, val ttl: Duration?) : Op
     data class RemoveNode(val id: Any?) : Op
-    data class AddEdge(val edge: SchemaEdgeLike<*>, val ttl: Duration?) : Op
+    data class AddEdge(val edge: EdgeLike<*, *>, val ttl: Duration?) : Op
     data class RemoveEdge(val fromId: Any?, val toId: Any?, val type: String) : Op
 }
 
@@ -170,23 +169,23 @@ private sealed interface Op {
 private fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>): NodeOp = when (this) {
     is Op.AddNode    -> NodeOp.AddNode(adapter.toNodeId((node as NodeLike<ID>).id), node, ttl)
     is Op.RemoveNode -> NodeOp.RemoveNode(adapter.toNodeId(id as ID))
-    is Op.AddEdge    -> NodeOp.AddEdge(adapter.toNodeId((edge as SchemaEdgeLike<ID>).fromId), adapter.toNodeId(edge.toId), edge, ttl)
+    is Op.AddEdge    -> NodeOp.AddEdge(adapter.toNodeId((edge as EdgeLike<ID, ID>).fromId), adapter.toNodeId(edge.toId), edge, ttl)
     is Op.RemoveEdge -> NodeOp.RemoveEdge(adapter.toNodeId(fromId as ID), adapter.toNodeId(toId as ID), type)
 }
 
 private class BufferedTransaction<ID>(
     private val readNode: suspend (ID) -> NodeLike<ID>?,
-    private val readEdge: suspend (ID, ID, String) -> SchemaEdgeLike<ID>?
+    private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID, ID>?
 ) : AbyssTransactionLike<ID> {
     val ops = mutableListOf<Op>()
     override fun addNode(node: NodeLike<ID>)                          { ops += Op.AddNode(node, null) }
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: SchemaEdgeLike<ID>)                          { ops += Op.AddEdge(edge, null) }
+    override fun addEdge(edge: EdgeLike<ID, ID>)                          { ops += Op.AddEdge(edge, null) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
     override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
         ops += Op.AddNode(transform(readNode(id)), null)
     }
-    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (SchemaEdgeLike<ID>?) -> SchemaEdgeLike<ID>) {
+    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>) {
         ops += Op.RemoveEdge(fromId, toId, type)
         ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), null)
     }
@@ -195,17 +194,17 @@ private class BufferedTransaction<ID>(
 private class BufferedEphemeralTransaction<ID>(
     private val ttl: Duration,
     private val readNode: suspend (ID) -> NodeLike<ID>?,
-    private val readEdge: suspend (ID, ID, String) -> SchemaEdgeLike<ID>?
+    private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID, ID>?
 ) : AbyssEphemeralTransactionLike<ID> {
     val ops = mutableListOf<Op>()
     override fun addNode(node: NodeLike<ID>)                          { ops += Op.AddNode(node, ttl) }
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: SchemaEdgeLike<ID>)                          { ops += Op.AddEdge(edge, ttl) }
+    override fun addEdge(edge: EdgeLike<ID, ID>)                          { ops += Op.AddEdge(edge, ttl) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
     override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
         ops += Op.AddNode(transform(readNode(id)), ttl)
     }
-    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (SchemaEdgeLike<ID>?) -> SchemaEdgeLike<ID>) {
+    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>) {
         ops += Op.RemoveEdge(fromId, toId, type)
         ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), ttl)
     }

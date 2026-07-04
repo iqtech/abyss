@@ -11,7 +11,7 @@ import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.node
 import pl.iqtech.abyss.dsl.outEdges
 import pl.iqtech.abyss.dsl.outgoing
-import pl.iqtech.abyss.store.api.CrossEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.IntKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.adapter
@@ -38,7 +38,7 @@ data class CrossRefEdge(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val note: String = "",
-) : CrossEdgeLike<NodeId, NodeId>
+) : EdgeLike<NodeId, NodeId>
 
 private const val LONG_TAG = 1L
 private const val UUID_TAG = 2L

@@ -6,12 +6,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
-import pl.iqtech.abyss.store.api.CrossEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
-import pl.iqtech.abyss.store.api.EdgeLike
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.StringKeyAdapter
@@ -54,16 +52,16 @@ data class Interest(override val id: Uuid, val name: String, override val tags: 
 
 // ── Edges ───────────────────────────────────────────────────────────────────────
 @Serializable @SerialName("uni_orbits")   // orbiter → orbited (Moon→Planet, Planet→Star, Star→Singularity)
-data class Orbits(override val fromId: Long, override val toId: Long, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : SchemaEdgeLike<Long>
+data class Orbits(override val fromId: Long, override val toId: Long, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Long, Long>
 
 @Serializable @SerialName("uni_subdomain_of")   // child → parent
-data class SubdomainOf(override val fromId: Uuid, override val toId: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : SchemaEdgeLike<Uuid>
+data class SubdomainOf(override val fromId: Uuid, override val toId: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
 
 @Serializable @SerialName("uni_interested_in")   // User → Interest
-data class InterestedIn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : CrossEdgeLike<NodeId, NodeId>
+data class InterestedIn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<NodeId, NodeId>
 
 @Serializable @SerialName("uni_lives_on")   // User → Astronomy (target is a Planet or a Moon)
-data class LivesOn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : CrossEdgeLike<NodeId, NodeId>
+data class LivesOn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<NodeId, NodeId>
 
 object UniverseTags { const val USERS = 1L; const val ASTRONOMY = 2L; const val INTERESTS = 3L }
 

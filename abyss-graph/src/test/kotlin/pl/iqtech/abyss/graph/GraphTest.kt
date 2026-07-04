@@ -28,7 +28,6 @@ import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.EdgeLike
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -61,7 +60,7 @@ data class TypedEdge(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
-) : SchemaEdgeLike<Uuid>
+) : EdgeLike<Uuid, Uuid>
 
 val graphTestModule = SerializersModule {
     polymorphic(NodeLike::class) {
@@ -165,9 +164,9 @@ class GraphTest {
     @Test fun `edge() returns Right when present`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "has_rifle")
-            graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(edge.fromId, edge.toId, "test_edge")] = edge
+            graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(edge.fromId, edge.toId, "test_edge")] = edge
             val result = graphTest.edge(edge.fromId, edge.toId, "test_edge")
-            assertIs<Either.Right<SchemaEdgeLike<*>>>(result)
+            assertIs<Either.Right<EdgeLike<*, *>>>(result)
             assertEquals(edge, result.value)
         }
     }
@@ -183,7 +182,7 @@ class GraphTest {
     @Test fun `reified edge() resolves type from SerialName`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "owns")
-            graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(edge.fromId, edge.toId, "test_edge")] = edge
+            graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(edge.fromId, edge.toId, "test_edge")] = edge
             val result = graphTest.edge<TestEdge>(edge.fromId, edge.toId)
             assertIs<Either.Right<TestEdge>>(result)
             assertEquals("owns", result.value.label)
@@ -195,7 +194,7 @@ class GraphTest {
     @Test fun `edgeExists() returns true when present`() {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "link")
-            graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(edge.fromId, edge.toId, "test_edge")] = edge
+            graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(edge.fromId, edge.toId, "test_edge")] = edge
             assertEquals(Either.Right(true), graphTest.edgeExists<TestEdge>(edge.fromId, edge.toId))
         }
     }
@@ -212,7 +211,7 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..3).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
 
             val result = graphTest.outEdges(from).toList()
             assertEquals(3, result.size)
@@ -223,9 +222,9 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..3).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
             // decoy with a different key type
-            graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(from, Uuid.random(), "other_type")] =
+            graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(from, Uuid.random(), "other_type")] =
                 edges[0].copy(toId = Uuid.random())
 
             val result = graphTest.outEdges(from, "test_edge").toList()
@@ -237,7 +236,7 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..2).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
 
             val result = graphTest.outEdges<TestEdge>(from).toList()
             assertEquals(2, result.size)
@@ -249,7 +248,7 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..5).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
 
             val result = graphTest.outEdges(from, pageSize = 2).toList()
             assertEquals(5, result.size)
@@ -295,7 +294,7 @@ class GraphTest {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tx-edge")
             graphTest.transaction(checkIntegrity = false) { addEdge(edge) }
-            assertIs<Either.Right<SchemaEdgeLike<*>>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+            assertIs<Either.Right<EdgeLike<*, *>>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
         }
     }
 
@@ -308,7 +307,7 @@ class GraphTest {
             val ac = ab.copy(toId = c.id, label = "ac")
             graphTest.transaction { addNode(a); addNode(b); addNode(c); addEdge(ab) }
             graphTest.transaction { modifyEdge(a.id, b.id, "test_edge") { _ -> ac } }
-            assertIs<Either.Right<SchemaEdgeLike<*>>>(graphTest.edge(a.id, c.id, "test_edge"))
+            assertIs<Either.Right<EdgeLike<*, *>>>(graphTest.edge(a.id, c.id, "test_edge"))
             assertIs<Either.Left<AbyssError>>(graphTest.edge(a.id, b.id, "test_edge"))
             assertEquals(1, graphTest.inEdges(c.id).toList().size)
             assertEquals(0, graphTest.inEdges(b.id).toList().size)
@@ -324,7 +323,7 @@ class GraphTest {
             val bc = ac.copy(fromId = b.id, label = "bc")
             graphTest.transaction { addNode(a); addNode(b); addNode(c); addEdge(ac) }
             graphTest.transaction { modifyEdge(a.id, c.id, "test_edge") { _ -> bc } }
-            assertIs<Either.Right<SchemaEdgeLike<*>>>(graphTest.edge(b.id, c.id, "test_edge"))
+            assertIs<Either.Right<EdgeLike<*, *>>>(graphTest.edge(b.id, c.id, "test_edge"))
             assertIs<Either.Left<AbyssError>>(graphTest.edge(a.id, c.id, "test_edge"))
         }
     }
@@ -468,7 +467,7 @@ class GraphTest {
         runBlocking {
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-edge")
             graphTest.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
-            assertIs<Either.Right<SchemaEdgeLike<*>>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+            assertIs<Either.Right<EdgeLike<*, *>>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
         }
     }
 
@@ -694,13 +693,13 @@ private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
 
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         if (failTx) return AbyssError.Unexpected(RuntimeException("store down")).left()
         val tx = object : AbyssStoreTransactionLike {
             override fun saveNode(id: NodeId, node: NodeLike<*>) { saveNodeCalls += UuidKeyAdapter.fromNodeId(id) }
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: SchemaEdgeLike<*>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
             override fun deleteNode(id: NodeId) { saveNodeCalls -= UuidKeyAdapter.fromNodeId(id) }
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
@@ -713,12 +712,12 @@ private class FakeEphemeralStore : AbyssEphemeralStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
 
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssEphemeralStoreTransactionLike {
             override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { saveNodeCalls += UuidKeyAdapter.fromNodeId(id) }
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: SchemaEdgeLike<*>, ttl: Duration) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration) {}
             override fun deleteNode(id: NodeId) { saveNodeCalls -= UuidKeyAdapter.fromNodeId(id) }
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
@@ -728,11 +727,11 @@ private class FakeEphemeralStore : AbyssEphemeralStoreLike {
 }
 
 private class WarmingFakeStore(
-    private val outEdges: List<SchemaEdgeLike<Uuid>> = emptyList(),
-    private val inEdges: List<SchemaEdgeLike<Uuid>> = emptyList(),
+    private val outEdges: List<EdgeLike<Uuid, Uuid>> = emptyList(),
+    private val inEdges: List<EdgeLike<Uuid, Uuid>> = emptyList(),
 ) : AbyssStoreLike {
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
     override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.Right(outEdges.filter { UuidKeyAdapter.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, UuidKeyAdapter.toNodeId(it.toId), it, null) })
     override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =

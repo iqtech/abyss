@@ -15,7 +15,6 @@ import pl.iqtech.abyss.graph.serialization.createPolymorphicJsonSerializer
 import pl.iqtech.abyss.graph.serialization.customJsonSerializer
 import pl.iqtech.abyss.store.api.abyssSerializersModule
 import pl.iqtech.abyss.store.api.EdgeLike
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlinx.serialization.serializer
 import kotlin.test.Test
@@ -41,7 +40,7 @@ data class LongTestEdge(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
-) : SchemaEdgeLike<Long>
+) : EdgeLike<Long, Long>
 
 @Serializable @SerialName("str_test_node")
 data class StrTestNode(
@@ -59,7 +58,7 @@ data class StrTestEdge(
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
-) : SchemaEdgeLike<String>
+) : EdgeLike<String, String>
 
 @Serializable @SerialName("test_node")
 data class TestNode(
@@ -78,7 +77,7 @@ data class TestEdge(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
-) : SchemaEdgeLike<Uuid>
+) : EdgeLike<Uuid, Uuid>
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 

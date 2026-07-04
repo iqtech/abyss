@@ -6,7 +6,7 @@ import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -27,7 +27,7 @@ class LongPerformanceTest {
         private val nodeIds: List<Long> by lazy {
             val ids = (1L..NODE_COUNT.toLong()).toList()
             val nodesMap = longTestHz.getMap<NodeId, NodeLike<*>>("perf-long-nodes")
-            val edgesMap = longTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("perf-long-edges")
+            val edgesMap = longTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-long-edges")
             val reverseMap = longTestHz.getMap<ReverseEdgeKey, Unit>("perf-long-edges-reverse")
             ids.forEach { id ->
                 nodesMap[LongKeyAdapter.toNodeId(id)] = LongTestNode(id = id, name = id.toString())

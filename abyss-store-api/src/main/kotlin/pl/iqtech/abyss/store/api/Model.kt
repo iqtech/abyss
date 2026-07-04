@@ -20,9 +20,3 @@ interface EdgeLike<FID, TID> {
     val createdAt: Instant
     val updatedAt: Instant
 }
-
-// Same-schema edge: both endpoints share one ID type. The 99% case (Road, Knows, …).
-interface SchemaEdgeLike<ID> : EdgeLike<ID, ID>
-
-// Cross-schema edge: endpoints belong to different (or not-statically-fixed) schemas.
-interface CrossEdgeLike<FID, TID> : EdgeLike<FID, TID>

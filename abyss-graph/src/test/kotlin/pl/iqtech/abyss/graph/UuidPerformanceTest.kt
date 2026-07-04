@@ -6,7 +6,7 @@ import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -28,7 +28,7 @@ class UuidPerformanceTest {
         private val nodeIds: List<Uuid> by lazy {
             val ids = (1..NODE_COUNT).map { Uuid.random() }
             val nodesMap = graphTestHz.getMap<NodeId, NodeLike<*>>("perf-uuid-nodes")
-            val edgesMap = graphTestHz.getMap<EdgeKey, SchemaEdgeLike<*>>("perf-uuid-edges")
+            val edgesMap = graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-uuid-edges")
             val reverseMap = graphTestHz.getMap<ReverseEdgeKey, Unit>("perf-uuid-edges-reverse")
             ids.forEach { id ->
                 nodesMap[UuidKeyAdapter.toNodeId(id)] = TestNode(id = id, name = id.toString())

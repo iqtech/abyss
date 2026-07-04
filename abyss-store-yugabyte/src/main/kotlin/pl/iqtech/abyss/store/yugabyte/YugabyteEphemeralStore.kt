@@ -19,7 +19,7 @@ import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
 import pl.iqtech.abyss.store.api.AbyssError
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -32,7 +32,7 @@ import kotlin.time.Duration.Companion.milliseconds
 
 private sealed interface EphemeralOp {
     data class SaveNode(val id: NodeId, val node: NodeLike<*>, val ttl: Duration) : EphemeralOp
-    data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: SchemaEdgeLike<*>, val ttl: Duration) : EphemeralOp
+    data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val ttl: Duration) : EphemeralOp
     data class DeleteNode(val id: NodeId) : EphemeralOp
     data class DeleteEdge(val fromId: NodeId, val toId: NodeId, val type: String) : EphemeralOp
 }
@@ -56,7 +56,7 @@ class YugabyteEphemeralStore(
     @Suppress("UNCHECKED_CAST")
     private val nodeSer = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
     @Suppress("UNCHECKED_CAST")
-    private val edgeSer = PolymorphicSerializer(SchemaEdgeLike::class) as kotlinx.serialization.KSerializer<SchemaEdgeLike<*>>
+    private val edgeSer = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*, *>>
 
     private val selectNodeYcql: PreparedStatement =
         ycql.prepare("SELECT data, ttl_expiration FROM $ycqlKeyspace.ephemeral_nodes WHERE id = ?")
@@ -74,7 +74,7 @@ class YugabyteEphemeralStore(
             withContext(Dispatchers.IO) { queryNodeYcql(id)?.let { (node, exp) -> node to remainingTtl(exp) } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<SchemaEdgeLike<*>?, Duration?>> =
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> =
         Either.catch {
             withContext(Dispatchers.IO) { queryEdgeYcql(fromId, toId, type)?.let { (edge, exp) -> edge to remainingTtl(exp) } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
@@ -119,7 +119,7 @@ class YugabyteEphemeralStore(
         return json.decodeFromString(nodeSer, data) to ttlExpiration
     }
 
-    private fun queryEdgeYcql(fromId: NodeId, toId: NodeId, type: String): Pair<SchemaEdgeLike<*>, java.time.Instant?>? {
+    private fun queryEdgeYcql(fromId: NodeId, toId: NodeId, type: String): Pair<EdgeLike<*, *>, java.time.Instant?>? {
         val row = ycql.execute(selectEdgeYcql.bind(idBuf(fromId), idBuf(toId), type)).one() ?: return null
         val data = row.getString("data") ?: return null
         val ttlExpiration = row.getInstant("ttl_expiration")
@@ -127,7 +127,7 @@ class YugabyteEphemeralStore(
         return json.decodeFromString(edgeSer, data) to ttlExpiration
     }
 
-    private fun queryEdgesYcql(stmt: PreparedStatement, id: NodeId): List<Triple<NodeId, SchemaEdgeLike<*>, java.time.Instant?>> =
+    private fun queryEdgesYcql(stmt: PreparedStatement, id: NodeId): List<Triple<NodeId, EdgeLike<*, *>, java.time.Instant?>> =
         ycql.execute(stmt.bind(idBuf(id)))
             .mapNotNull { row ->
                 val data = row.getString("data") ?: return@mapNotNull null
@@ -175,7 +175,7 @@ class YugabyteEphemeralStore(
     private inner class EphemeralTransaction : AbyssEphemeralStoreTransactionLike {
         val ops = mutableListOf<EphemeralOp>()
         override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { ops += EphemeralOp.SaveNode(id, node, ttl) }
-        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: SchemaEdgeLike<*>, ttl: Duration) { ops += EphemeralOp.SaveEdge(fromId, toId, edge, ttl) }
+        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration) { ops += EphemeralOp.SaveEdge(fromId, toId, edge, ttl) }
         override fun deleteNode(id: NodeId) { ops += EphemeralOp.DeleteNode(id) }
         override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { ops += EphemeralOp.DeleteEdge(fromId, toId, type) }
     }

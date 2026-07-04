@@ -31,7 +31,6 @@ import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.SchemaDescriptor
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.full.findAnnotation
@@ -43,13 +42,13 @@ internal sealed interface NodeOp {
     val ttl: Duration?
     data class AddNode(val id: NodeId, val node: NodeLike<*>, override val ttl: Duration?) : NodeOp
     data class RemoveNode(val id: NodeId) : NodeOp { override val ttl: Duration? get() = null }
-    data class AddEdge(val fromId: NodeId, val toId: NodeId, val edge: SchemaEdgeLike<*>, override val ttl: Duration?) : NodeOp
+    data class AddEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, override val ttl: Duration?) : NodeOp
     data class RemoveEdge(val fromId: NodeId, val toId: NodeId, val type: String) : NodeOp { override val ttl: Duration? get() = null }
 }
 
 /**
  * The untyped graph engine. Owns the shared Hazelcast maps and the (optional) single shared store, and
- * performs every schema operation purely on [NodeId] / [NodeLike]/[SchemaEdgeLike]. It never holds a
+ * performs every schema operation purely on [NodeId] / [NodeLike]/[EdgeLike]. It never holds a
  * per-schema `<ID>` type or a tag→schema registry: each operation derives what it needs (adapter, tag
  * width, tag) straight from the self-describing key via [SchemaDescriptor.of].
  *
@@ -68,7 +67,7 @@ internal class AbyssSchemaWorker(
     private val log = LoggerFactory.getLogger(AbyssSchemaWorker::class.java)
 
     private val nodesMap: IMap<NodeId, NodeLike<*>> = hazelcast.getMap(nodesMapName)
-    private val edgesMap: IMap<EdgeKey, SchemaEdgeLike<*>> = hazelcast.getMap(edgesMapName)
+    private val edgesMap: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(edgesMapName)
     private val reverseEdgesMap: IMap<ReverseEdgeKey, Unit> = hazelcast.getMap("$edgesMapName-reverse")
 
     // ponytail: derives a descriptor (allocating MultiSchemaAdapter for tagged keys) per key build;
@@ -91,7 +90,7 @@ internal class AbyssSchemaWorker(
     suspend fun readNode(nid: NodeId): NodeLike<*>? =
         nodesMap.getAsync(nid).asDeferred().await() ?: loadAndCacheNode(nid)
 
-    suspend fun readEdge(fromNid: NodeId, toNid: NodeId, type: String): SchemaEdgeLike<*>? =
+    suspend fun readEdge(fromNid: NodeId, toNid: NodeId, type: String): EdgeLike<*, *>? =
         edgesMap.getAsync(edgeKey(fromNid, toNid, type)).asDeferred().await() ?: loadAndCacheEdge(fromNid, toNid, type)
 
     suspend fun nodeExists(nid: NodeId): Boolean =
@@ -102,13 +101,13 @@ internal class AbyssSchemaWorker(
 
     fun allNodeIds(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
 
-    fun outEdges(nid: NodeId): Flow<SchemaEdgeLike<*>> =
-        outEdgeFlow(nid, keyEq<EdgeKey, SchemaEdgeLike<*>>("fromId", nid))
+    fun outEdges(nid: NodeId): Flow<EdgeLike<*, *>> =
+        outEdgeFlow(nid, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid))
 
-    fun outEdges(nid: NodeId, type: String): Flow<SchemaEdgeLike<*>> =
-        outEdgeFlow(nid, Predicates.and(keyEq<EdgeKey, SchemaEdgeLike<*>>("fromId", nid), Predicates.equal<EdgeKey, SchemaEdgeLike<*>>("__key.type", type)))
+    fun outEdges(nid: NodeId, type: String): Flow<EdgeLike<*, *>> =
+        outEdgeFlow(nid, Predicates.and(keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid), Predicates.equal<EdgeKey, EdgeLike<*, *>>("__key.type", type)))
 
-    fun inEdges(nid: NodeId, type: String? = null): Flow<SchemaEdgeLike<*>> = inEdgeFlow(nid, type)
+    fun inEdges(nid: NodeId, type: String? = null): Flow<EdgeLike<*, *>> = inEdgeFlow(nid, type)
 
     private fun edgeType(edge: EdgeLike<*, *>): String =
         edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
@@ -171,13 +170,13 @@ internal class AbyssSchemaWorker(
         reverseEdgesMap.remove(revKey(toId, fromId, type))
     }
 
-    private fun outEdgeFlow(nid: NodeId, predicate: Predicate<EdgeKey, SchemaEdgeLike<*>>): Flow<SchemaEdgeLike<*>> = flow {
+    private fun outEdgeFlow(nid: NodeId, predicate: Predicate<EdgeKey, EdgeLike<*, *>>): Flow<EdgeLike<*, *>> = flow {
         preloadOut(nid)
-        val partitioned = Predicates.partitionPredicate<EdgeKey, SchemaEdgeLike<*>>(partitionKey(nid), predicate)
+        val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike<*, *>>(partitionKey(nid), predicate)
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
     }
 
-    private fun inEdgeFlow(nid: NodeId, typeFilter: String? = null): Flow<SchemaEdgeLike<*>> = flow {
+    private fun inEdgeFlow(nid: NodeId, typeFilter: String? = null): Flow<EdgeLike<*, *>> = flow {
         preloadIn(nid)
         val revKeys = withContext(Dispatchers.IO) {
             reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
@@ -290,7 +289,7 @@ internal class AbyssSchemaWorker(
 
     private fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
         val pk = partitionKey(nid)
-        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, SchemaEdgeLike<*>>("fromId", nid)))
+        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid)))
             .filter { sameSchema(it.key.toId, nid) }
             .map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
         // ponytail: ephemeral edges are outgoing-only (TODO 1.13) — no reverse index, so deleting the
@@ -360,7 +359,7 @@ internal class AbyssSchemaWorker(
         return node
     }
 
-    private suspend fun loadAndCacheEdge(fromNid: NodeId, toNid: NodeId, type: String): SchemaEdgeLike<*>? {
+    private suspend fun loadAndCacheEdge(fromNid: NodeId, toNid: NodeId, type: String): EdgeLike<*, *>? {
         val (edge, remaining) = coroutineScope {
             val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadEdge(fromNid, toNid, type)?.getOrNull() }
             val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore?.loadEdge(fromNid, toNid, type)?.getOrNull() }
@@ -376,7 +375,7 @@ internal class AbyssSchemaWorker(
         return edge
     }
 
-    private fun schemaCheck(edge: SchemaEdgeLike<*>, from: NodeLike<*>, to: NodeLike<*>): AbyssError? {
+    private fun schemaCheck(edge: EdgeLike<*, *>, from: NodeLike<*>, to: NodeLike<*>): AbyssError? {
         val c = edge::class.findAnnotation<EdgeConstraint>() ?: return null
         if (c.fromTypes.isNotEmpty() && from !is UnknownNode && from::class !in c.fromTypes)
             return AbyssError.SchemaError("Edge ${edgeType(edge)}: fromId is ${from::class.simpleName}, expected ${c.fromTypes.map { it.simpleName }}")

@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.reflect.full.findAnnotation
 
@@ -24,38 +23,38 @@ suspend inline fun <reified N : NodeLike<*>> AbyssEngineLike<*>.node(id: Any?): 
         .flatMap { (it as? N)?.right() ?: AbyssError.NodeNotFound(id as Any).left() }
 
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : SchemaEdgeLike<*>> AbyssEngineLike<*>.edge(fromId: Any?, toId: Any?): Either<AbyssError, E> {
+suspend inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.edge(fromId: Any?, toId: Any?): Either<AbyssError, E> {
     val type = E::class.findAnnotation<SerialName>()!!.value
     return (this as AbyssEngineLike<Any?>).edge(fromId as Any?, toId as Any?, type)
         .flatMap { (it as? E)?.right() ?: AbyssError.EdgeNotFound(fromId as Any, toId as Any, type).left() }
 }
 
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : SchemaEdgeLike<*>> AbyssEngineLike<*>.edgeExists(fromId: Any?, toId: Any?): Either<AbyssError, Boolean> =
+suspend inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.edgeExists(fromId: Any?, toId: Any?): Either<AbyssError, Boolean> =
     (this as AbyssEngineLike<Any?>).edgeExists(fromId as Any?, toId as Any?, E::class.findAnnotation<SerialName>()!!.value)
 
 @Suppress("UNCHECKED_CAST")
-inline fun <reified E : SchemaEdgeLike<*>> AbyssEngineLike<*>.outEdges(nodeId: Any?, pageSize: Int = 100): Flow<E> =
+inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.outEdges(nodeId: Any?, pageSize: Int = 100): Flow<E> =
     (this as AbyssEngineLike<Any?>).outEdges(nodeId as Any?, E::class.findAnnotation<SerialName>()!!.value, pageSize).filterIsInstance<E>()
 
 @Suppress("UNCHECKED_CAST")
-inline fun <reified E : SchemaEdgeLike<*>> AbyssEngineLike<*>.inEdges(nodeId: Any?, pageSize: Int = 100): Flow<E> =
+inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.inEdges(nodeId: Any?, pageSize: Int = 100): Flow<E> =
     (this as AbyssEngineLike<Any?>).inEdges(nodeId as Any?, E::class.findAnnotation<SerialName>()!!.value, pageSize).filterIsInstance<E>()
 
 // AbyssTransactionLike
 
-inline fun <ID, reified E : SchemaEdgeLike<ID>> AbyssTransactionLike<ID>.removeEdge(fromId: ID, toId: ID) =
+inline fun <ID, reified E : EdgeLike<ID, ID>> AbyssTransactionLike<ID>.removeEdge(fromId: ID, toId: ID) =
     removeEdge(fromId, toId, E::class.findAnnotation<SerialName>()!!.value)
 
-fun <ID> AbyssTransactionLike<ID>.removeEdge(edge: SchemaEdgeLike<ID>) =
+fun <ID> AbyssTransactionLike<ID>.removeEdge(edge: EdgeLike<ID, ID>) =
     removeEdge(edge.fromId, edge.toId, edge::class.findAnnotation<SerialName>()!!.value)
 
 // AbyssEphemeralTransactionLike
 
-inline fun <ID, reified E : SchemaEdgeLike<ID>> AbyssEphemeralTransactionLike<ID>.removeEdge(fromId: ID, toId: ID) =
+inline fun <ID, reified E : EdgeLike<ID, ID>> AbyssEphemeralTransactionLike<ID>.removeEdge(fromId: ID, toId: ID) =
     removeEdge(fromId, toId, E::class.findAnnotation<SerialName>()!!.value)
 
-fun <ID> AbyssEphemeralTransactionLike<ID>.removeEdge(edge: SchemaEdgeLike<ID>) =
+fun <ID> AbyssEphemeralTransactionLike<ID>.removeEdge(edge: EdgeLike<ID, ID>) =
     removeEdge(edge.fromId, edge.toId, edge::class.findAnnotation<SerialName>()!!.value)
 
 // TraversalBuilderLike
@@ -153,7 +152,7 @@ suspend fun <ID> AbyssEngineLike<ID>.ensureSubgraph(
 ): Either<AbyssError, Unit> = either {
     val nodes = paths.flatMap { it.nodes }.associateBy { it.id } as Map<ID, NodeLike<ID>>
     val edges = paths.flatMap { it.edges }
-        .distinctBy { Triple(it.fromId, it.toId, edgeType(it)) } as List<SchemaEdgeLike<ID>>
+        .distinctBy { Triple(it.fromId, it.toId, edgeType(it)) } as List<EdgeLike<ID, ID>>
 
     // ponytail: read-before-write TOCTOU window; acceptable for an idempotent ensure —
     // the store commit is the final arbiter. Tighten only if a concurrent-clobber bug shows up.

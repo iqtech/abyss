@@ -10,7 +10,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
-import pl.iqtech.abyss.store.api.SchemaEdgeLike
+import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -44,11 +44,11 @@ data class YbTestEdge(
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
-) : SchemaEdgeLike<Uuid>
+) : EdgeLike<Uuid, Uuid>
 
 private val ybModule = SerializersModule {
     polymorphic(NodeLike::class) { subclass(YbTestNode::class) }
-    polymorphic(SchemaEdgeLike::class) { subclass(YbTestEdge::class) }
+    polymorphic(EdgeLike::class) { subclass(YbTestEdge::class) }
 }
 
 private val ybPersistentStore by lazy {
@@ -111,14 +111,14 @@ class LoadTest {
         insertYsqlEdge(fromId, toId, edgeJson(fromId, toId, "ysql-edge"))
 
         val result = runBlocking { ybPersistentStore.loadEdge(nid(fromId), nid(toId), "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike<*>?, *>>>(result)
+        assertIs<Either.Right<Pair<EdgeLike<*, *>?, *>>>(result)
         assertEquals("ysql-edge", assertIs<YbTestEdge>(result.value.first).label)
         assertEquals(null, result.value.second)
     }
 
     @Test fun `loadEdge returns null for absent key`() {
         val result = runBlocking { ybPersistentStore.loadEdge(nid(Uuid.random()), nid(Uuid.random()), "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike<*>?, *>>>(result)
+        assertIs<Either.Right<Pair<EdgeLike<*, *>?, *>>>(result)
         assertEquals(null, result.value.first)
     }
 
@@ -170,7 +170,7 @@ class LoadTest {
         insertYcqlEdge(fromId, toId, edgeJson(fromId, toId, "ycql-edge"))
 
         val result = runBlocking { ybEphemeralStore.loadEdge(nid(fromId), nid(toId), "yb_test_edge") }
-        assertIs<Either.Right<Pair<SchemaEdgeLike<*>?, *>>>(result)
+        assertIs<Either.Right<Pair<EdgeLike<*, *>?, *>>>(result)
         assertEquals("ycql-edge", assertIs<YbTestEdge>(result.value.first).label)
     }
 
