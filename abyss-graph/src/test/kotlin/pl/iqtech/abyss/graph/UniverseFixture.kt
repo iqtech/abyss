@@ -136,9 +136,30 @@ suspend fun UniverseGraph.build(): UniverseData {
     val trappist1 = Star(++seq, "TRAPPIST-1", 0.089)
     val trappist1e = Planet(++seq, "TRAPPIST-1e", 0.69)
     val trappist1f = Planet(++seq, "TRAPPIST-1f", 1.04)
+
+    // TODO 3.4: a second, same-shaped system (1 singularity + 3 stars + 7 planets + 3 moons,
+    // mirroring Sol/Kepler/TRAPPIST above) roughly doubling the astronomy graph for the concurrency
+    // benchmark. Entirely new names — existing lookups by name (e.g. "Luna", "Earth") are untouched.
+    val m87 = Singularity(++seq, "M87*", 6.5e9)
+    val alphaCenA = Star(++seq, "Alpha Centauri A", 1.1)
+    val alphaCenAb = Planet(++seq, "Alpha Centauri Ab", 0.5)
+    val alphaCenBb = Planet(++seq, "Alpha Centauri Bb", 0.9)
+    val proximaB = Planet(++seq, "Proxima b", 1.3)
+    val toi700d = Planet(++seq, "TOI-700 d", 1.7)
+    val titan = Moon(++seq, "Titan", 0.0225)
+    val europa = Moon(++seq, "Europa", 0.008)
+    val ganymede = Moon(++seq, "Ganymede", 0.025)
+    val pegasi51 = Star(++seq, "51 Pegasi", 1.06)
+    val pegasi51b = Planet(++seq, "51 Pegasi b", 0.47)
+    val gliese581 = Star(++seq, "Gliese 581", 0.31)
+    val gliese581c = Planet(++seq, "Gliese 581c", 5.6)
+    val gliese581d = Planet(++seq, "Gliese 581d", 7.7)
+
     val astroByName: Map<String, NodeLike<Long>> = listOf(
         sagA, sun, mercury, venus, earth, mars, luna, phobos, deimos,
         kepler186, kepler186f, trappist1, trappist1e, trappist1f,
+        m87, alphaCenA, alphaCenAb, alphaCenBb, proximaB, toi700d, titan, europa, ganymede,
+        pegasi51, pegasi51b, gliese581, gliese581c, gliese581d,
     ).associateBy {
         when (it) { is Star -> it.name; is Planet -> it.name; is Moon -> it.name; is Singularity -> it.name; else -> error("unreachable") }
     }
@@ -154,6 +175,15 @@ suspend fun UniverseGraph.build(): UniverseData {
         addEdge(Orbits(kepler186f.id, kepler186.id))
         // TRAPPIST
         addEdge(Orbits(trappist1e.id, trappist1.id)); addEdge(Orbits(trappist1f.id, trappist1.id))
+
+        // Second system (TODO 3.4), same shape as above
+        addEdge(Orbits(alphaCenA.id, m87.id))
+        listOf(alphaCenAb, alphaCenBb, proximaB, toi700d).forEach { addEdge(Orbits(it.id, alphaCenA.id)) }
+        addEdge(Orbits(titan.id, proximaB.id))
+        addEdge(Orbits(europa.id, toi700d.id)); addEdge(Orbits(ganymede.id, toi700d.id))
+        addEdge(Orbits(pegasi51.id, m87.id))
+        addEdge(Orbits(pegasi51b.id, pegasi51.id))
+        addEdge(Orbits(gliese581c.id, gliese581.id)); addEdge(Orbits(gliese581d.id, gliese581.id))
     }
 
     // Users

@@ -199,10 +199,26 @@
   `@SerialName` type strings are unchecked. Nothing prevents a `Knows` edge connecting two
   non-`Person` nodes. Invalid graphs are silently possible.
 
-- **➡️ 2.3 Graph export / import (property graph JSON)**
-  Export the full graph (or a subgraph) to the nodes + relationships flat JSON format compatible
-  with Neo4j, Gephi, and similar tools. Import in the same format via `transaction { }`.
-  Node labels and edge types map to `@SerialName` values.
+- **✅ 2.3 Graph export / import (property graph JSON)**
+  Reuses the existing polymorphic NodeLike/EdgeLike JSON machinery (`customJsonSerializer` +
+  `createPolymorphicJsonSerializer`, already powering the Hazelcast Compact serializers) rather than
+  inventing a new wire format — encoding through `PolymorphicSerializer(NodeLike::class)` already
+  produces a flat object with a `"type"` field equal to the class's `@SerialName` plus every property
+  inline, which is exactly the "flat, type-labeled" shape asked for. New `GraphJsonCodec` interface
+  (`abyss-graph/.../serialization/GraphJsonCodec.kt`) is the seam for a different output format later;
+  `AbyssJsonLinesCodec` is the one built-in implementation — JSON Lines, one object per line, an outer
+  `"kind": "node" | "relationship"` field (distinct from the inner `@SerialName`-driven `"type"`)
+  telling a node-line from a relationship-line apart, chosen for streamability. `exportGraphLines`
+  walks `allNodeIds()` + per-node `outEdges(id)` (same access pattern as `connectedComponents`, minus
+  the `inEdges` half, so each directed edge is emitted once); `Subgraph.exportLines` exports an
+  already-computed subgraph (e.g. from `allReachable { }`) instead of the whole graph; `importGraphLines`
+  decodes a `Flow<String>` of lines and commits via one `transaction { }` call (`checkIntegrity`
+  defaults to `false`, matching the bulk-import convention already documented in the README).
+  Lives in `abyss-graph` (`GraphExport.kt`), not alongside `connectedComponents`/`ensureSubgraph` in
+  `abyss-dsl/Extensions.kt` — `abyss-dsl` can't depend on `abyss-graph`'s JSON serialization package
+  (dependency direction is the other way). Literal external-tool schema compatibility (e.g. Neo4j
+  APOC's nested `labels`/`properties` format) is explicitly out of scope — it would also collide with
+  using `@SerialName` as the type discriminator. Covered by `GraphExportTest`.
 
 - **✅ 2.4 Graph algorithms**
   BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`
@@ -321,6 +337,15 @@
   it doesn't collapse fan-in (multiple frontier nodes sharing a target) into one. Usage:
   `from(id) { countEdges<E>() }` or `from(id) { countEdges<E>(HopDirection.INCOMING) }`.
 
+- **❓ 2.18 Neo4j compatible import/export adapters**
+  TODO 2.3 built `GraphJsonCodec` as an extension seam specifically for this — a literal
+  external-tool schema was explicitly deferred out of 2.3's scope. Add a `Neo4jJsonCodec` (or
+  similar) implementing `GraphJsonCodec` against Neo4j's actual export/import shape (e.g. APOC's
+  nested `labels`/`properties` JSON Lines format). Open question: APOC's own `"type": "node" |
+  "relationship"` discriminator collides with using `@SerialName` as the domain type — needs a
+  decision on where the domain type is expressed once nested under `"properties"` isn't backed by
+  `@SerialName` alone the way `AbyssJsonLinesCodec` does it.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
@@ -334,11 +359,17 @@
   full transactions, so ephemeral edge and reverse-edge writes are atomic. Trade-off: TTL requires
   an `expires_at` column and a background cleanup job rather than native YCQL TTL.
 
-- **➡️ 3.4 Concurrent query benchmark**
-  Spin up N coroutines in parallel, each firing queries continuously, and measure throughput +
-  per-query latency at N = 1, 2, 4, 8, 16, 32. Find the knee of the curve where latency starts
-  climbing (expected: ~4 parallel callers on Oracle Ampere A1 before CPU becomes the ceiling).
-  Cover `outEdges`, `inEdges`, and 3-hop traversal.
+- **✅ 3.4 Concurrent query benchmark**
+  `AstronomyConcurrencyPerformanceTest` (perf-gated, `-Pperf`) runs against the Universe fixture's
+  astronomy schema (`UniverseFixture.kt`), which was **enlarged 2x** for this — a second,
+  same-shaped star system (singularity "M87*" + 3 stars + 7 planets + 3 moons, mirroring
+  Sol/Kepler/TRAPPIST) added alongside the original, all-new names so existing lookups by name
+  (`"Luna"`, `"Earth"`, etc.) in `UniverseTraversalTest`/`UniversePerformanceTest` are untouched.
+  Three sweeps (`outEdges`, `inEdges`, 3-hop `moon→planet→star→singularity` traversal) each launch
+  N coroutines (`N = 1, 2, 4, 8, 16, 32`) firing 200 ops/coroutine continuously, printing throughput
+  (ops/sec) and avg per-op latency at each level. The knee position is machine-dependent (the
+  original TODO cites ~4 callers on Oracle Ampere A1), so the test reports the curve rather than
+  asserting where it bends.
 
 - **✅ 3.5 Prove serde cost drives Uuid 3-hop slowdown**
   UUID 3-hop traversal consistently runs ~4 ms vs ~0.6 ms for Long/String. Hypothesis: deserializing
