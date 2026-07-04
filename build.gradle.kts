@@ -5,7 +5,7 @@ plugins {
 
 allprojects {
     group   = "pl.iqtech.abyss"
-    version = "0.24.0"
+    version = "0.24.1"
 }
 
 subprojects {

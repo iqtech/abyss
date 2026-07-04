@@ -1,3 +1,7 @@
+## [0.24.1] - 2026-07-04
+
+- Fix `paths()` dropping natural-terminal `INCLUDE_AND_CONTINUE` paths (TODO 1.18): `dfsLoop` now reports whether its subtree emitted and emits an included head's own path when its expansion emitted nothing; `bfsLoop` mirrors this with a per-entry "produced" flag and a `nextDepth < maxDepth` enqueue guard, so a maximal accepted path below `maxDepth` is emitted once without per-prefix duplicates
+
 ## [0.24.0] - 2026-07-03
 
 - Replace the typed schema registry with an untyped worker over self-describing NodeIds: `NodeKeyKind` becomes a domain type with a 1:1 canonical `KeyAdapter` map, `RawEdgeLike` is renamed to `EdgeLike`, and `ensureSubgraph` is added for idempotent create-if-missing of a described subgraph
