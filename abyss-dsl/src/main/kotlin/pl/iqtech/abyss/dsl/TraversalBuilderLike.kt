@@ -50,6 +50,8 @@ interface TraversalBuilderLike<ID> {
     suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String)
     suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit)
     suspend fun flushFrontierNodes(): Flow<NodeLike<*>>
+    /** Terminal: number of distinct nodes in the current frontier (no node materialization). */
+    suspend fun count(): Int
     suspend fun collectSubgraph(nodeType: String? = null): Subgraph
     suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph

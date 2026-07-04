@@ -151,6 +151,8 @@ class TraversalBuilder<ID>(
         for (nid in frontier) engine.nodeAt(nid)?.let { emit(it) }
     }
 
+    override suspend fun count(): Int = frontier.size
+
     override suspend fun collectSubgraph(nodeType: String?): Subgraph {
         val nodes = coroutineScope {
             allVisitedIds.map { nid -> async(Dispatchers.IO) { engine.nodeAt(nid) } }.awaitAll()

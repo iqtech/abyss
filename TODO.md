@@ -286,6 +286,11 @@
   structure), walks each path, and creates any nodes (and edges along the way) that are missing,
   leaving existing ones untouched. Effectively an idempotent upsert of a described subgraph.
 
+- **✅ 2.16 Traversal DSL: `count()` terminal**
+  Add a `count()` terminal to `TraversalBuilderLike` returning the number of distinct nodes in the
+  current frontier without materializing any node (`frontier.size`). Usage:
+  `from(id) { outgoing<E>(); count() }` → `Either<AbyssError, Int>`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
