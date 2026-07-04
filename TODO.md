@@ -188,6 +188,18 @@
   `UuidPerformanceTest.kt`, `AlgorithmsTest.kt`, `PathsTraversalTest.kt`, `TraversalTest.kt`).
   Pre-1.0, no migration shims: `AbyssGraph.kt` deleted outright.
 
+- **➡️ 1.20 Fix cache-warmth-dependent correctness bugs from the durability audit**
+  See `ai-scripts/TransactionDurabilitySafetyAudit.md` (findings #4 and #5) — these hit a
+  well-configured production system after any restart or partition eviction, not just misuse:
+  - `cascadeEdgeRemovals` (`AbyssSchemaWorker.kt:285-296`) computes cascade deletes by scanning the
+    Hazelcast cache, not the store. A cold cache for a node's edges means `removeNode` deletes only
+    the node row from YSQL, leaving dangling edge rows referencing the deleted node permanently.
+  - `integrityError` (`AbyssSchemaWorker.kt:269-281`) checks `nodesMap[addOp.fromId]` — a raw cache
+    read, not the self-healing `readNode`/`nodeExists` path. A genuinely-existing but not-yet-warmed
+    node spuriously fails `addEdge`'s integrity check.
+  Likely fix direction: route both through the same store-fallback pattern `readNode`/`nodeExists`
+  already use, rather than reading `nodesMap`/`edgesMap`/`reverseEdgesMap` directly.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
