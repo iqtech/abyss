@@ -1,9 +1,10 @@
 package pl.iqtech.abyss.graph
 
 import pl.iqtech.abyss.store.api.EdgeAdapter
-import pl.iqtech.abyss.store.api.MultiSchemaAdapter
+import pl.iqtech.abyss.store.api.HeaderlessMultiSchemaAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKey
+import pl.iqtech.abyss.store.api.NodeKeyKind
 import pl.iqtech.abyss.store.api.SchemaDescriptor
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 
@@ -22,13 +23,16 @@ internal class SingleSchemaResolution(private val edgeAdapter: EdgeAdapter) : Sc
     override fun sameSchema(a: NodeId, b: NodeId): Boolean = true
 }
 
-// Homogeneous tier: the container's tagWidth is already known at construction, so the descriptor
-// never needs deriving from the key — computed ONCE, stored, returned unconditionally. Zero
-// NodeKey.width/kind parsing and zero branching per key (contrast HeterogeneousSchemaResolution).
-internal class HomogeneousSchemaResolution(tagWidth: SchemaTagWidth) : SchemaResolution {
-    private val edgeAdapter: EdgeAdapter = MultiSchemaAdapter(tagWidth)
+// Homogeneous tier: the container's tagWidth AND kind are both known at construction (every schema
+// shares one adapter shape), so keys carry no header at all — the descriptor never needs deriving
+// from a header nibble, and sameSchema only needs the (headerless) tag, since width/kind can't vary
+// within this container. Zero NodeKey header parsing, zero branching per key (contrast
+// HeterogeneousSchemaResolution, which still reads a header because its shapes DO vary per tag).
+internal class HomogeneousSchemaResolution(private val tagWidth: SchemaTagWidth, kind: NodeKeyKind) : SchemaResolution {
+    private val edgeAdapter: EdgeAdapter = HeaderlessMultiSchemaAdapter(tagWidth, kind)
     override fun edgeAdapterOf(nid: NodeId): EdgeAdapter = edgeAdapter
-    override fun sameSchema(a: NodeId, b: NodeId): Boolean = taggedSameSchema(a, b)
+    override fun sameSchema(a: NodeId, b: NodeId): Boolean =
+        NodeKey.tagHeaderless(a, tagWidth) == NodeKey.tagHeaderless(b, tagWidth)
 }
 
 // Heterogeneous tier: today's unchanged general case — derive per key, every call, from the

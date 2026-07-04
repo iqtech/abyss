@@ -11,6 +11,7 @@ import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
+import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.StringKeyAdapter
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
@@ -64,7 +65,7 @@ data class InterestedIn(override val fromId: NodeId, override val toId: NodeId, 
 @Serializable @SerialName("uni_lives_on")   // User → Astronomy (target is a Planet or a Moon)
 data class LivesOn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<NodeId, NodeId>
 
-object UniverseTags { const val USERS = 1L; const val ASTRONOMY = 2L; const val INTERESTS = 3L }
+object UniverseTags { val USERS = SchemaTag(1L); val ASTRONOMY = SchemaTag(2L); val INTERESTS = SchemaTag(3L) }
 
 val universeModule = SerializersModule {
     polymorphic(NodeLike::class) {

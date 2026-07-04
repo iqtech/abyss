@@ -139,7 +139,10 @@ internal fun <K, V> nativeKeyEq(field: String, enc: NodeKeyEncoding): Predicate<
         Predicates.equal<K, V>("__key.${field}Lo", enc.lo)
     )
     is NodeKeyEncoding.Tagged -> {
-        val tagEq = Predicates.equal<K, V>("__key.${field}Tag", enc.tag)
+        val tagEq = Predicates.and<K, V>(
+            Predicates.equal<K, V>("__key.${field}TagHi", enc.tag.hi),
+            Predicates.equal<K, V>("__key.${field}TagLo", enc.tag.lo)
+        )
         val valEq: Predicate<K, V> = when (val i = enc.inner) {
             is NodeKeyEncoding.Int32 -> Predicates.equal<K, V>("__key.${field}Lo", i.value.toLong())
             is NodeKeyEncoding.Int64 -> Predicates.equal<K, V>("__key.${field}Lo", i.value)

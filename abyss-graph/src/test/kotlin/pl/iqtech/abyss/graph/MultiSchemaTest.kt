@@ -21,6 +21,7 @@ import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeKeyKind
 import pl.iqtech.abyss.store.api.SchemaDescriptor
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
+import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
@@ -41,9 +42,9 @@ data class CrossRefEdge(
     val note: String = "",
 ) : EdgeLike<NodeId, NodeId>
 
-private const val LONG_TAG = 1L
-private const val UUID_TAG = 2L
-private const val LONG_TAG_B = 3L
+private val LONG_TAG = SchemaTag(1L)
+private val UUID_TAG = SchemaTag(2L)
+private val LONG_TAG_B = SchemaTag(3L)
 
 // One HazelcastInstance, tag+native edge encoding, shared maps for all schemas. The registry must
 // cover every tag any test registers (two Long schemas exercise fromTag disambiguation).
@@ -202,8 +203,8 @@ class MultiSchemaTest {
         assert(adapter.fromNodeId(nid) == 7L)
         assert(NodeKey.tag(nid) == LONG_TAG)
         // Wider tag widths preserve the value too.
-        val wide = SchemaKeyAdapter(300L, SchemaTagWidth.SHORT, LongKeyAdapter)
-        assert(NodeKey.tag(wide.toNodeId(9L)) == 300L)
+        val wide = SchemaKeyAdapter(SchemaTag(300L), SchemaTagWidth.SHORT, LongKeyAdapter)
+        assert(NodeKey.tag(wide.toNodeId(9L)) == SchemaTag(300L))
 
         // Self-decoding: recover (width, kind, tag, rawId) from the bytes alone — no adapter, no graph.
         assert(NodeKey.width(nid) == SchemaTagWidth.BYTE)
@@ -228,13 +229,25 @@ class MultiSchemaTest {
         val bare = LongKeyAdapter.toNodeId(42L)
         val dBare = SchemaDescriptor.of(bare)
         assertEquals(SchemaTagWidth.NONE, dBare.tagWidth)
-        assertEquals(0L, dBare.tag)
+        assertEquals(SchemaTag.ZERO, dBare.tag)
         assertTrue(dBare.edgeAdapter === LongKeyAdapter)
     }
 
     @Test fun taggedContainersRejectNoneTagWidth() {
         assertFails { HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.NONE, "ms-nodes-x", "ms-edges-x") }
-        assertFails { HomogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.NONE, "ms-nodes-x", "ms-edges-x") }
+        assertFails { HomogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.NONE, LongKeyAdapter, "ms-nodes-x", "ms-edges-x") }
+    }
+
+    // Fix confirmation (TODO 1.19 follow-up): before widening the tag to SchemaTag(hi, lo), NodeKey's
+    // byte-packing loop shifted a single Long by up to 120 bits — on the JVM, Long ushr wraps the shift
+    // amount mod 64, so SchemaTagWidth.UUID silently duplicated the low 64 bits instead of encoding a
+    // genuine 128-bit value. This proves a real (hi != 0) 128-bit tag now round-trips correctly.
+    @Test fun uuidWidthTagRoundTripsFull128Bits() {
+        val tag = SchemaTag(hi = -1L, lo = 42L)
+        val nid = NodeKey.compose(SchemaTagWidth.UUID, NodeKeyKind.INT64, tag, LongKeyAdapter.encodeIdBytes(7L))
+        assertEquals(tag, NodeKey.tag(nid))
+        assertEquals(SchemaTagWidth.UUID, NodeKey.width(nid))
+        assertEquals(7L, LongKeyAdapter.decodeIdBytes(NodeKey.rawId(nid)))
     }
 
     @Test fun kindToAdapterIsTotalAndSelfConsistent() {

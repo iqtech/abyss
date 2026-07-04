@@ -5,6 +5,7 @@ import com.hazelcast.nio.serialization.compact.CompactWriter
 import pl.iqtech.abyss.store.api.KeyEncodingShape
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
 import pl.iqtech.abyss.store.api.NodeKeyKind
+import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.kind
 
 internal fun CompactWriter.writeNodeKey(field: String, encoding: NodeKeyEncoding) {
@@ -19,7 +20,8 @@ internal fun CompactWriter.writeNodeKey(field: String, encoding: NodeKeyEncoding
         // Fixed self-describing superset so one EdgeKey Compact class serves every registered shape.
         // Int32/Int64 ride the Lo field; Uuid uses Hi+Lo; Str uses the nullable string field.
         is NodeKeyEncoding.Tagged -> {
-            writeInt64("${field}Tag", encoding.tag)
+            writeInt64("${field}TagHi", encoding.tag.hi)
+            writeInt64("${field}TagLo", encoding.tag.lo)
             writeInt8("${field}Kind", encoding.inner.kind().id)
             val inner = encoding.inner
             writeInt64("${field}Hi", if (inner is NodeKeyEncoding.Uuid) inner.hi else 0L)
@@ -40,7 +42,7 @@ internal fun CompactReader.readNodeKey(field: String, shape: KeyEncodingShape): 
     KeyEncodingShape.STRING -> NodeKeyEncoding.Str(readString(field)!!)
     KeyEncodingShape.UUID -> NodeKeyEncoding.Uuid(readInt64("${field}Hi"), readInt64("${field}Lo"))
     KeyEncodingShape.TAGGED -> {
-        val tag = readInt64("${field}Tag")
+        val tag = SchemaTag(readInt64("${field}TagHi"), readInt64("${field}TagLo"))
         val hi = readInt64("${field}Hi"); val lo = readInt64("${field}Lo"); val str = readString("${field}Str")
         val inner = when (readInt8("${field}Kind")) {
             NodeKeyKind.INT32.id -> NodeKeyEncoding.Int32(lo.toInt())

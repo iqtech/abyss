@@ -10,6 +10,7 @@ import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
+import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -23,7 +24,7 @@ class MultiSchemaPerformanceTest {
     companion object {
         private const val NODE_COUNT = 10_000
         private const val EDGES_PER_NODE = 5
-        private const val TAG = 1L
+        private val TAG = SchemaTag(1L)
         private val tagged = SchemaKeyAdapter(TAG, SchemaTagWidth.BYTE, LongKeyAdapter)
 
         private val perfGraph: AbyssGraphSchema<Long> by lazy {

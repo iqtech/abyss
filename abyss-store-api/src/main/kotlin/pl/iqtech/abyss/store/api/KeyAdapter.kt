@@ -37,6 +37,17 @@ object NodeIdHexSerializer : KSerializer<NodeId> {
     override fun deserialize(decoder: Decoder): NodeId = NodeId.fromHex(decoder.decodeString())
 }
 
+// A schema tag: up to 128 bits (SchemaTagWidth.UUID), represented as two longs like
+// NodeKeyEncoding.Uuid below. SchemaTag(value) covers the common <=64-bit case (hi=0); SchemaTag.of(uuid)
+// covers a Uuid used directly as a tag (e.g. a per-tenant user id in HomogeneousSchemaGraph).
+data class SchemaTag(val hi: Long, val lo: Long) {
+    constructor(value: Long) : this(0L, value)
+    companion object {
+        val ZERO = SchemaTag(0L, 0L)
+        fun of(uuid: Uuid): SchemaTag = uuid.toJavaUuid().let { SchemaTag(it.mostSignificantBits, it.leastSignificantBits) }
+    }
+}
+
 sealed interface NodeKeyEncoding {
     data class Int32(val value: Int) : NodeKeyEncoding
     data class Int64(val value: Long) : NodeKeyEncoding
@@ -45,7 +56,7 @@ sealed interface NodeKeyEncoding {
     // Multi-schema: a schema tag plus the inner adapter's native encoding. Written to a fixed,
     // self-describing Compact superset (tag + kind discriminator + hi/lo + nullable str), so one
     // EdgeKey Compact class serves every registered shape while keeping native (non-hex) predicates.
-    data class Tagged(val tag: Long, val inner: NodeKeyEncoding) : NodeKeyEncoding
+    data class Tagged(val tag: SchemaTag, val inner: NodeKeyEncoding) : NodeKeyEncoding
 }
 
 // Compact wire-layout selector. Native members mirror NodeKeyKind 1:1; TAGGED is the multi-schema
@@ -91,11 +102,14 @@ fun NodeKeyKind.adapter(): KeyAdapter<*> = when (this) {
 // Every key carries the header, tagged or not (NONE = zero tag bytes), so any NodeId decodes standalone
 // — read the header for width + inner shape, skip 1+width.bytes for the tag, decode the tail by kind.
 object NodeKey {
-    fun compose(width: SchemaTagWidth, kind: NodeKeyKind, tag: Long, rawId: ByteArray): NodeId {
+    fun compose(width: SchemaTagWidth, kind: NodeKeyKind, tag: SchemaTag, rawId: ByteArray): NodeId {
         val header = ((width.ordinal shl 4) or kind.id.toInt()).toByte()
         val out = ByteArray(1 + width.bytes + rawId.size)
         out[0] = header
-        for (i in 0 until width.bytes) out[1 + i] = (tag ushr (8 * (width.bytes - 1 - i))).toByte()
+        // Full 16-byte big-endian tag; only the last width.bytes of it are ever stored, so widths
+        // <=8 (hi=0) are byte-identical to the old single-Long packing, and width=16 uses all 128 bits.
+        val full = ByteBuffer.allocate(16).putLong(tag.hi).putLong(tag.lo).array()
+        full.copyInto(out, destinationOffset = 1, startIndex = 16 - width.bytes, endIndex = 16)
         rawId.copyInto(out, 1 + width.bytes)
         return NodeId(out)
     }
@@ -113,16 +127,40 @@ object NodeKey {
         return NodeKeyKind.entries.firstOrNull { it.id == k } ?: error("Bad kind nibble $k in $nodeId")
     }
 
-    fun tag(nodeId: NodeId): Long {
+    fun tag(nodeId: NodeId): SchemaTag {
         val w = width(nodeId).bytes
         require(nodeId.bytes.size >= 1 + w) { "NodeId too short for its header: $nodeId" }
-        var v = 0L
-        for (i in 0 until w) v = (v shl 8) or (nodeId.bytes[1 + i].toLong() and 0xFF)
-        return v
+        val full = ByteArray(16)
+        nodeId.bytes.copyInto(full, destinationOffset = 16 - w, startIndex = 1, endIndex = 1 + w)
+        val buf = ByteBuffer.wrap(full)
+        return SchemaTag(buf.long, buf.long)
     }
 
     fun rawId(nodeId: NodeId): ByteArray =
         nodeId.bytes.copyOfRange(1 + width(nodeId).bytes, nodeId.bytes.size)
+
+    // Headerless tagged layout ([tag:width.bytes][rawId], no header byte) — HomogeneousSchemaGraph
+    // (TODO 1.19 follow-up): every schema in that container shares one fixed width/kind, so the
+    // header's two pieces of information are already known by the caller and don't need to ride on
+    // every key. NOT self-describing standalone: width must come from the container, not the bytes.
+    fun composeHeaderlessTag(width: SchemaTagWidth, tag: SchemaTag, rawId: ByteArray): NodeId {
+        val out = ByteArray(width.bytes + rawId.size)
+        val full = ByteBuffer.allocate(16).putLong(tag.hi).putLong(tag.lo).array()
+        full.copyInto(out, destinationOffset = 0, startIndex = 16 - width.bytes, endIndex = 16)
+        rawId.copyInto(out, width.bytes)
+        return NodeId(out)
+    }
+
+    fun tagHeaderless(nodeId: NodeId, width: SchemaTagWidth): SchemaTag {
+        require(nodeId.bytes.size >= width.bytes) { "NodeId too short for tag width $width: $nodeId" }
+        val full = ByteArray(16)
+        nodeId.bytes.copyInto(full, destinationOffset = 16 - width.bytes, startIndex = 0, endIndex = width.bytes)
+        val buf = ByteBuffer.wrap(full)
+        return SchemaTag(buf.long, buf.long)
+    }
+
+    fun rawIdHeaderless(nodeId: NodeId, width: SchemaTagWidth): ByteArray =
+        nodeId.bytes.copyOfRange(width.bytes, nodeId.bytes.size)
 
     // Registry-free bridges between raw id bytes and the Compact edge-key encoding: the kind alone
     // fixes the byte layout, so the shared serializer needs no per-schema adapter to decode.
@@ -158,7 +196,7 @@ interface KeyAdapter<ID> : EdgeAdapter {
     fun encodeIdBytes(id: ID): ByteArray
     fun decodeIdBytes(bytes: ByteArray): ID
 
-    fun toNodeId(id: ID): NodeId = NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, 0L, encodeIdBytes(id))
+    fun toNodeId(id: ID): NodeId = NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, SchemaTag.ZERO, encodeIdBytes(id))
     fun fromNodeId(nodeId: NodeId): ID = decodeIdBytes(NodeKey.rawId(nodeId))
 
     // Native (non-hex) value the partition key uses. Identity for most kinds; Uuid overrides since
@@ -169,7 +207,7 @@ interface KeyAdapter<ID> : EdgeAdapter {
     override val keyEncodingShape: KeyEncodingShape get() = nodeKeyKind.toShape()
     override fun encodeKey(nodeId: NodeId): NodeKeyEncoding = NodeKey.encoding(nodeKeyKind, NodeKey.rawId(nodeId))
     override fun decodeKey(encoding: NodeKeyEncoding): NodeId =
-        NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, 0L, NodeKey.rawId(encoding))
+        NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, SchemaTag.ZERO, NodeKey.rawId(encoding))
 }
 
 object UuidKeyAdapter : KeyAdapter<Uuid> {
@@ -229,11 +267,18 @@ object UniformHexAdapter : EdgeAdapter {
 // encoding is tag + the inner adapter's native shape (see NodeKeyEncoding.Tagged) — native
 // predicates, no hex.
 class SchemaKeyAdapter<ID>(
-    val tag: Long,
+    val tag: SchemaTag,
     val width: SchemaTagWidth,
     val inner: KeyAdapter<ID>,
 ) : KeyAdapter<ID> {
-    init { require(tag >= 0 && (width.bytes >= 8 || tag < (1L shl (width.bytes * 8)))) { "tag $tag does not fit in $width" } }
+    init {
+        val fits = when {
+            width.bytes >= 16 -> true
+            width.bytes == 8  -> tag.hi == 0L
+            else              -> tag.hi == 0L && tag.lo in 0 until (1L shl (width.bytes * 8))
+        }
+        require(fits) { "tag $tag does not fit in $width" }
+    }
 
     override val nodeKeyKind = inner.nodeKeyKind
     override fun encodeIdBytes(id: ID): ByteArray = inner.encodeIdBytes(id)
@@ -249,6 +294,31 @@ class SchemaKeyAdapter<ID>(
     override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
         require(encoding is NodeKeyEncoding.Tagged) { "SchemaKeyAdapter expects Tagged, got $encoding" }
         return NodeKey.compose(width, inner.nodeKeyKind, encoding.tag, NodeKey.rawId(encoding.inner))
+    }
+}
+
+// Headerless counterpart to SchemaKeyAdapter, for HomogeneousSchemaGraph: every schema in that
+// container shares one fixed width/kind, so there's nothing for a header to self-describe — the tag
+// rides directly at the front of the key, no header byte. See NodeKey.composeHeaderlessTag.
+class HeaderlessSchemaKeyAdapter<ID>(
+    val tag: SchemaTag,
+    val width: SchemaTagWidth,
+    val inner: KeyAdapter<ID>,
+) : KeyAdapter<ID> {
+    override val nodeKeyKind = inner.nodeKeyKind
+    override fun encodeIdBytes(id: ID): ByteArray = inner.encodeIdBytes(id)
+    override fun decodeIdBytes(bytes: ByteArray): ID = inner.decodeIdBytes(bytes)
+
+    override fun toNodeId(id: ID): NodeId = NodeKey.composeHeaderlessTag(width, tag, inner.encodeIdBytes(id))
+    override fun fromNodeId(nodeId: NodeId): ID = inner.decodeIdBytes(NodeKey.rawIdHeaderless(nodeId, width))
+
+    override fun partitionKey(nodeId: NodeId): Any = inner.nativePartitionValue(fromNodeId(nodeId))
+    override val keyEncodingShape = KeyEncodingShape.TAGGED
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding =
+        NodeKeyEncoding.Tagged(NodeKey.tagHeaderless(nodeId, width), NodeKey.encoding(inner.nodeKeyKind, NodeKey.rawIdHeaderless(nodeId, width)))
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
+        require(encoding is NodeKeyEncoding.Tagged) { "HeaderlessSchemaKeyAdapter expects Tagged, got $encoding" }
+        return NodeKey.composeHeaderlessTag(width, encoding.tag, NodeKey.rawId(encoding.inner))
     }
 }
 
@@ -277,7 +347,7 @@ class HeaderlessKeyAdapter<ID>(private val inner: KeyAdapter<ID>) : KeyAdapter<I
 class SchemaDescriptor(
     val edgeAdapter: EdgeAdapter,
     val tagWidth: SchemaTagWidth,
-    val tag: Long,
+    val tag: SchemaTag,
 ) {
     companion object {
         fun of(nid: NodeId): SchemaDescriptor {
@@ -304,5 +374,22 @@ class MultiSchemaAdapter(val width: SchemaTagWidth) : EdgeAdapter {
     override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
         require(encoding is NodeKeyEncoding.Tagged) { "MultiSchemaAdapter expects Tagged, got $encoding" }
         return NodeKey.compose(width, encoding.inner.kind(), encoding.tag, NodeKey.rawId(encoding.inner))
+    }
+}
+
+// Headerless counterpart to MultiSchemaAdapter, for HomogeneousSchemaGraph. Unlike MultiSchemaAdapter
+// (derives `kind` from the header per key, since Heterogeneous keys can differ in shape), `kind` is
+// fixed here too — every key in a Homogeneous container is the same shape, so nothing is ever read
+// from a header; the tag/rawId split comes from the fixed `width` alone.
+class HeaderlessMultiSchemaAdapter(val width: SchemaTagWidth, val kind: NodeKeyKind) : EdgeAdapter {
+    init { require(width != SchemaTagWidth.NONE) { "HeaderlessMultiSchemaAdapter needs a tagged width" } }
+
+    override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
+    override val keyEncodingShape = KeyEncodingShape.TAGGED
+    override fun encodeKey(nodeId: NodeId): NodeKeyEncoding =
+        NodeKeyEncoding.Tagged(NodeKey.tagHeaderless(nodeId, width), NodeKey.encoding(kind, NodeKey.rawIdHeaderless(nodeId, width)))
+    override fun decodeKey(encoding: NodeKeyEncoding): NodeId {
+        require(encoding is NodeKeyEncoding.Tagged) { "HeaderlessMultiSchemaAdapter expects Tagged, got $encoding" }
+        return NodeKey.composeHeaderlessTag(width, encoding.tag, NodeKey.rawId(encoding.inner))
     }
 }

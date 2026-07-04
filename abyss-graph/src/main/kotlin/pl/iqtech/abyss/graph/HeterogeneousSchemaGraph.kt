@@ -16,6 +16,7 @@ import pl.iqtech.abyss.store.api.NodeKey
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
+import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.full.findAnnotation
 
@@ -52,9 +53,9 @@ class HeterogeneousSchemaGraph(
         HeterogeneousSchemaResolution,
     )
 
-    private val registeredTags = mutableSetOf<Long>()
+    private val registeredTags = mutableSetOf<SchemaTag>()
 
-    fun <ID> register(tag: Long, adapter: KeyAdapter<ID>): AbyssGraphSchema<ID> {
+    fun <ID> register(tag: SchemaTag, adapter: KeyAdapter<ID>): AbyssGraphSchema<ID> {
         require(registeredTags.add(tag)) { "Schema tag $tag already registered" }
         val tagged = SchemaKeyAdapter(tag, tagWidth, adapter)
         return AbyssGraphSchema(tagged, worker).also { it.traversalEngine = this }
@@ -98,7 +99,7 @@ class HeterogeneousSchemaGraph(
         return null
     }
 
-    private fun schemaTagOf(nid: NodeId): Long? =
+    private fun schemaTagOf(nid: NodeId): SchemaTag? =
         if (nid.bytes.isNotEmpty() && NodeKey.width(nid) != SchemaTagWidth.NONE) NodeKey.tag(nid) else null
 
     private fun edgeType(edge: EdgeLike<*, *>): String =
