@@ -1,3 +1,7 @@
+## [0.25.0] - 2026-07-04
+
+- Remove `SchemaEdgeLike` and `CrossEdgeLike` (TODO 1.17): both were zero-member aliases over `EdgeLike<FID,TID>`; unified all same-schema and cross-schema edge signatures onto `EdgeLike` directly, including the Yugabyte stores' polymorphic serialization base
+
 ## [0.24.2] - 2026-07-04
 
 - Add `countEdges<E>()` terminal to the traversal DSL: counts raw edges of type `E` from the frontier without fetching edge values or target nodes, avoiding the fan-in undercount of `outgoing<E>(); count()`
