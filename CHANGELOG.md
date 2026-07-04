@@ -1,3 +1,7 @@
+## [0.26.0] - 2026-07-04
+
+- Split `AbyssGraph` into `SingleSchemaGraph`/`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph` tiers (TODO 1.19): single-schema `NodeId`s drop the 1.15 header byte entirely via a new `HeaderlessKeyAdapter`, and `AbyssSchemaWorker` takes an injectable `SchemaResolution` strategy so each tier resolves its `EdgeAdapter` differently (fixed adapter / one descriptor computed once / today's per-key derivation) while sharing the same untyped engine
+
 ## [0.25.0] - 2026-07-04
 
 - Remove `SchemaEdgeLike` and `CrossEdgeLike` (TODO 1.17): both were zero-member aliases over `EdgeLike<FID,TID>`; unified all same-schema and cross-schema edge signatures onto `EdgeLike` directly, including the Yugabyte stores' polymorphic serialization base
