@@ -120,6 +120,23 @@ Delete operations issued from either DSL builder (`transaction { }` or `ephemera
 to **both** stores, so a node removed via `transaction { removeNode(id) }` is also deleted from the
 ephemeral store (best-effort; fanout failure is logged but not propagated).
 
+#### Other stores are a real option, not just a theoretical one
+
+YugabyteDB is the *reference* implementation, not a hardcoded dependency — `persistentStore` and
+`ephemeralStore` are plain interfaces (`AbyssStoreLike`/`AbyssEphemeralStoreLike`), untyped and
+`NodeId`-keyed, so any backend that can do point CRUD by key qualifies. One option worth naming
+explicitly: **a real graph database (e.g. Neo4j) as the durable store.** All actual traversal
+already happens in Hazelcast — the store is only ever hit on a cache miss or write-through — so
+Abyss wouldn't lean on Cypher for the hot path either way. What it *would* unlock is treating the
+durable copy as a second, decoupled surface: Neo4j's Graph Data Science library (PageRank,
+community detection, centrality, weighted shortest paths) running as an offline job against data
+Abyss never has to compute itself, plus a durable graph a human can browse natively instead of an
+opaque byte-keyed table. The catch is that `NodeId`'s self-describing bytes would need decoding
+into real labels/properties at the store boundary to make that worthwhile — a thin KV-shaped
+`MERGE`-by-id adapter over Neo4j gets none of it — and adopting it only pays for itself if you
+want GDS-style analytics badly enough to justify operating a graph database, which is otherwise
+exactly what Abyss exists to let you avoid (see the intro above).
+
 ---
 
 ## Usage
