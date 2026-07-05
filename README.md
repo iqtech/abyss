@@ -2,6 +2,34 @@
 
 User-agnostic in-memory graph library backed by Hazelcast with pluggable durable storage.
 
+**This is not a graph database.** There's no server process, no query language, and no storage
+engine of its own — Abyss is a Kotlin library that layers graph semantics (typed nodes/edges,
+traversal, algorithms) on top of two things you bring: a `HazelcastInstance` for the in-memory
+cache/partitioning layer, and an optional store (`AbyssStoreLike`/`AbyssEphemeralStoreLike` — the
+reference implementation is YugabyteDB) for durability. If you need ad-hoc query languages,
+multi-tenant isolation at the infrastructure level, or a standalone graph engine, use a real graph
+database. Reach for Abyss when you want graph structure and traversal inside a JVM service you
+already run, without operating a separate one.
+
+It's a targeted library, not a platform: the entire public surface is `suspend fun`, built for
+Kotlin coroutines from the ground up rather than adapted onto them — reads and writes are
+non-blocking (`IMap.getAsync()`, not a blocking call wrapped in `Dispatchers.IO`), traversal hops
+fan out with `async`/`awaitAll`, and every result is `Either<AbyssError, T>` or a coroutine `Flow`.
+There's no reactor of its own to run and no thread pool to tune beyond the one your application
+(e.g. a Ktor server) already has — Abyss's coroutines run on your dispatcher, inside your existing
+JVM process. The design goal throughout has been throughput on hardware you already have (see
+[Performance](#performance)), not feature breadth: pick this over a full graph database when the
+graph is a data structure inside your service, not a separate system you want to operate.
+
+One thing you won't find in most graph databases: **first-class ephemeral (TTL) elements.**
+`ephemeral { }` writes nodes/edges that expire on their own — cache entry and durable row alike —
+with no cleanup job, no expiry sweep, no cron. It's a second, parallel write path
+(`ephemeral { }` alongside `transaction { }`, YCQL alongside YSQL) rather than a TTL bolted onto
+the same table, which is also why ephemeral edges are [outgoing-only](#pluggable-storage) — that
+constraint buys atomic, heal-free expiry instead of a denormalized reverse index that could
+outlive (or expire before) the row it mirrors. Useful for session-scoped relationships, presence,
+temporary grants — graph data that should vanish on its own instead of being explicitly deleted.
+
 ## Modules
 
 | Module | Purpose |
@@ -219,9 +247,9 @@ Three container tiers host several typed `AbyssGraphSchema<ID>` views over one s
 
 | Tier | Shapes | Tag | Header byte | Use when |
 |---|---|---|---|---|
-| `SingleSchemaGraph` | 1 | none | **no** | exactly one schema (see [Quick start](#quick-start)) |
-| `HomogeneousSchemaGraph` | 1, many tags | `SchemaTag` (up to 128 bits) | **no** | many same-shape tenants — e.g. a per-user `Uuid` partitioning a personal app's data |
-| `HeterogeneousSchemaGraph` | many | `SchemaTag` | yes | a handful of genuinely different-shaped schemas (e.g. `Long`-keyed cities + `Uuid`-keyed people) registered once at startup |
+| `SingleSchemaGraph` | 1 | none | **no** | exactly one schema, no tenant/dictionary split (see [Quick start](#quick-start)) — e.g. an ACL graph: subjects and resources as nodes, permission edges between them, one graph for the whole application |
+| `HomogeneousSchemaGraph` | 1, many tags | `SchemaTag` (up to 128 bits) | **no** | many same-shape tenants — e.g. a per-user `Uuid` partitioning a personal app's data, so every user's notes/tasks/whatever live in one shared graph, isolated purely by tag |
+| `HeterogeneousSchemaGraph` | many | `SchemaTag` | yes | a handful of genuinely different-shaped schemas registered once at startup — e.g. all of a company's reference dictionaries (departments, cost centers, product categories, currencies) in one graph, each its own shape, cross-linked where the business logic needs it |
 
 Every tag is a `SchemaTag` — a real 128-bit value (`hi`/`lo` longs), not just a `Long`.
 `SchemaTag(1L)` covers the common small-integer case; `SchemaTag.of(uuid)` uses a `Uuid` directly as
