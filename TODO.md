@@ -382,6 +382,22 @@
   of a few hundred, sequential between batches, async within each) instead of one unbounded wave, so
   one supernode-heavy traversal can't monopolize the shared pool out from under concurrent callers.
 
+- **➡️ 2.20 `abyss-store-neo4j` implementation**
+  A new module implementing `AbyssStoreLike`/`AbyssEphemeralStoreLike` against Neo4j, alongside
+  `abyss-store-yugabyte`. Same untyped, `NodeId`-keyed contract — Abyss's own traversal still runs
+  entirely in Hazelcast, so this is a durability backend swap, not a query-path change. The point of
+  doing it over just using Yugabyte: the durable copy becomes a second, decoupled surface — Neo4j's
+  Graph Data Science library (PageRank, community detection, centrality, weighted shortest paths)
+  can run as an offline job against the same data without Abyss implementing any of it, and the
+  store is human-browsable natively (Neo4j Browser/Cypher) instead of an opaque byte-keyed table.
+  Needs `NodeId`'s self-describing bytes decoded into real Neo4j labels/properties at the store
+  boundary to be worth it — a thin `MERGE`-by-id KV adapter gets none of the analytics/browsability
+  payoff. See README's "Other stores are a real option, not just a theoretical one" for the full
+  tradeoff discussion (including the honest cost: this means operating a graph database, which is
+  otherwise what Abyss exists to let you avoid). Full design plan (NodeId decode modes, Neo4j label/
+  property mapping, Cypher identifier-injection safeguard, transaction/TTL handling, file-by-file
+  breakdown): `ai-scripts/Neo4jStorePlan.md`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
