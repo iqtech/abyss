@@ -465,3 +465,18 @@
 - **✅ 4.4 Shrink `collectNodes` filter overload**
   `TraversalBuilder.kt:85-93` — sequential re-implementation of what `collectNodes(nodeType).filter(filter)`
   does in one line using the parallel impl already present. Replace 9 lines with 1.
+
+- **✅ 4.5 Persist cross-schema edges (lift the 1.12 cache-only limitation)**
+  1.12's cross edges were cache-only because `AbyssStoreLike<ID>` was then a typed, per-schema
+  interface persisting `SchemaEdgeLike<ID>` — a `NodeId`-endpointed cross edge didn't fit. Commit
+  `117aafe` later rewrote `AbyssStoreLike`/`AbyssEphemeralStoreLike` to be untyped and `NodeId`-keyed
+  (`saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>)`), which is exactly a cross edge's
+  shape — the original blocker was gone, but `AbyssSchemaWorker.putCrossEdge`/`removeCrossEdge`
+  (and the README) were never updated. `putCrossEdge` now writes through `persistentStore` before
+  the cache (mirroring `transaction()`); new `putCrossEdgeEphemeral` does the same against
+  `ephemeralStore` with a `ttl`, outgoing-only (no reverse index), matching 1.13's ephemeral-edge
+  convention; `removeCrossEdge` fans deletes out to both stores best-effort, same as an ordinary
+  delete. No store schema migration needed — `preloadOut`/`preloadIn` already warm cross edges on
+  cold restart for free, since they resolve the cache key generically per `NodeId`. New
+  `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph.addCrossEdge(edge, ttl, checkIntegrity)`
+  overload for the ephemeral path. Covered by `MultiSchemaTest`.

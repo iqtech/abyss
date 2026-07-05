@@ -152,20 +152,59 @@ internal class AbyssSchemaWorker(
 
     override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
 
-    // --- Cross-schema edges: NodeId-valued EdgeLike, cache-only, in the shared maps. Keys are built
-    // the same way as intra-schema edges, so a traversal reaches them as ordinary hops. -------------
+    // --- Cross-schema edges: NodeId-valued EdgeLike, in the shared maps. Keys are built the same way
+    // as intra-schema edges, so a traversal reaches them as ordinary hops. Persisted through the same
+    // stores as an ordinary edge (AbyssStoreLike/AbyssEphemeralStoreLike are already NodeId-keyed and
+    // untyped, so a cross-schema edge fits with no store schema change) — preloadOut/preloadIn already
+    // warm them on cold restart for free, since both resolve the cache key generically per NodeId. ---
 
     fun containsNodeInCache(nid: NodeId): Boolean = nodesMap.containsKey(nid)
 
     @Suppress("UNCHECKED_CAST")
-    fun putCrossEdge(edge: EdgeLike<NodeId, NodeId>, type: String) {
-        (edgesMap as IMap<EdgeKey, Any>).set(edgeKey(edge.fromId, edge.toId, type), edge)
-        reverseEdgesMap.set(revKey(edge.toId, edge.fromId, type), Unit)
+    suspend fun putCrossEdge(edge: EdgeLike<NodeId, NodeId>, type: String): Either<AbyssError, Unit> {
+        if (persistentStore != null) {
+            val storeResult = persistentStore.transaction { saveEdge(edge.fromId, edge.toId, edge) }
+            if (storeResult.isLeft()) {
+                log.error("Cross-edge store write failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                return storeResult
+            }
+        }
+        withContext(Dispatchers.IO) {
+            (edgesMap as IMap<EdgeKey, Any>).set(edgeKey(edge.fromId, edge.toId, type), edge)
+            reverseEdgesMap.set(revKey(edge.toId, edge.fromId, type), Unit)
+        }
+        return Unit.right()
     }
 
-    fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String) {
-        edgesMap.remove(edgeKey(fromId, toId, type))
-        reverseEdgesMap.remove(revKey(toId, fromId, type))
+    // Ephemeral (TTL) cross edge: outgoing-only, no reverse index — matches the ordinary ephemeral
+    // edge convention (TODO 1.13, applyToCacheAsync below).
+    @Suppress("UNCHECKED_CAST")
+    suspend fun putCrossEdgeEphemeral(edge: EdgeLike<NodeId, NodeId>, type: String, ttl: Duration): Either<AbyssError, Unit> {
+        if (ephemeralStore != null) {
+            val storeResult = ephemeralStore.transaction { saveEdge(edge.fromId, edge.toId, edge, ttl) }
+            if (storeResult.isLeft()) {
+                log.error("Ephemeral cross-edge store write failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                return storeResult
+            }
+        }
+        withContext(Dispatchers.IO) {
+            (edgesMap as IMap<EdgeKey, Any>).set(edgeKey(edge.fromId, edge.toId, type), edge, ttl.inWholeSeconds, TimeUnit.SECONDS)
+        }
+        return Unit.right()
+    }
+
+    // A removal doesn't know which store the edge was originally written through, so it fans out to
+    // both, best-effort — mirrors transaction()/ephemeral()'s existing delete-fanout behavior.
+    suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> {
+        persistentStore?.transaction { deleteEdge(fromId, toId, type) }
+            ?.onLeft { log.warn("Cross-edge persistent delete fanout failed; stale persistent data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
+        ephemeralStore?.transaction { deleteEdge(fromId, toId, type) }
+            ?.onLeft { log.warn("Cross-edge ephemeral delete fanout failed; stale ephemeral data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
+        withContext(Dispatchers.IO) {
+            edgesMap.remove(edgeKey(fromId, toId, type))
+            reverseEdgesMap.remove(revKey(toId, fromId, type))
+        }
+        return Unit.right()
     }
 
     private fun outEdgeFlow(nid: NodeId, predicate: Predicate<EdgeKey, EdgeLike<*, *>>): Flow<EdgeLike<*, *>> = flow {

@@ -1,11 +1,10 @@
 package pl.iqtech.abyss.graph
 
 import arrow.core.Either
+import arrow.core.flatMap
 import arrow.core.left
 import com.hazelcast.core.HazelcastInstance
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssError
@@ -19,6 +18,7 @@ import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.full.findAnnotation
+import kotlin.time.Duration
 
 /**
  * Container hosting multiple typed [AbyssGraphSchema] views over one shared [AbyssSchemaWorker],
@@ -69,23 +69,28 @@ class HeterogeneousSchemaGraph(
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = worker.resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()
 
-    // --- Cross-schema edges (NodeId-level, cache-only, in the shared edge/reverse maps) -------------
+    // --- Cross-schema edges (NodeId-level, in the shared edge/reverse maps, persisted through the
+    // same stores as an ordinary edge — see AbyssSchemaWorker.putCrossEdge/putCrossEdgeEphemeral) ----
 
     suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
         if (!allowCrossSchemaEdges)
             return AbyssError.IntegrityError("Cross-schema edges are disabled (allowCrossSchemaEdges=false)").left()
         val type = try { edgeType(edge) } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
         if (checkIntegrity) integrityError(edge, type)?.let { return it.left() }
-        return Either.catch {
-            withContext(Dispatchers.IO) { worker.putCrossEdge(edge, type) }
-        }.mapLeft { AbyssError.Unexpected(it) }
+        return Either.catch { worker.putCrossEdge(edge, type) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
+    }
+
+    // Ephemeral (TTL) cross edge — same gate and integrity check, routes to the ephemeral store instead.
+    suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, ttl: Duration, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
+        if (!allowCrossSchemaEdges)
+            return AbyssError.IntegrityError("Cross-schema edges are disabled (allowCrossSchemaEdges=false)").left()
+        val type = try { edgeType(edge) } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        if (checkIntegrity) integrityError(edge, type)?.let { return it.left() }
+        return Either.catch { worker.putCrossEdgeEphemeral(edge, type, ttl) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
     }
 
     suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> =
-        Either.catch {
-            withContext(Dispatchers.IO) { worker.removeCrossEdge(fromId, toId, type) }
-            Unit
-        }.mapLeft { AbyssError.Unexpected(it) }
+        Either.catch { worker.removeCrossEdge(fromId, toId, type) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
 
     private fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
         val fromTag = schemaTagOf(edge.fromId)

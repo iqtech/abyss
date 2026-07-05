@@ -203,8 +203,8 @@ Standalone (`SingleSchemaGraph`) schemas with different `ID` types need separate
 [multi-schema container](#multi-schema-graphs--cross-schema-edges)
 (`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`), which sidesteps the limitation with a shared
 `EdgeAdapter` whose `EdgeKey` layout carries the schema tag plus each endpoint's native shape. This
-coexistence is not free for `HeterogeneousSchemaGraph` — its shared layout is a fixed superset (`tag`
-+ kind + `hi`/`lo` + nullable `str`) and its `outEdges`/`inEdges` predicate compares two fields (the
+coexistence is not free for `HeterogeneousSchemaGraph` — its shared layout is a fixed superset (
+`tag` + kind + `hi`/`lo` + nullable `str`) and its `outEdges`/`inEdges` predicate compares two fields (the
 tag plus the value) instead of one, since two different `ID` shapes can otherwise collide on `lo`
 within a partition. `HomogeneousSchemaGraph` avoids even that cost — see below. See
 [Performance](#performance) for the measured overhead versus a standalone schema.
@@ -302,12 +302,20 @@ persons.from(alice.id) {
     outgoing<LivesIn>()    // cross-schema (lands in `cities`)
     collectNodes<City>()   // resolves each reached NodeId to its schema
 }.getOrNull()?.collect { println(it.name) }
+
+// Ephemeral (TTL) cross edge — same integrity gate, routes to the ephemeral store instead:
+container.addCrossEdge(LivesIn(fromId = aliceNid, toId = warsawNid), ttl = 60.seconds)
 ```
 
 `addCrossEdge` checks both endpoints resolve to a registered schema tag and that the node actually
-exists (via a lookup in the shared nodes map) before writing. Cross-schema edges are cache-only in
-this version — no store persistence. Because they share the intra-schema maps, an untyped whole-node
-scan (`outEdges(node)` with no type) now includes them; typed hops are unaffected.
+exists (via a lookup in the shared nodes map) before writing. Cross-schema edges persist through the
+same `persistentStore`/`ephemeralStore` as an ordinary edge — `AbyssStoreLike`/`AbyssEphemeralStoreLike`
+are already `NodeId`-keyed and untyped, so a cross-schema edge (`EdgeLike<NodeId, NodeId>`) needs no
+special store handling; a store-configured container also self-heals a cross edge on cold restart the
+same way it does for intra-schema edges. `removeCrossEdge` fans a delete out to both stores,
+best-effort, since it doesn't track which store the edge was originally written through. Because
+cross edges share the intra-schema maps, an untyped whole-node scan (`outEdges(node)` with no type)
+now includes them; typed hops are unaffected.
 
 #### `HomogeneousSchemaGraph` — one shape, many (possibly unbounded) tags
 
