@@ -433,6 +433,12 @@
   coroutine/`Flow` fan-out overhead in `TraversalBuilder.addHop`'s
   `coroutineScope { frontier.map { async {...} } }.awaitAll()`, which runs once per hop
   regardless of ID type but whose per-task overhead could dominate at these small per-node costs.
+  **Correction (4.6): the ~5-7x gap itself was a benchmark artifact, not a real cost difference —
+  see 4.6.** `LongPerformanceTest`/`StringPerformanceTest`'s 3-hop numbers were never measuring real
+  traversal work; there was no gap to explain. 3.5/3.6's own isolated serde/hashCode measurements
+  (`SerdeRoundtripPerformanceTest`, `NodeIdHashPerformanceTest`) remain valid as standalone facts
+  about `NodeId(Uuid)` vs `NodeId(Long)`/`NodeId(String)` cost — they just were never actually
+  explaining anything, since the thing they were investigating didn't exist.
 
 - **🔴 ~~3.7 Explore a single ID-describing bit in the NodeId header byte~~**
   The 1-byte header from 1.15 (high nibble = `SchemaTagWidth.ordinal`, low nibble = `NodeKeyKind`)
@@ -480,3 +486,33 @@
   cold restart for free, since they resolve the cache key generically per `NodeId`. New
   `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph.addCrossEdge(edge, ttl, checkIntegrity)`
   overload for the ephemeral path. Covered by `MultiSchemaTest`.
+
+- **✅ 4.6 Fix `LongPerformanceTest`/`StringPerformanceTest`'s 3-hop benchmark (see 3.5/3.6 correction)**
+  Found while building a new `SingleSchemaGraph` concurrency benchmark: both tests seed their 10k-node
+  graphs by writing `EdgeKey`/`ReverseEdgeKey` directly into the Hazelcast maps with the literal type
+  string `"test_edge"` — but the edges stored are `LongTestEdge`/`StrTestEdge`, whose real
+  `@SerialName` is `"long_test_edge"`/`"str_test_edge"` (`"test_edge"` is actually `TestEdge`'s,
+  the `Uuid` fixture `UuidPerformanceTest` correctly uses). Their 3-hop tests' typed
+  `outgoing<LongTestEdge>()`/`outgoing<StrTestEdge>()` hops never matched the mis-typed seeded keys,
+  so both silently measured an **empty** traversal every hop instead of real work — explaining the
+  suspiciously flat ~0.6-0.7ms they reported regardless of adapter. Fixed the type strings; re-measured
+  all three adapters in the same session for a fair comparison: Long ~4.3ms, Uuid/String ~5.4ms
+  (statistically indistinguishable from each other run-to-run) — see 3.5/3.6's correction note above.
+  README's main Performance table and the "Multi-schema container overhead" narrative updated to match.
+
+- **✅ 4.7 Best-case concurrency counterpart to `AstronomyConcurrencyPerformanceTest`**
+  `LongSchemaConcurrencyPerformanceTest` — same `N=1,2,4,8,16,32` sweep/`concurrentBench` harness as
+  3.4's Astronomy benchmark, but over a standalone `SingleSchemaGraph`/`LongKeyAdapter` at
+  `LongPerformanceTest`'s 10k-node/5-edges-per-node ring-wrap scale instead of Astronomy's ~28-node
+  fixture — the architectural opposite tier (no schema tag, no header byte) to contrast against the
+  `HeterogeneousSchemaGraph` numbers. Needed an explicit warm-up pass before each sweep (mirroring
+  `LongPerformanceTest`'s own convention): this fixture is seeded via direct map puts (fast setup at
+  10k-node scale), unlike Astronomy's `transaction { addNode/addEdge }` seeding, which incidentally
+  JIT-warms the exact query code path before its sweep starts — without a warm-up, N=1 measured
+  ~275 ops/sec (cold JIT), not the ~1,130 ops/sec steady-state figure. **Caveat found while comparing
+  results:** the two fixtures differ in topology, not just scale — Long's ring-wrap graph is a uniform
+  5-fan-out at every hop (up to 155 nodes touched by one 3-hop traversal), while Astronomy's `Orbits`
+  chain is near-linear (degree ~1, moon→planet→star→singularity). This makes `outEdges` (roughly
+  fixed cost per call) the cleanest architecture-only signal; `inEdges`/3-hop numbers reflect fan-out
+  degree as much as schema overhead and are not directly comparable across the two tables. See
+  README's "Concurrency scaling" section.

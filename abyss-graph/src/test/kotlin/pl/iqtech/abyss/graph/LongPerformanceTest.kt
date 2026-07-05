@@ -42,9 +42,9 @@ class LongPerformanceTest {
                     val toId = ids[(i + j + 1) % NODE_COUNT]
                     val fromNid = hlong.toNodeId(fromId)
                     val toNid   = hlong.toNodeId(toId)
-                    edgesMap[EdgeKey(fromNid, toNid, "test_edge", hlong.partitionKey(fromNid))] =
+                    edgesMap[EdgeKey(fromNid, toNid, "long_test_edge", hlong.partitionKey(fromNid))] =
                         LongTestEdge(fromId = fromId, toId = toId)
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", hlong.partitionKey(toNid))] = Unit
+                    reverseMap[ReverseEdgeKey(toNid, fromNid, "long_test_edge", hlong.partitionKey(toNid))] = Unit
                 }
             }
             ids

@@ -48,9 +48,9 @@ class StringPerformanceTest {
                     val toId = ids[(i + j + 1) % NODE_COUNT]
                     val fromNid = hstr.toNodeId(fromId)
                     val toNid   = hstr.toNodeId(toId)
-                    edgesMap[EdgeKey(fromNid, toNid, "test_edge", hstr.partitionKey(fromNid))] =
+                    edgesMap[EdgeKey(fromNid, toNid, "str_test_edge", hstr.partitionKey(fromNid))] =
                         StrTestEdge(fromId = fromId, toId = toId)
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", hstr.partitionKey(toNid))] = Unit
+                    reverseMap[ReverseEdgeKey(toNid, fromNid, "str_test_edge", hstr.partitionKey(toNid))] = Unit
                 }
             }
             ids

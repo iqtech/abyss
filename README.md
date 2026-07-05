@@ -809,9 +809,9 @@ All queries run single-threaded; real throughput scales linearly with available 
 
 | Adapter | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| `UuidKeyAdapter` | **3,095 ops/sec** | **1,110 ops/sec** | **3.6 ms avg** |
-| `LongKeyAdapter` | **3,442 ops/sec** | **1,213 ops/sec** | **0.7 ms avg** |
-| `StringKeyAdapter` | **2,635 ops/sec** | **879 ops/sec** | **0.7 ms avg** |
+| `UuidKeyAdapter` | **3,095 ops/sec** | **1,110 ops/sec** | **5.4 ms avg** |
+| `LongKeyAdapter` | **3,442 ops/sec** | **1,213 ops/sec** | **4.3 ms avg** |
+| `StringKeyAdapter` | **2,635 ops/sec** | **879 ops/sec** | **5.4 ms avg** |
 
 `outEdges`/`inEdges` predicates compare `fromId`/`toId` in each adapter's native encoding (see
 [Edge key encoding](#edge-key-encoding)) rather than the hex strings used previously — a fixed
@@ -841,15 +841,19 @@ on the **standalone** single-schema path (the table above), where the key is a s
 `HomogeneousSchemaGraph` doesn't pay this cost: its adapter shape is fixed for the whole container
 (one descriptor computed once, not re-derived per key), and its keys carry no header byte at all.
 
-The UUID 3-hop figure is still higher than Long/String, but not mainly because of value serde:
-`NodeLike`/`EdgeLike` payloads go through a custom JSON `StreamSerializer`
+Earlier revisions of this table showed Long/String 3-hop pinned at a flat ~0.7ms versus Uuid's
+~3.6ms — a benchmark bug (`TODO.md` 4.6), not a real cost difference: `LongPerformanceTest`/
+`StringPerformanceTest` seeded their edges with the wrong type string, so their typed 3-hop hops
+silently matched nothing and measured an empty traversal every time. With that fixed, all three
+adapters land in the same single-digit-millisecond range for a real 3-hop × 5-fanout traversal at
+10k nodes — `LongKeyAdapter` modestly fastest (a fixed 8-byte key, no `Uuid` hashCode/equals
+overhead), `UuidKeyAdapter`/`StringKeyAdapter` statistically indistinguishable from each other
+run-to-run. `NodeLike`/`EdgeLike` payloads go through a custom JSON `StreamSerializer`
 (`NodeLikeHzSerializer`/`EdgeLikeHzSerializer`), not Hazelcast Compact — only `NodeId`/`EdgeKey`/
-`ReverseEdgeKey` use real Compact. Isolating that JSON roundtrip from `IMap`/partition routing
-entirely (`SerdeRoundtripPerformanceTest`, no `HazelcastInstance` involved) measures only a
-~1.8x (edge) / ~1.2x (node) Uuid cost — far short of the ~5-7x gap above, so value serde is a
-minor contributor and most of the gap comes from elsewhere (candidate: `Uuid` hashCode/equals
-cost across the ~125 edge/node lookups a 3-hop × 5-fanout traversal touches, unconfirmed — see
-`TODO.md` 3.5).
+`ReverseEdgeKey` use real Compact — and isolating that JSON roundtrip entirely
+(`SerdeRoundtripPerformanceTest`) still measures a small (~1.8x edge / ~1.2x node) Uuid cost,
+consistent with `LongKeyAdapter`'s modest edge. See `TODO.md` 3.5/3.6 for the (now-corrected)
+investigation history.
 
 To reproduce:
 
@@ -865,7 +869,12 @@ To reproduce:
 
 Sweeping concurrent callers (N = 1, 2, 4, 8, 16, 32, each firing 200 ops/caller) against the
 2×-enlarged astronomy schema of the Universe fixture, same 6-core/12-thread machine as above
-(`AstronomyConcurrencyPerformanceTest`):
+(`AstronomyConcurrencyPerformanceTest`). The Universe fixture is a `HeterogeneousSchemaGraph`
+container, so — per [Multi-schema container overhead](#multi-schema-container-overhead) above —
+this is the **worst-case tier**: every key pays the superset (`tag`/kind/`hi`/`lo`/`str`) decode and
+two-field predicate cost. A standalone schema or a `HomogeneousSchemaGraph` schema, paying neither
+that cost nor a header byte, would scale further before hitting the same core-bound flattening
+below:
 
 | N callers | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
@@ -886,6 +895,34 @@ deployment with callers on separate hosts from the graph would push this knee ou
 number is the worst case a single co-located JVM sees, not a hard ceiling.
 
 To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.AstronomyConcurrencyPerformanceTest" -Pperf`
+
+#### The best case: a standalone schema
+
+Same sweep, same machine, but the architectural opposite tier: a standalone `SingleSchemaGraph`/
+`LongKeyAdapter` (no schema tag, no header byte), at `LongPerformanceTest`'s 10,000-node/5-edges-per-
+node ring-wrap scale instead of Astronomy's ~28-node fixture (`LongSchemaConcurrencyPerformanceTest`):
+
+| N callers | `outEdges` | `inEdges` | 3-hop traversal |
+|---|---|---|---|
+| 1  | 1,129 ops/sec | 1,212 ops/sec | 352 ops/sec |
+| 2  | 2,649 ops/sec | 2,857 ops/sec | 460 ops/sec |
+| 4  | 7,017 ops/sec | 4,678 ops/sec | 754 ops/sec |
+| 8  | 11,678 ops/sec | 6,530 ops/sec | 901 ops/sec |
+| 16 | 16,080 ops/sec | 9,696 ops/sec | 922 ops/sec |
+| 32 | 19,219 ops/sec | 11,721 ops/sec | 921 ops/sec |
+
+**The two fixtures differ in topology, not just scale**, so only `outEdges` is a clean read on the
+architecture cost in isolation: it's at or above the Heterogeneous table at every N (and pulls
+further ahead at N=32: 19,219 vs 16,666), consistent with paying no tag/header decode. `inEdges` and
+3-hop are confounded by fan-out degree, not schema overhead — Long's ring-wrap graph is a uniform
+5-fan-out at every hop (a 3-hop traversal touches up to 155 nodes), while Astronomy's `Orbits` chain
+is near-linear (degree ~1, moon→planet→star→singularity). That's why 3-hop throughput here is both
+lower and flattens almost immediately past N=4 (~920 ops/sec at N=8 through N=32): each traversal is
+doing roughly 40x more work than Astronomy's, so a single traversal's own internal coroutine fan-out
+already saturates the machine — additional concurrent callers buy almost nothing further, unlike
+Astronomy's fan-in-light chain, which keeps climbing to N=32.
+
+To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongSchemaConcurrencyPerformanceTest" -Pperf`
 
 ---
 
