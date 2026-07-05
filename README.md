@@ -924,6 +924,36 @@ Astronomy's fan-in-light chain, which keeps climbing to N=32.
 
 To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongSchemaConcurrencyPerformanceTest" -Pperf`
 
+### Edge count per hop
+
+`outgoing<E>()`/`incoming<E>()` fan out one `async { }` coroutine per frontier node in a single wave
+(`TraversalBuilder.addHop`), so a hop's cost scales with how many edges it touches. A frontier-size
+sweep (K = 1 to 10,000 concurrent per-node lookups, same machine as above) found per-edge cost
+essentially **flat**, not degrading, as K grows:
+
+| K (edges in the hop) | Total time | Per-edge cost |
+|---|---|---|
+| 10 | 2 ms | 218 µs |
+| 100 | 10 ms | 109 µs |
+| 1,000 | 51 ms | 51 µs |
+| 5,000 | 273 ms | 55 µs |
+| 10,000 | 513 ms | 51 µs |
+
+**A reasonable ceiling for a single hop is around 1,000 edges** if you want that hop to finish in
+tens of milliseconds — comfortably cheap up to ~100 (single-digit ms), noticeable but fine at
+500-1,000 (~40-50 ms), and worth a second look past 5,000-10,000 (a quarter to half a second for
+that one hop). Scaling past 10,000 wasn't measured, but the near-linear trend suggests extrapolating
+linearly is reasonable (e.g. ~50,000 edges ≈ 2.5 s).
+
+The ceiling that actually matters in production isn't a single hop's fan-out, though — it's
+**aggregate concurrent load**. Per-edge cost doesn't rise with K in isolation because Hazelcast's
+local predicate scan and the coroutine dispatcher have room to spare; the flattening seen in
+[Concurrency scaling](#concurrency-scaling) above came from *many simultaneous callers* each doing
+their own fan-out, all sharing the same bounded dispatcher/thread pool — not from any one hop
+touching a lot of edges. A single supernode-sized hop is cheap; many concurrent traversals each
+hitting one is what saturates the machine. See `TODO.md` 2.19 for chunking large per-hop fan-out so
+one such traversal can't monopolize the shared pool out from under concurrent callers.
+
 ---
 
 ## Sizing — Sniper on Oracle Always Free (single Ampere A1)

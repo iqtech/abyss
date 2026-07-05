@@ -373,6 +373,15 @@
   decision on where the domain type is expressed once nested under `"properties"` isn't backed by
   `@SerialName` alone the way `AbyssJsonLinesCodec` does it.
 
+- **➡️ 2.19 Chunk large per-hop edge fan-out instead of one all-at-once async wave**
+  `TraversalBuilder.addHop` launches one `async { }` per frontier node in a single
+  `coroutineScope { ... }.awaitAll()` wave, regardless of frontier size. A frontier-size sweep found
+  per-edge cost roughly flat (~50-60us) up to 10k concurrent calls in isolation, but aggregate load
+  across many simultaneously-active traversals sharing the same dispatcher/thread pool is the real
+  ceiling, not any single hop. For hops crossing roughly 1000+ edges, chunk the fan-out (e.g. batches
+  of a few hundred, sequential between batches, async within each) instead of one unbounded wave, so
+  one supernode-heavy traversal can't monopolize the shared pool out from under concurrent callers.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
