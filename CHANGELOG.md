@@ -1,3 +1,7 @@
+## [0.28.0] - 2026-07-05
+
+- Add property-graph JSON export/import codec, fix `allNodeIds()` to scope by schema tag so per-schema export/import and `connectedComponents` no longer leak sibling schemas' data in `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`, persist cross-schema edges through the configured `persistentStore`/`ephemeralStore` (previously cache-only), and fix cache-warmth-dependent correctness bugs from the durability audit: `cascadeEdgeRemovals` and `integrityError` (ordinary and cross-schema) now self-heal from the store instead of reading the Hazelcast cache directly, so a cold cache after a restart or partition eviction can no longer leave dangling edges or spuriously reject a valid write
+
 ## [0.27.0] - 2026-07-04
 
 - Make `HomogeneousSchemaGraph` registry-free with 128-bit, headerless tags: widens schema tags from `Long` to a real 128-bit `SchemaTag` (fixing a dead, previously-broken `SchemaTagWidth.UUID` path) so a `Uuid` can be used directly as a per-tenant tag; replaces the registration-guard pattern with on-the-fly `forTag()` views; and drops the 1.15 header byte from its keys entirely (like `SingleSchemaGraph`), restoring clean 16/32-byte alignment for `Long`/`Uuid` tag+id combinations
