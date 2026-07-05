@@ -7,8 +7,11 @@ import pl.iqtech.abyss.dsl.allReachable
 import pl.iqtech.abyss.dsl.connectedComponents
 import pl.iqtech.abyss.dsl.hasCycle
 import pl.iqtech.abyss.dsl.outgoing
+import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.SchemaTag
+import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -244,6 +247,29 @@ class AlgorithmsTest {
             val components = graphTest.connectedComponents()
             assertEquals(2, components.size)
             assertEquals(setOf(setOf(a.id, b.id, c.id), setOf(d.id)), components.toSet())
+        }
+    }
+
+    // Regression for the allNodeIds() tag-scoping fix: connectedComponents shares that code path,
+    // so a schema sharing multiSchemaHz's map with a sibling schema must never see the sibling's
+    // nodes. Identical numeric ids in both schemas is the sharpest case for a decode collision.
+    @Test fun `connectedComponents on a Heterogeneous schema only sees its own tag`() = runBlocking {
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cc-nodes", "cc-edges")
+        val a = g.register(SchemaTag(101L), LongKeyAdapter)
+        val b = g.register(SchemaTag(102L), LongKeyAdapter)
+        try {
+            a.transaction { addNode(LongTestNode(1L)); addNode(LongTestNode(2L)); addEdge(LongTestEdge(1L, 2L)) }
+            b.transaction { addNode(LongTestNode(1L)); addNode(LongTestNode(9L)); addEdge(LongTestEdge(1L, 9L)) }
+
+            val aComponents = a.connectedComponents()
+            assertEquals(1, aComponents.size)
+            assertEquals(setOf(1L, 2L), aComponents.first())
+
+            val bComponents = b.connectedComponents()
+            assertEquals(1, bComponents.size)
+            assertEquals(setOf(1L, 9L), bComponents.first())
+        } finally {
+            listOf("cc-nodes", "cc-edges", "cc-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 }

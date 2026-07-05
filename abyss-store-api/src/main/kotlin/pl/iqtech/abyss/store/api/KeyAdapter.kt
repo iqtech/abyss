@@ -199,6 +199,11 @@ interface KeyAdapter<ID> : EdgeAdapter {
     fun toNodeId(id: ID): NodeId = NodeKey.compose(SchemaTagWidth.NONE, nodeKeyKind, SchemaTag.ZERO, encodeIdBytes(id))
     fun fromNodeId(nodeId: NodeId): ID = decodeIdBytes(NodeKey.rawId(nodeId))
 
+    // Does this schema own nodeId (same tag/width), or is it foreign? Default true: untagged adapters
+    // (UuidKeyAdapter, IntKeyAdapter, ..., and HeaderlessKeyAdapter's standalone case) are the only
+    // schema in their map by construction — mirrors SingleSchemaResolution.sameSchema.
+    fun ownsNodeId(nodeId: NodeId): Boolean = true
+
     // Native (non-hex) value the partition key uses. Identity for most kinds; Uuid overrides since
     // Hazelcast partitions kotlin.uuid.Uuid and java.util.UUID differently (see UuidKeyAdapter).
     fun nativePartitionValue(id: ID): Any = id as Any
@@ -287,6 +292,9 @@ class SchemaKeyAdapter<ID>(
     override fun toNodeId(id: ID): NodeId = NodeKey.compose(width, inner.nodeKeyKind, tag, inner.encodeIdBytes(id))
     override fun fromNodeId(nodeId: NodeId): ID = inner.decodeIdBytes(NodeKey.rawId(nodeId))
 
+    override fun ownsNodeId(nodeId: NodeId): Boolean =
+        runCatching { NodeKey.width(nodeId) == width && NodeKey.tag(nodeId) == tag }.getOrDefault(false)
+
     override fun partitionKey(nodeId: NodeId): Any = nodeId.toString()
     override val keyEncodingShape = KeyEncodingShape.TAGGED
     override fun encodeKey(nodeId: NodeId): NodeKeyEncoding =
@@ -311,6 +319,9 @@ class HeaderlessSchemaKeyAdapter<ID>(
 
     override fun toNodeId(id: ID): NodeId = NodeKey.composeHeaderlessTag(width, tag, inner.encodeIdBytes(id))
     override fun fromNodeId(nodeId: NodeId): ID = inner.decodeIdBytes(NodeKey.rawIdHeaderless(nodeId, width))
+
+    override fun ownsNodeId(nodeId: NodeId): Boolean =
+        runCatching { NodeKey.tagHeaderless(nodeId, width) == tag }.getOrDefault(false)
 
     override fun partitionKey(nodeId: NodeId): Any = inner.nativePartitionValue(fromNodeId(nodeId))
     override val keyEncodingShape = KeyEncodingShape.TAGGED

@@ -16,6 +16,11 @@ import pl.iqtech.abyss.store.api.NodeLike
 // connectedComponents/ensureSubgraph in abyss-dsl/Extensions.kt, because the JSON codec machinery
 // (GraphJsonCodec, customJsonSerializer) lives in abyss-graph — abyss-dsl can't depend on it
 // (abyss-graph depends on abyss-dsl, not the reverse).
+//
+// Cross-schema edges (added via a container's addCrossEdge, not through a schema facade's own
+// transaction { }) are out of scope here: export walks one schema's own outEdges only, and
+// importGraphLines only calls addEdge, never addCrossEdge. Round-trip a container's cross-edge
+// data via its own addCrossEdge API if needed.
 
 // Walks every node once (its payload + its own outgoing edges only, so each directed edge is
 // emitted exactly once) — same allNodeIds()-then-per-node access pattern as connectedComponents

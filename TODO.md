@@ -231,6 +231,16 @@
   (dependency direction is the other way). Literal external-tool schema compatibility (e.g. Neo4j
   APOC's nested `labels`/`properties` format) is explicitly out of scope — it would also collide with
   using `@SerialName` as the type discriminator. Covered by `GraphExportTest`.
+  Fixed (follow-up): `exportGraphLines`/`importGraphLines`/`connectedComponents` all walked
+  `allNodeIds()`, which iterated every key in the shared `nodesMap` unfiltered by schema tag — a
+  per-tag facade from `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph` returned and mis-decoded
+  every other registered schema's nodes too. Fixed via a new `KeyAdapter.ownsNodeId(NodeId): Boolean`
+  (default `true`; overridden in `SchemaKeyAdapter`/`HeaderlessSchemaKeyAdapter` to compare tag+width,
+  mirroring `SchemaResolution.sameSchema`'s existing cascade-delete scoping logic) that
+  `AbyssGraphSchema.allNodeIds()` filters through before decoding. Cross-schema edges (built via a
+  container's `addCrossEdge`) remain outside `exportGraphLines`/`importGraphLines`'s reach — a
+  pre-existing, still-open limitation, not addressed by this fix. Covered by
+  `GraphExportMultiSchemaTest`.
 
 - **✅ 2.4 Graph algorithms**
   BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`

@@ -10,6 +10,7 @@ import com.hazelcast.query.Predicate
 import com.hazelcast.query.Predicates
 import com.hazelcast.config.SerializerConfig
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
@@ -73,7 +74,10 @@ class AbyssGraphSchema<ID> internal constructor(
     // schemas over the shared edge map) when registered in one, else this schema's own worker.
     internal var traversalEngine: NodeIdEngine = worker
 
-    override fun allNodeIds(): Flow<ID> = worker.allNodeIds().map { adapter.fromNodeId(it) }
+    // Scoped to this schema's own nodes: worker.allNodeIds() enumerates every key in the shared
+    // nodesMap across all registered tags in a Homogeneous/HeterogeneousSchemaGraph container;
+    // ownsNodeId filters out every other schema's keys before they reach adapter.fromNodeId.
+    override fun allNodeIds(): Flow<ID> = worker.allNodeIds().filter { adapter.ownsNodeId(it) }.map { adapter.fromNodeId(it) }
 
     override suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>> =
         Either.catch { worker.readNode(adapter.toNodeId(id)) }
