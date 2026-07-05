@@ -861,6 +861,32 @@ To reproduce:
 ./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.MultiSchemaPerformanceTest" -Pperf
 ```
 
+### Concurrency scaling
+
+Sweeping concurrent callers (N = 1, 2, 4, 8, 16, 32, each firing 200 ops/caller) against the
+2×-enlarged astronomy schema of the Universe fixture, same 6-core/12-thread machine as above
+(`AstronomyConcurrencyPerformanceTest`):
+
+| N callers | `outEdges` | `inEdges` | 3-hop traversal |
+|---|---|---|---|
+| 1  | 854 ops/sec | 1,360 ops/sec | 900 ops/sec |
+| 2  | 2,816 ops/sec | 4,347 ops/sec | 2,259 ops/sec |
+| 4  | 7,017 ops/sec | 7,017 ops/sec | 3,940 ops/sec |
+| 8  | 10,738 ops/sec | 11,188 ops/sec | 5,000 ops/sec |
+| 16 | 14,883 ops/sec | 17,391 ops/sec | 5,765 ops/sec |
+| 32 | 16,666 ops/sec | 18,181 ops/sec | 7,795 ops/sec |
+
+Throughput scales close to linearly up to N=4 — roughly this machine's physical core count — then
+the curve bends: each doubling past N=8 buys a shrinking fraction more (`outEdges` N=16→32: +12%,
+not +100%). The flattening isn't purely server-side saturation, either: this benchmark runs its
+callers as coroutines in the *same* JVM as the code being measured, so once N exceeds the hardware
+thread count, some of those 12 threads are busy driving the load rather than serving it — the
+benchmark's own clients are competing with Abyss for the CPU they're both measured on. A real
+deployment with callers on separate hosts from the graph would push this knee out further; this
+number is the worst case a single co-located JVM sees, not a hard ceiling.
+
+To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.AstronomyConcurrencyPerformanceTest" -Pperf`
+
 ---
 
 ## Sizing — Sniper on Oracle Always Free (single Ampere A1)
