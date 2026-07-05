@@ -315,6 +315,29 @@ class MultiSchemaTest {
         }
     }
 
+    // TODO 1.20 (durability audit finding #5, cross-schema instance): addCrossEdge's integrity check
+    // used to read worker.containsNodeInCache — a raw cache read — so a genuinely-existing node not
+    // yet cache-warmed spuriously failed with IntegrityError. Both endpoints exist only in the (fake)
+    // store here, never added through transaction{} — the cache never learns about them, exactly like
+    // a cold restart would.
+    @Test fun `addCrossEdge integrity check self-heals from store on cache-cold node`() = runBlocking {
+        val store = RecordingStore()
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx6-nodes", "cx6-edges", allowCrossSchemaEdges = true, persistentStore = store)
+        g.register(SchemaTag(251L), LongKeyAdapter)
+        g.register(SchemaTag(252L), UuidKeyAdapter)
+        try {
+            val u = Uuid.random()
+            val fromNid = SchemaKeyAdapter(SchemaTag(251L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(1L)
+            val toNid = SchemaKeyAdapter(SchemaTag(252L), SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(u)
+            store.seededNodes = mapOf(fromNid to LongTestNode(1L), toNid to TestNode(id = u, name = "cold"))
+
+            val result = g.addCrossEdge(CrossRefEdge(fromNid, toNid))
+            assertTrue(result.isRight())
+        } finally {
+            listOf("cx6-nodes", "cx6-edges", "cx6-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
     @Test fun twoLongSchemasDisambiguateByTag() = runBlocking {
         val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges")
         val a = g.register(LONG_TAG, LongKeyAdapter)
@@ -401,8 +424,9 @@ private class RecordingStore(private val failTx: Boolean = false) : AbyssStoreLi
     val savedEdges = mutableListOf<Triple<NodeId, NodeId, EdgeLike<*, *>>>()
     val deletedEdges = mutableListOf<Triple<NodeId, NodeId, String>>()
     var seededEdges: List<StoredEdge> = emptyList()
+    var seededNodes: Map<NodeId, NodeLike<*>> = emptyMap()
 
-    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(seededNodes[id] to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
     override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.Right(seededEdges.filter { it.fromId == fromId })

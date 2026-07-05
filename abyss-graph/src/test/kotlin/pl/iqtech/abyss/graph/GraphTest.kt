@@ -668,6 +668,49 @@ class GraphTest {
         }
     }
 
+    // TODO 1.20 (durability audit finding #4): removeNode's cascade delete used to scan only the
+    // cache, so an edge that was never queried since a restart/eviction (store-only, cold cache) was
+    // invisible to it and left dangling in the store. hub/other are added via transaction{} (so the
+    // cache learns about the NODES), but outEdge itself is seeded only in the fake store, never added
+    // through transaction{} — the cache never learns about it, exactly like a cold restart would.
+    @Test fun `removeNode cascades store-only edges not yet cache-resident`() {
+        runBlocking {
+            val hub = TestNode(id = Uuid.random(), name = "hub")
+            val other = TestNode(id = Uuid.random(), name = "other")
+            val outEdge = TestEdge(fromId = hub.id, toId = other.id, label = "cold")
+            val fake = WarmingFakeStore(outEdges = listOf(outEdge))
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "cd-nodes", "cd-edges", fake)
+            g.transaction { addNode(hub); addNode(other) }
+
+            val result = g.transaction { removeNode(hub.id) }
+
+            assertTrue(result.isRight())
+            assertEquals(listOf(huid.toNodeId(hub.id) to huid.toNodeId(other.id)), fake.deletedEdges)
+            graphTestHz.getMap<Any, Any>("cd-nodes").clear()
+            graphTestHz.getMap<Any, Any>("cd-edges").clear()
+            graphTestHz.getMap<Any, Any>("cd-edges-reverse").clear()
+        }
+    }
+
+    // TODO 1.20 (durability audit finding #5): addEdge's integrity check used to read the cache
+    // directly, so a genuinely-existing node that just hadn't been queried yet (cold restart, evicted
+    // partition) spuriously failed with IntegrityError. from/to exist only in the fake store, never
+    // added through transaction{} — the cache never learns about them.
+    @Test fun `addEdge integrity check self-heals from store on cache-cold node`() {
+        runBlocking {
+            val from = TestNode(id = Uuid.random(), name = "from")
+            val to = TestNode(id = Uuid.random(), name = "to")
+            val fake = WarmingFakeStore(nodes = listOf(from, to))
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "ic-nodes", "ic-edges", fake)
+
+            val result = g.transaction { addEdge(TestEdge(fromId = from.id, toId = to.id, label = "ok")) }
+
+            assertTrue(result.isRight())
+            graphTestHz.getMap<Any, Any>("ic-nodes").clear()
+            graphTestHz.getMap<Any, Any>("ic-edges").clear()
+        }
+    }
+
     @Test fun `transaction with store commits to store before cache`() {
         runBlocking {
             val fake = FakeStore()
@@ -736,14 +779,28 @@ private class FakeEphemeralStore : AbyssEphemeralStoreLike {
 private class WarmingFakeStore(
     private val outEdges: List<EdgeLike<Uuid, Uuid>> = emptyList(),
     private val inEdges: List<EdgeLike<Uuid, Uuid>> = emptyList(),
+    private val nodes: List<NodeLike<Uuid>> = emptyList(),
 ) : AbyssStoreLike {
-    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
+    val deletedEdges = mutableListOf<Pair<NodeId, NodeId>>()
+
+    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> =
+        Either.Right(nodes.find { huid.toNodeId(it.id) == id } to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
     override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.Right(outEdges.filter { huid.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, huid.toNodeId(it.toId), it, null) })
     override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.Right(inEdges.filter { huid.toNodeId(it.toId) == toId }.map { StoredEdge(huid.toNodeId(it.fromId), toId, it, null) })
-    override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Unit.right()
+
+    override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+        val tx = object : AbyssStoreTransactionLike {
+            override fun saveNode(id: NodeId, node: NodeLike<*>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
+            override fun deleteNode(id: NodeId) {}
+            override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { deletedEdges += fromId to toId }
+        }
+        tx.block()
+        return Unit.right()
+    }
 }
 
 private fun AbyssError.left(): Either<AbyssError, Nothing> = Either.Left(this)

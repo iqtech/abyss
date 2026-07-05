@@ -92,15 +92,17 @@ class HeterogeneousSchemaGraph(
     suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> =
         Either.catch { worker.removeCrossEdge(fromId, toId, type) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
 
-    private fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
+    private suspend fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
         val fromTag = schemaTagOf(edge.fromId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: fromId ${edge.fromId} has no valid schema tag")
         if (fromTag !in registeredTags) return AbyssError.IntegrityError("Cross-edge $type: fromId schema tag $fromTag not registered")
         val toTag = schemaTagOf(edge.toId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: toId ${edge.toId} has no valid schema tag")
         if (toTag !in registeredTags) return AbyssError.IntegrityError("Cross-edge $type: toId schema tag $toTag not registered")
-        if (!worker.containsNodeInCache(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
-        if (!worker.containsNodeInCache(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
+        // TODO 1.20 fix: nodeExists self-heals from the store on a cache miss, unlike the raw cache
+        // read this used to do.
+        if (!worker.nodeExists(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
+        if (!worker.nodeExists(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
         return null
     }
 

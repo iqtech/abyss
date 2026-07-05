@@ -99,15 +99,16 @@ class HomogeneousSchemaGraph<ID>(
     // There is no "was this tag ever used" check (unlike HeterogeneousSchemaGraph's registeredTags
     // membership check) — any tag is implicitly valid, since there's no registry to check it against;
     // only node existence is verified.
-    private fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
+    private suspend fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
         val fromTag = schemaTagOf(edge.fromId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: fromId ${edge.fromId} has no valid schema tag")
         val toTag = schemaTagOf(edge.toId)
             ?: return AbyssError.IntegrityError("Cross-edge $type: toId ${edge.toId} has no valid schema tag")
         if (!allowCrossSchemaEdges && fromTag != toTag) return AbyssError.SchemaError("Cross-edges not allowed")
-        // TODO this should be rewritten - get node, check if exists - don't relly on cache, full node reload required when cache missed
-        if (!worker.containsNodeInCache(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
-        if (!worker.containsNodeInCache(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
+        // TODO 1.20 fix: nodeExists self-heals from the store on a cache miss, unlike the raw cache
+        // read this used to do.
+        if (!worker.nodeExists(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
+        if (!worker.nodeExists(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
         return null
     }
 

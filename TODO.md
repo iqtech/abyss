@@ -188,17 +188,22 @@
   `UuidPerformanceTest.kt`, `AlgorithmsTest.kt`, `PathsTraversalTest.kt`, `TraversalTest.kt`).
   Pre-1.0, no migration shims: `AbyssGraph.kt` deleted outright.
 
-- **➡️ 1.20 Fix cache-warmth-dependent correctness bugs from the durability audit**
+- **✅ 1.20 Fix cache-warmth-dependent correctness bugs from the durability audit**
   See `ai-scripts/TransactionDurabilitySafetyAudit.md` (findings #4 and #5) — these hit a
   well-configured production system after any restart or partition eviction, not just misuse:
-  - `cascadeEdgeRemovals` (`AbyssSchemaWorker.kt:285-296`) computes cascade deletes by scanning the
-    Hazelcast cache, not the store. A cold cache for a node's edges means `removeNode` deletes only
-    the node row from YSQL, leaving dangling edge rows referencing the deleted node permanently.
-  - `integrityError` (`AbyssSchemaWorker.kt:269-281`) checks `nodesMap[addOp.fromId]` — a raw cache
-    read, not the self-healing `readNode`/`nodeExists` path. A genuinely-existing but not-yet-warmed
-    node spuriously fails `addEdge`'s integrity check.
-  Likely fix direction: route both through the same store-fallback pattern `readNode`/`nodeExists`
-  already use, rather than reading `nodesMap`/`edgesMap`/`reverseEdgesMap` directly.
+  - `cascadeEdgeRemovals` (`AbyssSchemaWorker.kt`) computed cascade deletes by scanning the Hazelcast
+    cache, not the store. A cold cache for a node's edges meant `removeNode` deleted only the node
+    row from YSQL, leaving dangling edge rows referencing the deleted node permanently. Fixed by
+    calling `preloadOut`/`preloadIn` (the same self-heal `outAt`/`inAt` already use) before the scan.
+  - `integrityError` (`AbyssSchemaWorker.kt`) checked `nodesMap[addOp.fromId]` — a raw cache read,
+    not the self-healing `readNode`/`nodeExists` path. A genuinely-existing but not-yet-warmed node
+    spuriously failed `addEdge`'s integrity check. Fixed by routing through `readNode`.
+  - A third instance of the identical bug, found while implementing this fix:
+    `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph.integrityError` gated `addCrossEdge` on
+    `worker.containsNodeInCache(...)` — same raw-cache-read pattern, with an inline
+    `// TODO this should be rewritten` comment already sitting on that line. Fixed by swapping in
+    `worker.nodeExists(...)` (already suspend, self-healing); `containsNodeInCache` deleted as dead
+    code. Covered by `GraphTest`/`MultiSchemaTest`.
 
 ## 2. Medium
 

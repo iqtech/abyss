@@ -158,8 +158,6 @@ internal class AbyssSchemaWorker(
     // untyped, so a cross-schema edge fits with no store schema change) — preloadOut/preloadIn already
     // warm them on cold restart for free, since both resolve the cache key generically per NodeId. ---
 
-    fun containsNodeInCache(nid: NodeId): Boolean = nodesMap.containsKey(nid)
-
     @Suppress("UNCHECKED_CAST")
     suspend fun putCrossEdge(edge: EdgeLike<NodeId, NodeId>, type: String): Either<AbyssError, Unit> {
         if (persistentStore != null) {
@@ -299,38 +297,50 @@ internal class AbyssSchemaWorker(
         return Unit.right()
     }
 
-    private suspend fun expandCascades(baseOps: List<NodeOp>): List<NodeOp> = withContext(Dispatchers.IO) {
-        baseOps.flatMap { op ->
-            if (op is NodeOp.RemoveNode) listOf(op) + cascadeEdgeRemovals(op.id) else listOf(op)
+    private suspend fun expandCascades(baseOps: List<NodeOp>): List<NodeOp> {
+        val result = mutableListOf<NodeOp>()
+        for (op in baseOps) {
+            result += op
+            if (op is NodeOp.RemoveNode) result += cascadeEdgeRemovals(op.id)
         }
+        return result
     }
 
-    private fun integrityError(ops: List<NodeOp>, checkIntegrity: Boolean): AbyssError? {
+    // TODO 1.20 fix: self-heals via readNode (cache-miss falls back to the store) instead of a raw
+    // nodesMap read, so a genuinely-existing but not-yet-warmed node doesn't spuriously fail addEdge.
+    private suspend fun integrityError(ops: List<NodeOp>, checkIntegrity: Boolean): AbyssError? {
         if (!checkIntegrity) return null
         val addedInTx = ops.filterIsInstance<NodeOp.AddNode>().associate { it.id to it.node }
-        return ops.filterIsInstance<NodeOp.AddEdge>().firstNotNullOfOrNull { addOp ->
-            val fromNode = addedInTx[addOp.fromId] ?: nodesMap[addOp.fromId]
-            val toNode   = addedInTx[addOp.toId]   ?: nodesMap[addOp.toId]
-            when {
+        for (addOp in ops.filterIsInstance<NodeOp.AddEdge>()) {
+            val fromNode = addedInTx[addOp.fromId] ?: readNode(addOp.fromId)
+            val toNode   = addedInTx[addOp.toId]   ?: readNode(addOp.toId)
+            val err = when {
                 fromNode == null -> AbyssError.IntegrityError("Node ${addOp.edge.fromId} (fromId) not found")
                 toNode   == null -> AbyssError.IntegrityError("Node ${addOp.edge.toId} (toId) not found")
                 else             -> schemaCheck(addOp.edge, fromNode, toNode)
             }
+            if (err != null) return err
         }
+        return null
     }
 
     private fun sameSchema(a: NodeId, b: NodeId): Boolean = resolution.sameSchema(a, b)
 
-    private fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
+    // TODO 1.20 fix: preloadOut/preloadIn warm the cache from the store first (same self-heal
+    // preloadOut/preloadIn already give outAt/inAt), so a cold cache after a restart or partition
+    // eviction can't make this scan silently miss a node's durable edges and leave them dangling.
+    private suspend fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
+        preloadOut(nid)
+        preloadIn(nid)
         val pk = partitionKey(nid)
-        val out = edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid)))
-            .filter { sameSchema(it.key.toId, nid) }
-            .map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
+        val out = withContext(Dispatchers.IO) {
+            edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid)))
+        }.filter { sameSchema(it.key.toId, nid) }.map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
         // ponytail: ephemeral edges are outgoing-only (TODO 1.13) — no reverse index, so deleting the
         // TO-node can't cascade them; they expire via TTL. Deleting the FROM-node still cascades (out).
-        val inc = reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(
-            pk, keyEq<ReverseEdgeKey, Unit>("toId", nid)
-        )).filter { sameSchema(it.fromId, nid) }.map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
+        val inc = withContext(Dispatchers.IO) {
+            reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(pk, keyEq<ReverseEdgeKey, Unit>("toId", nid)))
+        }.filter { sameSchema(it.fromId, nid) }.map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
 
