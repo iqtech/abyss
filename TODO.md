@@ -546,3 +546,22 @@
   fixed cost per call) the cleanest architecture-only signal; `inEdges`/3-hop numbers reflect fan-out
   degree as much as schema overhead and are not directly comparable across the two tables. See
   README's "Concurrency scaling" section.
+
+- **✅ 4.8 Cascade-delete now removes cross-schema edges too**
+  `AbyssSchemaWorker.cascadeEdgeRemovals` filtered both its outgoing and incoming scans through
+  `SchemaResolution.sameSchema(...)`, silently excluding any edge whose other endpoint carried a
+  different schema tag — deleting a node left every cross-schema edge referencing it dangling in the
+  cache and store. There was no technical reason for the filter: a cross edge lives in the exact same
+  shared `edgesMap`/`reverseEdgesMap` and is committed through the exact same single
+  `persistentStore`/`ephemeralStore` pair as an intra-schema edge (one `AbyssSchemaWorker` per
+  container, shared across every registered tag). Dropped the filter so cascade removes every edge
+  touching the deleted node regardless of schema; `sameSchema` had no other call site anywhere in the
+  repo, so it — the interface method, all three implementations, and the private `taggedSameSchema`
+  helper — is deleted as dead weight along with it. No existing test asserted the old (buggy)
+  survival behavior, so this needed new coverage rather than inverted assertions: `MultiSchemaTest`
+  gained cases for both cascade directions (deleting the `from` node, deleting the `to` node) on
+  `HeterogeneousSchemaGraph`, plus a same-fix case on `HomogeneousSchemaGraph` (which had zero
+  cascade-delete tests of any kind before this). Verified via `NodeIdEngine.outAt` directly rather
+  than a node-resolving traversal — once the deleted node is gone, `collectNodes<N>()` can't
+  materialize it whether the edge is dangling or properly cascaded, so that style of assertion can't
+  tell the two apart.

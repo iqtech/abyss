@@ -276,23 +276,25 @@ internal class AbyssSchemaWorker(
         return null
     }
 
-    private fun sameSchema(a: NodeId, b: NodeId): Boolean = resolution.sameSchema(a, b)
-
     // TODO 1.20 fix: preloadOut/preloadIn warm the cache from the store first (same self-heal
     // preloadOut/preloadIn already give outAt/inAt), so a cold cache after a restart or partition
     // eviction can't make this scan silently miss a node's durable edges and leave them dangling.
+    // Schema-agnostic by design: an edge lives in these same shared maps and this same store
+    // regardless of whether its other endpoint shares nid's schema tag, so cascade removes it either
+    // way — a cross-schema edge left dangling after its endpoint is deleted is exactly the bug this
+    // used to have (a since-removed `sameSchema(...)` filter excluded cross-schema edges here).
     private suspend fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
         preloadOut(nid)
         preloadIn(nid)
         val pk = partitionKey(nid)
         val out = withContext(Dispatchers.IO) {
             edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid)))
-        }.filter { sameSchema(it.key.toId, nid) }.map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
+        }.map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
         // ponytail: ephemeral edges are outgoing-only (TODO 1.13) — no reverse index, so deleting the
         // TO-node can't cascade them; they expire via TTL. Deleting the FROM-node still cascades (out).
         val inc = withContext(Dispatchers.IO) {
             reverseEdgesMap.keySet(Predicates.partitionPredicate<ReverseEdgeKey, Unit>(pk, keyEq<ReverseEdgeKey, Unit>("toId", nid)))
-        }.filter { sameSchema(it.fromId, nid) }.map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
+        }.map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
 

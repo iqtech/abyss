@@ -23,6 +23,7 @@ import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
 import pl.iqtech.abyss.store.api.CrossSchemaEdge
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessMultiSchemaAdapter
+import pl.iqtech.abyss.store.api.HeaderlessSchemaKeyAdapter
 import pl.iqtech.abyss.store.api.IntKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.adapter
@@ -320,6 +321,40 @@ class MultiSchemaTest {
         assertEquals(emptyList(), after)
     }
 
+    // Cascade-delete used to filter cascaded edges by sameSchema(), silently excluding cross-schema
+    // edges and leaving them dangling after their endpoint was removed. Verified via outAt directly
+    // (not a node-resolving traversal): once the deleted node is gone, collectNodes<N>() can't
+    // materialize it whether the edge is dangling or properly cascaded, so it can't distinguish the
+    // two — it would pass either way and prove nothing.
+
+    @Test fun removeNodeCascadesCrossSchemaEdgeWhenFromNodeDeleted() = runBlocking {
+        val c = newContainer(allowCross = true)
+        val u = Uuid.random()
+        c.longS.transaction { addNode(LongTestNode(1L)) }
+        c.uuidS.transaction { addNode(TestNode(u, name = "m")); addCrossEdge(LivesIn(u, 1L)) }
+
+        assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+
+        c.uuidS.transaction { removeNode(u) }
+
+        assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+    }
+
+    @Test fun removeNodeCascadesCrossSchemaEdgeWhenToNodeDeleted() = runBlocking {
+        val c = newContainer(allowCross = true)
+        val u = Uuid.random()
+        c.uuidS.transaction { addNode(TestNode(u, name = "n")) }
+        c.longS.transaction { addNode(LongTestNode(1L)) }
+        c.uuidS.transaction { addCrossEdge(LivesIn(u, 1L)) }
+
+        assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+
+        // Delete the TARGET this time — exercises the reverseEdgesMap-driven (incoming) cascade branch.
+        c.longS.transaction { removeNode(1L) }
+
+        assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+    }
+
     @Test fun containerLevelTransactionAddsCrossEdgeAtomically() = runBlocking {
         val c = newContainer(allowCross = true)
         c.longS.transaction { addNode(LongTestNode(1L)) }
@@ -403,6 +438,26 @@ class MultiSchemaTest {
             assertEquals(setOf(2L), reached.map { it.id }.toSet())
         } finally {
             listOf("hg3-nodes", "hg3-edges", "hg3-edges-reverse").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    @Test fun homogeneousRemoveNodeCascadesDifferentTagCrossEdge() = runBlocking {
+        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg4-nodes", "hg4-edges", allowCrossSchemaEdges = true)
+        val a = g.forTag(SchemaTag(501L))
+        val b = g.forTag(SchemaTag(502L))
+        try {
+            a.transaction { addNode(LongTestNode(1L)) }
+            b.transaction { addNode(LongTestNode(2L)) }
+            a.transaction { addCrossEdge(TenantLink(1L, 2L)) }
+
+            val fromNid = HeaderlessSchemaKeyAdapter(SchemaTag(501L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(1L)
+            assertEquals(1, g.outAt(fromNid, "tenant_link", needValue = false).size)
+
+            b.transaction { removeNode(2L) }
+
+            assertEquals(0, g.outAt(fromNid, "tenant_link", needValue = false).size)
+        } finally {
+            listOf("hg4-nodes", "hg4-edges", "hg4-edges-reverse").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }
     }
 
