@@ -398,6 +398,20 @@
   property mapping, Cypher identifier-injection safeguard, transaction/TTL handling, file-by-file
   breakdown): `ai-scripts/Neo4jStorePlan.md`.
 
+- **➡️ 2.21 Sharded adjacency index replacing `reverseEdgesMap`, giving `outAt` a real index**
+  Design finalized, ready to implement. New Hazelcast map, key `(NodeId, Shard: Byte)` packing
+  direction + shard index into one byte, value `Set<(neighborId, nodeTypeTag, edgeTypeTag)>` — carrying
+  edge type (not just neighbor node type) makes `RemoveEdge` exact (no reference-count read needed) and
+  lets the index serve typed traversal too, not just mixed/untyped. `outAt`'s existing typed+value-needed
+  fast path (`outgoing<E>()`) is untouched (already 1 round trip, optimal); every other read shape
+  (incoming, untyped/mixed, typed-existence-only) routes through batched per-shard `getAll` + shard-count
+  concurrency. Needs `@TypeTag(Short)` on both `NodeLike` and `EdgeLike` classes (developer-assigned,
+  `@SerialName`-style, two independent namespaces), with its registry populated eagerly at worker
+  construction (not lazily on write) to avoid a restart-tag-resolution gap. `EntryProcessor`-based atomic
+  Set mutation (no existing precedent in this codebase). Land 2.19/`limitedParallelism` first regardless
+  — unrelated, smaller fix for frontier-size fan-out. Full design + file-by-file plan:
+  `ai-scripts/ShardedAdjacencyIndexRFC.md`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
