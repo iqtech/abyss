@@ -565,3 +565,16 @@
   than a node-resolving traversal — once the deleted node is gone, `collectNodes<N>()` can't
   materialize it whether the edge is dangling or properly cascaded, so that style of assertion can't
   tell the two apart.
+
+- **✅ 4.9 Cache `findAnnotation<SerialName>`/`<EdgeConstraint>`/`<CrossSchemaEdge>` lookups**
+  `edge::class.findAnnotation<...>()` was re-run via JVM reflection on every call, at ~25 sites across
+  `abyss-dsl/Extensions.kt` (every `outgoing<E>()`/`incoming<E>()`/`removeEdge<E>()`/etc. DSL call),
+  `AbyssSchemaWorker` (`edgeType`, run per edge in `preloadOut`/`preloadIn`/cache populate; `schemaCheck`,
+  run per `AddEdge` during integrity checks), and `CrossSchemaEdgeResolver` (per cross-edge resolution)
+  — an annotation is a fixed, compile-time fact about a `KClass`, so re-reflecting on every data item
+  processed bought nothing but reflection overhead on paths this codebase otherwise benchmarks closely
+  (see 3.5/3.6/4.6/4.7). Added `KClass<*>.cachedAnnotation<A>()` (`abyss-dsl/.../AnnotationCache.kt`, a
+  `ConcurrentHashMap`-memoized wrapper around `findAnnotation`) plus a `serialName()` convenience for
+  the ubiquitous `findAnnotation<SerialName>()!!.value` / `?.value ?: error(...)` pattern repeated at
+  nearly every call site. All call sites now route through it instead of calling `findAnnotation`
+  directly; reflection now runs exactly once per edge/node class for the lifetime of the process.

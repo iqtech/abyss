@@ -16,9 +16,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.cachedAnnotation
+import pl.iqtech.abyss.dsl.serialName
 import pl.iqtech.abyss.graph.serialization.UnknownNode
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
@@ -31,7 +32,6 @@ import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
-import kotlin.reflect.full.findAnnotation
 import kotlin.time.Duration
 
 // A NodeId-level unit of work. The typed facade converts its domain ops into these (ids -> NodeId via
@@ -108,7 +108,7 @@ internal class AbyssSchemaWorker(
     fun inEdges(nid: NodeId, type: String? = null): Flow<EdgeLike<*, *>> = inEdgeFlow(nid, type)
 
     private fun edgeType(edge: EdgeLike<*, *>): String =
-        edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
+        edge::class.serialName()
 
     // --- NodeIdEngine (endpoints as NodeId, so a walk can span schemas over the shared edge map) ----
 
@@ -374,7 +374,7 @@ internal class AbyssSchemaWorker(
     }
 
     private fun schemaCheck(edge: EdgeLike<*, *>, from: NodeLike<*>, to: NodeLike<*>): AbyssError? {
-        val c = edge::class.findAnnotation<EdgeConstraint>() ?: return null
+        val c = edge::class.cachedAnnotation<EdgeConstraint>() ?: return null
         if (c.fromTypes.isNotEmpty() && from !is UnknownNode && from::class !in c.fromTypes)
             return AbyssError.SchemaError("Edge ${edgeType(edge)}: fromId is ${from::class.simpleName}, expected ${c.fromTypes.map { it.simpleName }}")
         if (c.toTypes.isNotEmpty() && to !is UnknownNode && to::class !in c.toTypes)

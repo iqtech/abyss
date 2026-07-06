@@ -15,13 +15,13 @@ import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.dsl.TraversalStrategy
+import pl.iqtech.abyss.dsl.cachedAnnotation
 import pl.iqtech.abyss.graph.Hop
 import pl.iqtech.abyss.graph.NodeIdEngine
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.EdgeLike
-import kotlin.reflect.full.findAnnotation
 
 // The frontier is NodeId-based so a walk can span schemas; homeAdapter converts the home schema's
 // domain ids for the id-valued conveniences (checkReaches, filterFrontierByOutEdgeTo, …).
@@ -52,7 +52,7 @@ class TraversalBuilder<ID>(
     private fun Hop.target(direction: HopDirection): NodeId =
         if (direction == HopDirection.OUTGOING) toId else fromId
 
-    private fun NodeLike<*>.typeName(): String? = this::class.findAnnotation<SerialName>()?.value
+    private fun NodeLike<*>.typeName(): String? = this::class.cachedAnnotation<SerialName>()?.value
 
     override suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike<*, *>) -> Boolean)?) {
         val needValue = edgePredicate != null

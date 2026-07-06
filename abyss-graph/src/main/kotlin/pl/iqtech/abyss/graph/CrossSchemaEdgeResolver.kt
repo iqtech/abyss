@@ -1,6 +1,7 @@
 package pl.iqtech.abyss.graph
 
-import kotlinx.serialization.SerialName
+import pl.iqtech.abyss.dsl.cachedAnnotation
+import pl.iqtech.abyss.dsl.serialName
 import pl.iqtech.abyss.store.api.CrossSchemaEdge
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessSchemaKeyAdapter
@@ -10,7 +11,6 @@ import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.KClass
-import kotlin.reflect.full.findAnnotation
 
 // Resolves a @CrossSchemaEdge-annotated edge's endpoints to NodeIds, from the annotation plus the
 // edge's own fromId/toId and the caller's container-wide (width, headerless) — no per-edge width
@@ -25,7 +25,7 @@ internal fun crossSchemaEndpoints(
     width: SchemaTagWidth,
     headerless: Boolean,
 ): Pair<NodeId, NodeId> {
-    val ann = edgeClass.findAnnotation<CrossSchemaEdge>()
+    val ann = edgeClass.cachedAnnotation<CrossSchemaEdge>()
         ?: error("$edgeClass missing @CrossSchemaEdge — required for annotation-driven addCrossEdge")
 
     fun endpoint(tag: Long, cls: KClass<out KeyAdapter<*>>, id: Any?): NodeId {
@@ -43,8 +43,7 @@ internal fun crossSchemaEndpoints(
 internal fun crossSchemaEndpoints(edge: EdgeLike<*, *>, width: SchemaTagWidth, headerless: Boolean): Pair<NodeId, NodeId> =
     crossSchemaEndpoints(edge::class, edge.fromId, edge.toId, width, headerless)
 
-internal fun crossSchemaEdgeType(edgeClass: KClass<out EdgeLike<*, *>>): String =
-    edgeClass.findAnnotation<SerialName>()?.value ?: error("$edgeClass missing @SerialName")
+internal fun crossSchemaEdgeType(edgeClass: KClass<out EdgeLike<*, *>>): String = edgeClass.serialName()
 
 // --- Container-level transaction { addCrossEdge(...) } builder, shared by Homogeneous/Heterogeneous ---
 
