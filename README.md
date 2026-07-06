@@ -316,29 +316,39 @@ and validate cross-schema edges). Intra-schema queries never see another schema'
 
 ##### Cross-schema edges
 
-Edges *between* schemas are ordinary `EdgeLike<NodeId, NodeId>` (endpoints may have different `ID`
-types, so they carry tagged `NodeId`s directly). They live in the **same** shared edge/reverse maps
-as intra-schema edges — their tagged endpoints self-describe (`fromTag != toTag`), so
-`outgoing<E>()` / `incoming<E>()` reach them as **ordinary traversal hops**. They're disabled by
-default — pass `allowCrossSchemaEdges = true` to the container, otherwise `addCrossEdge` returns
-`AbyssError.IntegrityError`:
+Edges *between* schemas live in the **same** shared edge/reverse maps as intra-schema edges — their
+tagged endpoints self-describe (`fromTag != toTag`), so `outgoing<E>()` / `incoming<E>()` reach them
+as **ordinary traversal hops**. They're disabled by default — pass `allowCrossSchemaEdges = true` to
+the container, otherwise `addCrossEdge` returns `AbyssError.IntegrityError`.
+
+Declare a cross-edge class with real domain types (not `NodeId`) and `@CrossSchemaEdge`, describing
+each endpoint's tag/width/adapter — the same `(tag, width, adapter)` triple you passed to that
+schema's `register()`/`forTag()`. `addCrossEdge` then resolves both endpoints from the annotation
+alone, no manual `NodeId` construction:
 
 ```kotlin
 @Serializable
 @SerialName("lives_in")
+@CrossSchemaEdge(
+    fromTag = 2L, fromAdapter = UuidKeyAdapter::class, // matches persons' register()
+    toTag = 1L, toAdapter = LongKeyAdapter::class,      // matches cities' register()
+)
 data class LivesIn(
-    override val fromId: NodeId,   // a Person's tagged NodeId
-    override val toId: NodeId,     // a City's tagged NodeId
+    override val fromId: Uuid,   // a Person's domain id
+    override val toId: Long,     // a City's domain id
     override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Clock.System.now(),
     override val updatedAt: Instant = Clock.System.now(),
-) : EdgeLike<NodeId, NodeId>
+) : EdgeLike<Uuid, Long>
 
-// tag/width must match what was passed to register() — the schema itself keeps its adapter private,
-// so cross-schema code builds the same SchemaKeyAdapter to convert a domain ID to its tagged NodeId.
-val aliceNid  = SchemaKeyAdapter(SchemaTag(2L), SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(alice.id)
-val warsawNid = SchemaKeyAdapter(SchemaTag(1L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(warsaw.id)
-container.addCrossEdge(LivesIn(fromId = aliceNid, toId = warsawNid))
+// Composable with ordinary node/edge ops in the SAME atomic transaction — not a separate commit:
+persons.transaction {
+    addNode(alice)
+    addCrossEdge(LivesIn(alice.id, warsaw.id))
+}
+
+// Or as a batch of cross-only ops committed atomically at the container level:
+container.transaction { addCrossEdge(LivesIn(alice.id, warsaw.id)) }
 
 // A cross-hop is an ordinary DSL hop; the frontier lands in the target schema. A single expression
 // can mix intra- and cross-schema hops, then materialise in whichever schema it ends up in:
@@ -348,19 +358,25 @@ persons.from(alice.id) {
     collectNodes<City>()   // resolves each reached NodeId to its schema
 }.getOrNull()?.collect { println(it.name) }
 
-// Ephemeral (TTL) cross edge — same integrity gate, routes to the ephemeral store instead:
-container.addCrossEdge(LivesIn(fromId = aliceNid, toId = warsawNid), ttl = 60.seconds)
+// Ephemeral (TTL) cross edge inside a transaction — same annotation, routes to the ephemeral store:
+persons.ephemeral(ttl = 60.seconds) { addCrossEdge(LivesIn(alice.id, warsaw.id)) }
 ```
 
-`addCrossEdge` checks both endpoints resolve to a registered schema tag and that the node actually
-exists (via a lookup in the shared nodes map) before writing. Cross-schema edges persist through the
-same `persistentStore`/`ephemeralStore` as an ordinary edge — `AbyssStoreLike`/`AbyssEphemeralStoreLike`
-are already `NodeId`-keyed and untyped, so a cross-schema edge (`EdgeLike<NodeId, NodeId>`) needs no
-special store handling; a store-configured container also self-heals a cross edge on cold restart the
-same way it does for intra-schema edges. `removeCrossEdge` fans a delete out to both stores,
-best-effort, since it doesn't track which store the edge was originally written through. Because
-cross edges share the intra-schema maps, an untyped whole-node scan (`outEdges(node)` with no type)
-now includes them; typed hops are unaffected.
+`@CrossSchemaEdge`'s `fromTag`/`toTag` are `Long` (covers `BYTE`/`SHORT`/`INT`/`LONG` tag widths). A
+genuine 128-bit tag (`SchemaTagWidth.UUID` with a real 128-bit value) can't be expressed in the
+annotation — for that rare case, fall back to the raw escape hatch, unchanged: build each endpoint's
+tagged `NodeId` by hand with the same `SchemaKeyAdapter` `register()` used, and construct the edge as
+`EdgeLike<NodeId, NodeId>` directly (`container.addCrossEdge(LivesIn(fromId = aliceNid, toId = warsawNid))`).
+There's no `width` field — a container fixes one `SchemaTagWidth` for its whole lifetime, so it's
+reconstructed from the container at resolution time instead of being duplicated on every edge class.
+
+Either way, `addCrossEdge`/`removeCrossEdge` route through the same commit pipeline as ordinary
+node/edge ops: they check both endpoints resolve to a registered schema tag and that the node
+actually exists before writing, and get `@EdgeConstraint` enforcement for free. Cross-schema edges
+persist through the same `persistentStore`/`ephemeralStore` as an ordinary edge — a store-configured
+container self-heals a cross edge on cold restart the same way it does for intra-schema edges.
+Because cross edges share the intra-schema maps, an untyped whole-node scan (`outEdges(node)` with no
+type) now includes them; typed hops are unaffected.
 
 #### `HomogeneousSchemaGraph` — one shape, many (possibly unbounded) tags
 

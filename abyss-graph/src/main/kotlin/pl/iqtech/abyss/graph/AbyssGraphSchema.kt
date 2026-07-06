@@ -31,10 +31,14 @@ import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.EdgeAdapter
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
+import pl.iqtech.abyss.store.api.HeaderlessSchemaKeyAdapter
 import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.SchemaKeyAdapter
+import pl.iqtech.abyss.store.api.SchemaTagWidth
+import kotlin.reflect.KClass
 import kotlin.time.Duration
 
 /**
@@ -73,6 +77,11 @@ class AbyssGraphSchema<ID> internal constructor(
     // Engine a traversal from this schema runs against: the owning container (so a walk can cross
     // schemas over the shared edge map) when registered in one, else this schema's own worker.
     internal var traversalEngine: NodeIdEngine = worker
+
+    // Set by the owning Homogeneous/HeterogeneousSchemaGraph on register()/forTag(); null for a
+    // standalone (SingleSchemaGraph) schema, which has no cross-schema concept at all.
+    internal var crossEdgeGate: (() -> AbyssError?)? = null
+    internal var crossEdgeTagCheck: ((NodeId, NodeId) -> AbyssError?)? = null
 
     // Scoped to this schema's own nodes: worker.allNodeIds() enumerates every key in the shared
     // nodesMap across all registered tags in a Homogeneous/HeterogeneousSchemaGraph container;
@@ -117,7 +126,10 @@ class AbyssGraphSchema<ID> internal constructor(
             readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
         )
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
-        return worker.transaction(buffer.ops.map { it.toNodeOp(adapter) }, checkIntegrity)
+        val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
+        val width = crossEdgeTagWidth()
+        crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }
+        return worker.transaction(buffer.ops.map { it.toNodeOp(adapter, width, headerless) }, checkIntegrity)
     }
 
     override suspend fun ephemeral(ttl: Duration, checkIntegrity: Boolean, block: suspend AbyssEphemeralTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
@@ -127,7 +139,42 @@ class AbyssGraphSchema<ID> internal constructor(
             readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
         )
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
-        return worker.ephemeral(buffer.ops.map { it.toNodeOp(adapter) }, checkIntegrity)
+        val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
+        val width = crossEdgeTagWidth()
+        crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }
+        return worker.ephemeral(buffer.ops.map { it.toNodeOp(adapter, width, headerless) }, checkIntegrity)
+    }
+
+    // A container fixes one SchemaTagWidth for its whole lifetime, already carried on this schema's
+    // own (Homogeneous/Heterogeneous) adapter — reconstructed here rather than duplicated per edge
+    // class. Only ever consulted when cross ops are present (see crossEdgeCheck), where adapter is
+    // guaranteed to be one of these two (a standalone schema has no crossEdgeGate and bails first).
+    private fun crossEdgeTagWidth(): SchemaTagWidth = when (val a = adapter) {
+        is SchemaKeyAdapter<*> -> a.width
+        is HeaderlessSchemaKeyAdapter<*> -> a.width
+        else -> SchemaTagWidth.NONE
+    }
+
+    // Cross-edge ops (if any) need the owning container's gate/tag-check, since a standalone schema
+    // has neither. Gate runs unconditionally (mirrors HeterogeneousSchemaGraph's existing
+    // regardless-of-checkIntegrity allowCrossSchemaEdges check); the tag check only runs when
+    // checkIntegrity is requested (mirrors both containers' existing asymmetry).
+    private fun crossEdgeCheck(ops: List<Op>, checkIntegrity: Boolean, width: SchemaTagWidth, headerless: Boolean): AbyssError? {
+        val crossOps = ops.filter { it is Op.AddCrossEdge || it is Op.RemoveCrossEdge }
+        if (crossOps.isEmpty()) return null
+        val gate = crossEdgeGate
+            ?: return AbyssError.IntegrityError("addCrossEdge requires a HomogeneousSchemaGraph/HeterogeneousSchemaGraph container")
+        gate()?.let { return it }
+        if (!checkIntegrity) return null
+        for (op in crossOps) {
+            val (fromNid, toNid) = when (op) {
+                is Op.AddCrossEdge -> crossSchemaEndpoints(op.edge, width, headerless)
+                is Op.RemoveCrossEdge -> crossSchemaEndpoints(op.edgeClass, op.fromId, op.toId, width, headerless)
+                else -> error("unreachable")
+            }
+            crossEdgeTagCheck?.invoke(fromNid, toNid)?.let { return it }
+        }
+        return null
     }
 }
 
@@ -180,14 +227,18 @@ private sealed interface Op {
     data class RemoveNode(val id: Any?) : Op
     data class AddEdge(val edge: EdgeLike<*, *>, val ttl: Duration?) : Op
     data class RemoveEdge(val fromId: Any?, val toId: Any?, val type: String) : Op
+    data class AddCrossEdge(val edge: EdgeLike<*, *>, val ttl: Duration?) : Op
+    data class RemoveCrossEdge(val edgeClass: KClass<out EdgeLike<*, *>>, val fromId: Any?, val toId: Any?) : Op
 }
 
 @Suppress("UNCHECKED_CAST")
-private fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>): NodeOp = when (this) {
+private fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>, width: SchemaTagWidth, headerless: Boolean): NodeOp = when (this) {
     is Op.AddNode    -> NodeOp.AddNode(adapter.toNodeId((node as NodeLike<ID>).id), node, ttl)
     is Op.RemoveNode -> NodeOp.RemoveNode(adapter.toNodeId(id as ID))
     is Op.AddEdge    -> NodeOp.AddEdge(adapter.toNodeId((edge as EdgeLike<ID, ID>).fromId), adapter.toNodeId(edge.toId), edge, ttl)
     is Op.RemoveEdge -> NodeOp.RemoveEdge(adapter.toNodeId(fromId as ID), adapter.toNodeId(toId as ID), type)
+    is Op.AddCrossEdge -> crossSchemaEndpoints(edge, width, headerless).let { (f, t) -> NodeOp.AddEdge(f, t, edge, ttl) }
+    is Op.RemoveCrossEdge -> crossSchemaEndpoints(edgeClass, fromId, toId, width, headerless).let { (f, t) -> NodeOp.RemoveEdge(f, t, crossSchemaEdgeType(edgeClass)) }
 }
 
 private class BufferedTransaction<ID>(
@@ -199,6 +250,10 @@ private class BufferedTransaction<ID>(
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
     override fun addEdge(edge: EdgeLike<ID, ID>)                          { ops += Op.AddEdge(edge, null) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
+    override fun addCrossEdge(edge: EdgeLike<*, *>)                    { ops += Op.AddCrossEdge(edge, null) }
+    override fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?) {
+        ops += Op.RemoveCrossEdge(edgeClass, fromId, toId)
+    }
     override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
         ops += Op.AddNode(transform(readNode(id)), null)
     }
@@ -218,6 +273,10 @@ private class BufferedEphemeralTransaction<ID>(
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
     override fun addEdge(edge: EdgeLike<ID, ID>)                          { ops += Op.AddEdge(edge, ttl) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
+    override fun addCrossEdge(edge: EdgeLike<*, *>)                    { ops += Op.AddCrossEdge(edge, ttl) }
+    override fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?) {
+        ops += Op.RemoveCrossEdge(edgeClass, fromId, toId)
+    }
     override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
         ops += Op.AddNode(transform(readNode(id)), ttl)
     }

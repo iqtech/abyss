@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
+import kotlin.reflect.KClass
 import kotlin.time.Duration
 
 interface AbyssEngineLike<ID> {
@@ -40,6 +41,10 @@ interface AbyssTransactionLike<ID> {
     fun removeNode(id: ID)
     fun addEdge(edge: EdgeLike<ID, ID>)
     fun removeEdge(fromId: ID, toId: ID, type: String)
+    // Cross-schema: requires a Homogeneous/HeterogeneousSchemaGraph container and edge::class to
+    // carry @CrossSchemaEdge — see AbyssGraphSchema.transaction's crossEdgeCheck.
+    fun addCrossEdge(edge: EdgeLike<*, *>)
+    fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?)
     suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>)
     suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>)
 }
@@ -49,6 +54,8 @@ interface AbyssEphemeralTransactionLike<ID> {
     fun removeNode(id: ID)
     fun addEdge(edge: EdgeLike<ID, ID>)
     fun removeEdge(fromId: ID, toId: ID, type: String)
+    fun addCrossEdge(edge: EdgeLike<*, *>)
+    fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?)
     suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>)
     suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>)
 }

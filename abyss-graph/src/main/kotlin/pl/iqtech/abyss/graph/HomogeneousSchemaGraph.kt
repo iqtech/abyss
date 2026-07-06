@@ -1,11 +1,9 @@
 package pl.iqtech.abyss.graph
 
 import arrow.core.Either
-import arrow.core.flatMap
 import arrow.core.left
 import com.hazelcast.core.HazelcastInstance
 import kotlinx.coroutines.flow.Flow
-import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
@@ -17,7 +15,6 @@ import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessSchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
-import kotlin.reflect.full.findAnnotation
 import kotlin.time.Duration
 
 /**
@@ -43,7 +40,8 @@ import kotlin.time.Duration
  * Cross-schema edges live in the SAME shared edges/reverse maps as intra-schema edges (their tagged
  * endpoints self-describe: `fromTag != toTag`), so `outgoing<E>()`/`incoming<E>()` reach them as
  * ordinary hops. Same-tag edges are always allowed (ordinary same-tenant edges); different-tag edges
- * are gated by [allowCrossSchemaEdges]. Cache-only in this version.
+ * are gated by [allowCrossSchemaEdges]. Persist through the same stores as an ordinary edge
+ * (`worker.transaction`/`worker.ephemeral`) — see [transaction] and [addCrossEdge].
  */
 class HomogeneousSchemaGraph<ID>(
     hazelcast: HazelcastInstance,
@@ -65,7 +63,11 @@ class HomogeneousSchemaGraph<ID>(
     )
 
     fun forTag(tag: SchemaTag): AbyssGraphSchema<ID> =
-        AbyssGraphSchema(HeaderlessSchemaKeyAdapter(tag, tagWidth, keyAdapter), worker).also { it.traversalEngine = this }
+        AbyssGraphSchema(HeaderlessSchemaKeyAdapter(tag, tagWidth, keyAdapter), worker).also {
+            it.traversalEngine = this
+            it.crossEdgeGate = { null } // no unconditional gate here — see tagCheckFailure
+            it.crossEdgeTagCheck = ::tagCheckFailure
+        }
 
     // --- NodeIdEngine: the shared worker self-resolves each NodeId (cross-schema edges share the maps) -
 
@@ -75,46 +77,51 @@ class HomogeneousSchemaGraph<ID>(
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = worker.resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()
 
-    // --- Cross-schema edges (NodeId-level, in the shared edge/reverse maps, persisted through the
-    // same stores as an ordinary edge — see AbyssSchemaWorker.putCrossEdge/putCrossEdgeEphemeral) ----
+    // --- Cross-schema edges. NodeId-level, in the shared edge/reverse maps, routed through the SAME
+    // worker.transaction/worker.ephemeral pipeline as ordinary node/edge ops — atomic, persisted
+    // through the same stores, endpoint-existence + @EdgeConstraint checked for free. -------------
 
+    // Batch of addCrossEdge/removeCrossEdge calls, committed as one atomic worker.transaction.
+    suspend fun transaction(checkIntegrity: Boolean = true, block: suspend CrossSchemaTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+        val buffer = CrossSchemaTransactionBuffer()
+        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        if (checkIntegrity) {
+            for (op in buffer.ops) {
+                val (fromNid, toNid) = op.endpoints(tagWidth, headerless = true)
+                tagCheckFailure(fromNid, toNid)?.let { return it.left() }
+            }
+        }
+        return worker.transaction(buffer.ops.map { it.toNodeOp(tagWidth, headerless = true) }, checkIntegrity)
+    }
+
+    // Raw NodeId escape hatch (no @CrossSchemaEdge required) — kept for schemas without a static tag.
     suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
-        val type = try { edgeType(edge) } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
-        if (checkIntegrity) integrityError(edge, type)?.let { return it.left() }
-        return Either.catch { worker.putCrossEdge(edge, type) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
+        if (checkIntegrity) tagCheckFailure(edge.fromId, edge.toId)?.let { return it.left() }
+        return worker.transaction(listOf(NodeOp.AddEdge(edge.fromId, edge.toId, edge, null)), checkIntegrity)
     }
 
     // Ephemeral (TTL) cross edge — same integrity gate, routes to the ephemeral store instead.
     suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, ttl: Duration, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
-        val type = try { edgeType(edge) } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
-        if (checkIntegrity) integrityError(edge, type)?.let { return it.left() }
-        return Either.catch { worker.putCrossEdgeEphemeral(edge, type, ttl) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
+        if (checkIntegrity) tagCheckFailure(edge.fromId, edge.toId)?.let { return it.left() }
+        return worker.ephemeral(listOf(NodeOp.AddEdge(edge.fromId, edge.toId, edge, ttl)), checkIntegrity)
     }
 
     suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> =
-        Either.catch { worker.removeCrossEdge(fromId, toId, type) }.mapLeft { AbyssError.Unexpected(it) }.flatMap { it }
+        worker.transaction(listOf(NodeOp.RemoveEdge(fromId, toId, type)), checkIntegrity = false)
 
     // Same-tag edges (the normal case) always succeed regardless of allowCrossSchemaEdges — they're
     // ordinary same-tenant edges. Different-tag edges only succeed when allowCrossSchemaEdges=true.
     // There is no "was this tag ever used" check (unlike HeterogeneousSchemaGraph's registeredTags
-    // membership check) — any tag is implicitly valid, since there's no registry to check it against;
-    // only node existence is verified.
-    private suspend fun integrityError(edge: EdgeLike<NodeId, NodeId>, type: String): AbyssError? {
-        val fromTag = schemaTagOf(edge.fromId)
-            ?: return AbyssError.IntegrityError("Cross-edge $type: fromId ${edge.fromId} has no valid schema tag")
-        val toTag = schemaTagOf(edge.toId)
-            ?: return AbyssError.IntegrityError("Cross-edge $type: toId ${edge.toId} has no valid schema tag")
+    // membership check) — any tag is implicitly valid, since there's no registry to check it against.
+    // Only checked when checkIntegrity=true (no gate at all otherwise) — matches the pre-existing
+    // addCrossEdge asymmetry with HeterogeneousSchemaGraph's unconditional allowCrossSchemaEdges gate.
+    private fun tagCheckFailure(fromNid: NodeId, toNid: NodeId): AbyssError? {
+        val fromTag = schemaTagOf(fromNid) ?: return AbyssError.IntegrityError("Cross-edge: fromId $fromNid has no valid schema tag")
+        val toTag = schemaTagOf(toNid) ?: return AbyssError.IntegrityError("Cross-edge: toId $toNid has no valid schema tag")
         if (!allowCrossSchemaEdges && fromTag != toTag) return AbyssError.SchemaError("Cross-edges not allowed")
-        // TODO 1.20 fix: nodeExists self-heals from the store on a cache miss, unlike the raw cache
-        // read this used to do.
-        if (!worker.nodeExists(edge.fromId)) return AbyssError.IntegrityError("Cross-edge $type: fromId node ${edge.fromId} not found")
-        if (!worker.nodeExists(edge.toId)) return AbyssError.IntegrityError("Cross-edge $type: toId node ${edge.toId} not found")
         return null
     }
 
     private fun schemaTagOf(nid: NodeId): SchemaTag? =
         if (nid.bytes.size >= tagWidth.bytes) NodeKey.tagHeaderless(nid, tagWidth) else null
-
-    private fun edgeType(edge: EdgeLike<*, *>): String =
-        edge::class.findAnnotation<SerialName>()?.value ?: error("${edge::class} missing @SerialName")
 }

@@ -72,6 +72,7 @@ val graphTestModule = SerializersModule {
         subclass(TestEdge::class); subclass(TypedEdge::class)
         subclass(LongTestEdge::class); subclass(StrTestEdge::class)
         subclass(CrossRefEdge::class)
+        subclass(LivesIn::class); subclass(TenantLink::class); subclass(SameTenantLink::class)
     }
 }
 

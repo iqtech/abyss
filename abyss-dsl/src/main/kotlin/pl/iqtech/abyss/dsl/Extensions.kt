@@ -57,6 +57,15 @@ inline fun <ID, reified E : EdgeLike<ID, ID>> AbyssEphemeralTransactionLike<ID>.
 fun <ID> AbyssEphemeralTransactionLike<ID>.removeEdge(edge: EdgeLike<ID, ID>) =
     removeEdge(edge.fromId, edge.toId, edge::class.findAnnotation<SerialName>()!!.value)
 
+// Cross-schema removeCrossEdge — no ID/adapter involved, so no unchecked cast needed (unlike node()/
+// edge() above, which shadow a type-parameterized member).
+
+inline fun <reified E : EdgeLike<*, *>> AbyssTransactionLike<*>.removeCrossEdge(fromId: Any?, toId: Any?) =
+    removeCrossEdge(E::class, fromId, toId)
+
+inline fun <reified E : EdgeLike<*, *>> AbyssEphemeralTransactionLike<*>.removeCrossEdge(fromId: Any?, toId: Any?) =
+    removeCrossEdge(E::class, fromId, toId)
+
 // TraversalBuilderLike
 //
 // Extensions that don't need ID as a value parameter use TraversalBuilderLike<*> receiver.
