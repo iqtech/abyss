@@ -1,3 +1,7 @@
+## [0.28.1] - 2026-07-06
+
+- Add a `@CrossSchemaEdge` annotation so cross-schema edges can be declared with real domain types instead of pre-built `NodeId`s, and route `addCrossEdge`/`removeCrossEdge` through the same `transaction{}`/`ephemeral{}` commit pipeline as ordinary node/edge ops (atomic, persisted, `@EdgeConstraint`-checked) instead of an independent store commit; fix `cascadeEdgeRemovals` leaving cross-schema edges dangling after their endpoint node is deleted (a `sameSchema()` filter wrongly excluded them, and is now deleted entirely as dead weight); and cache reflective `findAnnotation<SerialName>`/`<EdgeConstraint>`/`<CrossSchemaEdge>` lookups instead of re-running JVM reflection on every edge/node/hop, measurably speeding up typed traversal (3-hop median down 12-39% across adapters)
+
 ## [0.28.0] - 2026-07-05
 
 - Add property-graph JSON export/import codec, fix `allNodeIds()` to scope by schema tag so per-schema export/import and `connectedComponents` no longer leak sibling schemas' data in `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`, persist cross-schema edges through the configured `persistentStore`/`ephemeralStore` (previously cache-only), and fix cache-warmth-dependent correctness bugs from the durability audit: `cascadeEdgeRemovals` and `integrityError` (ordinary and cross-schema) now self-heal from the store instead of reading the Hazelcast cache directly, so a cold cache after a restart or partition eviction can no longer leave dangling edges or spuriously reject a valid write
