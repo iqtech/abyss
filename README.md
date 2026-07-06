@@ -11,6 +11,18 @@ multi-tenant isolation at the infrastructure level, or a standalone graph engine
 database. Reach for Abyss when you want graph structure and traversal inside a JVM service you
 already run, without operating a separate one.
 
+That shape isn't incidental. An embedded engine that owns its own on-disk storage (ArcadeDB, or
+anything SQLite-shaped) doesn't fit how Kubernetes wants to run a pod — stateless and freely
+rescheduled. Skip a `PersistentVolume` and a reschedule silently loses whatever it wrote; attach one
+and you've pulled in `StatefulSet` semantics (stable identity, one volume per pod) for something you
+wanted to scale like every other pod in the cluster. Hazelcast sidesteps this: `IMap` is a
+distributed in-memory grid that's already Kubernetes-native — partitions rebalance automatically as
+pods come and go, no local disk involved — so durability is delegated entirely to a separate,
+purpose-built stateful service (YugabyteDB, or anything behind `AbyssStoreLike`) that's designed to
+run as its own `StatefulSet`/Operator in the first place. Your application pods stay boring and
+stateless; the two things that actually need to be stateful are each handled by something built for
+exactly that job.
+
 It's a targeted library, not a platform: the entire public surface is `suspend fun`, built for
 Kotlin coroutines from the ground up rather than adapted onto them — reads and writes are
 non-blocking (`IMap.getAsync()`, not a blocking call wrapped in `Dispatchers.IO`), traversal hops
