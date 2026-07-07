@@ -1,0 +1,36 @@
+hazelcast:
+  map:
+    abyss-nodes:
+      max-idle-seconds: 86400
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: FREE_HEAP_PERCENTAGE
+        size: 25
+
+    abyss-edges:
+      max-idle-seconds: 86400
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: FREE_HEAP_PERCENTAGE
+        size: 25
+      # Attributes below assume UuidKeyAdapter (fromId/toId split into Hi/Lo longs).
+      # LongKeyAdapter/StringKeyAdapter deployments should index the single
+      # __key.fromId / __key.toId attribute instead.
+      indexes:
+        - name: idx_edge_fromId
+          type: HASH
+          attributes:
+            - __key.fromIdHi
+            - __key.fromIdLo
+        - name: idx_edge_toId
+          type: HASH
+          attributes:
+            - __key.toIdHi
+            - __key.toIdLo
+
+    abyss-edges-adjacency:
+      max-idle-seconds: 86400
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: FREE_HEAP_PERCENTAGE
+        size: 25

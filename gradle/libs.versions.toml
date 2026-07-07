@@ -1,0 +1,27 @@
+[versions]
+kotlin             = "2.3.21"
+arrow              = "2.0.1"
+kotlinx-serial     = "1.11.0"
+kotlinx-coroutines = "1.9.0"
+hazelcast          = "5.6.0"
+hikari             = "5.1.0"
+postgresql         = "42.7.4"
+datastax           = "4.19.0-yb-1"
+slf4j              = "2.0.9"
+log4j              = "2.23.1"
+
+[libraries]
+arrow-core                = { module = "io.arrow-kt:arrow-core",                                  version.ref = "arrow" }
+kotlinx-serialization     = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json",        version.ref = "kotlinx-serial" }
+kotlinx-coroutines        = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core",           version.ref = "kotlinx-coroutines" }
+hazelcast                 = { module = "com.hazelcast:hazelcast",                                  version.ref = "hazelcast" }
+hikari                    = { module = "com.zaxxer:HikariCP",                                      version.ref = "hikari" }
+postgresql                = { module = "org.postgresql:postgresql",                                version.ref = "postgresql" }
+datastax-driver           = { module = "com.yugabyte:java-driver-core",                           version.ref = "datastax" }
+slf4j-api                 = { module = "org.slf4j:slf4j-api",                                      version.ref = "slf4j" }
+log4j-core                = { module = "org.apache.logging.log4j:log4j-core",                      version.ref = "log4j" }
+log4j-slf4j2-impl         = { module = "org.apache.logging.log4j:log4j-slf4j2-impl",               version.ref = "log4j" }
+
+[plugins]
+kotlin-jvm          = { id = "org.jetbrains.kotlin.jvm",                   version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization",  version.ref = "kotlin" }
