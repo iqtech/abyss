@@ -71,11 +71,12 @@ class AbyssGraphSchema<ID> internal constructor(
         asyncCachePopulation: Boolean = false,
         module: SerializersModule = EmptySerializersModule(),
         adjacencyShardCount: Int = 16,
+        hopFanoutParallelism: Int = 256,
     ) : this(
         HeaderlessKeyAdapter(adapter),
         AbyssSchemaWorker(
             hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
-            SingleSchemaResolution(HeaderlessKeyAdapter(adapter)), module, adjacencyShardCount,
+            SingleSchemaResolution(HeaderlessKeyAdapter(adapter)), module, adjacencyShardCount, hopFanoutParallelism,
         ),
     )
 

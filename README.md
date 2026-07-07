@@ -1038,9 +1038,14 @@ local predicate scan and the coroutine dispatcher have room to spare; the flatte
 their own fan-out, all sharing the same dispatcher/thread pool — not from any one hop touching a lot
 of edges. A single supernode-sized hop is cheap; many concurrent traversals each hitting one is what
 saturates the machine. `TraversalBuilder`'s per-frontier-node fan-out (`addHop` and its siblings) now
-routes through one shared `Dispatchers.IO.limitedParallelism(256)` dispatcher (TODO 2.19) instead of
-an unbounded wave, so one supernode-heavy traversal can occupy at most 256 execution slots at a time
-— leaving room for concurrently-running traversals to interleave instead of queuing behind it.
+routes through a `Dispatchers.IO.limitedParallelism(hopFanoutParallelism)` dispatcher (TODO 2.19,
+default 256) instead of an unbounded wave, so one supernode-heavy traversal can occupy at most that
+many execution slots at a time — leaving room for concurrently-running traversals against the same
+graph to interleave instead of queuing behind it. The dispatcher is owned per engine (one per
+`AbyssGraphSchema`/`SingleSchemaGraph`, or per `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`
+container — every schema registered in the same container shares its one dispatcher), not a single
+JVM-wide instance, so different graphs in the same process can be tuned independently. Set it via
+the `hopFanoutParallelism` constructor parameter, alongside `adjacencyShardCount`.
 
 ---
 

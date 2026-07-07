@@ -3,6 +3,7 @@ package pl.iqtech.abyss.graph
 import arrow.core.Either
 import arrow.core.left
 import com.hazelcast.core.HazelcastInstance
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
@@ -57,13 +58,14 @@ class HomogeneousSchemaGraph<ID>(
     private val asyncCachePopulation: Boolean = false,
     module: SerializersModule = EmptySerializersModule(),
     adjacencyShardCount: Int = 16,
+    hopFanoutParallelism: Int = 256,
 ) : NodeIdEngine {
 
     init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
 
     private val worker = AbyssSchemaWorker(
         hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
-        HomogeneousSchemaResolution(tagWidth, keyAdapter.nodeKeyKind), module, adjacencyShardCount,
+        HomogeneousSchemaResolution(tagWidth, keyAdapter.nodeKeyKind), module, adjacencyShardCount, hopFanoutParallelism,
     )
 
     fun forTag(tag: SchemaTag): AbyssGraphSchema<ID> =
@@ -80,6 +82,7 @@ class HomogeneousSchemaGraph<ID>(
     override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = worker.inAt(nid, type, needValue)
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = worker.resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()
+    override val hopDispatcher: CoroutineDispatcher get() = worker.hopDispatcher
 
     // --- Cross-schema edges. NodeId-level, in the shared edge/adjacency maps, routed through the SAME
     // worker.transaction/worker.ephemeral pipeline as ordinary node/edge ops — atomic, persisted

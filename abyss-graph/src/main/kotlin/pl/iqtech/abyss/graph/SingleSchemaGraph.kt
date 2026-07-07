@@ -24,5 +24,6 @@ fun <ID> SingleSchemaGraph(
     asyncCachePopulation: Boolean = false,
     module: SerializersModule = EmptySerializersModule(),
     adjacencyShardCount: Int = 16,
+    hopFanoutParallelism: Int = 256,
 ): AbyssGraphSchema<ID> =
-    AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation, module, adjacencyShardCount)
+    AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation, module, adjacencyShardCount, hopFanoutParallelism)

@@ -1,6 +1,5 @@
 package pl.iqtech.abyss.graph.traversal
 
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -31,14 +30,6 @@ class TraversalBuilder<ID>(
     private val homeAdapter: KeyAdapter<ID>,
 ) : TraversalBuilderLike<ID> {
 
-    companion object {
-        // ponytail: shared JVM-wide bound, not per-call — caps how many of Dispatchers.IO's slots
-        // one supernode-heavy hop can occupy at once, so concurrent traversals interleave instead
-        // of queuing behind one unbounded burst. Bump if profiling shows it's the wrong number.
-        private const val HOP_FANOUT_PARALLELISM = 256
-        private val hopDispatcher = Dispatchers.IO.limitedParallelism(HOP_FANOUT_PARALLELISM)
-    }
-
     var frontier: Set<NodeId> = startFrontier
         private set
 
@@ -66,7 +57,7 @@ class TraversalBuilder<ID>(
         val needValue = edgePredicate != null
         val hopEdges = coroutineScope {
             frontier.map { nid ->
-                async(hopDispatcher) { hops(nid, direction, edgeType, needValue).filter { edgePredicate == null || edgePredicate(it.edge!!) } }
+                async(engine.hopDispatcher) { hops(nid, direction, edgeType, needValue).filter { edgePredicate == null || edgePredicate(it.edge!!) } }
             }.awaitAll().flatten()
         }
         allTraversedHops += hopEdges
@@ -77,7 +68,7 @@ class TraversalBuilder<ID>(
     override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<*>) -> Boolean)?) {
         val hopEdges = coroutineScope {
             frontier.map { nid ->
-                async(hopDispatcher) {
+                async(engine.hopDispatcher) {
                     hops(nid, direction, edgeType, needValue = false).filter { hop ->
                         val node = engine.nodeAt(hop.target(direction)) ?: return@filter false
                         if (node.typeName() != nodeType) return@filter false
@@ -94,7 +85,7 @@ class TraversalBuilder<ID>(
     override suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<*>) -> Boolean)?) {
         val matchingIds = coroutineScope {
             frontier.map { nid ->
-                async(hopDispatcher) {
+                async(engine.hopDispatcher) {
                     val node = engine.nodeAt(nid) ?: return@async null
                     if (node.typeName() != nodeType) return@async null
                     if (predicate != null && !predicate(node)) return@async null
@@ -109,7 +100,7 @@ class TraversalBuilder<ID>(
     private suspend fun filterFrontierByEdge(direction: HopDirection, edgeType: String, endpoint: NodeId) {
         val matching = coroutineScope {
             frontier.map { nid ->
-                async(hopDispatcher) { if (hops(nid, direction, edgeType, needValue = false).any { it.target(direction) == endpoint }) nid else null }
+                async(engine.hopDispatcher) { if (hops(nid, direction, edgeType, needValue = false).any { it.target(direction) == endpoint }) nid else null }
             }.awaitAll()
         }.filterNotNull().toSet()
         allVisitedIds -= (frontier - matching)
@@ -119,7 +110,7 @@ class TraversalBuilder<ID>(
     private suspend fun filterFrontierByEdgeType(direction: HopDirection, edgeType: String, nodeType: String) {
         val matching = coroutineScope {
             frontier.map { nid ->
-                async(hopDispatcher) {
+                async(engine.hopDispatcher) {
                     val has = hops(nid, direction, edgeType, needValue = false).any { engine.nodeAt(it.target(direction))?.typeName() == nodeType }
                     if (has) nid else null
                 }
@@ -144,7 +135,7 @@ class TraversalBuilder<ID>(
     override suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit) {
         val matching = coroutineScope {
             frontier.map { nid ->
-                async(hopDispatcher) {
+                async(engine.hopDispatcher) {
                     val sub = TraversalBuilder(engine, setOf(nid), homeAdapter)
                     sub.block()
                     if (sub.frontier.isNotEmpty()) nid else null
@@ -162,12 +153,12 @@ class TraversalBuilder<ID>(
     override suspend fun count(): Int = frontier.size
 
     override suspend fun countEdges(direction: HopDirection, edgeType: String): Int = coroutineScope {
-        frontier.map { nid -> async(hopDispatcher) { hops(nid, direction, edgeType, needValue = false).size } }.awaitAll()
+        frontier.map { nid -> async(engine.hopDispatcher) { hops(nid, direction, edgeType, needValue = false).size } }.awaitAll()
     }.sum()
 
     override suspend fun collectSubgraph(nodeType: String?): Subgraph {
         val nodes = coroutineScope {
-            allVisitedIds.map { nid -> async(hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
+            allVisitedIds.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
         }.filterNotNull().let { all ->
             if (nodeType == null) all else all.filter { it.typeName() == nodeType }
         }
@@ -187,7 +178,7 @@ class TraversalBuilder<ID>(
             current = next
         }
         val nodes = coroutineScope {
-            visited.map { nid -> async(hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
+            visited.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
         }.filterNotNull()
         return Subgraph(nodes, resolveHopEdges(allHops))
     }

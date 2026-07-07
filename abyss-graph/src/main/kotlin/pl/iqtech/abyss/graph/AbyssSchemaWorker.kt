@@ -8,6 +8,7 @@ import com.hazelcast.map.IMap
 import com.hazelcast.query.Predicate
 import com.hazelcast.query.Predicates
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -67,6 +68,7 @@ internal class AbyssSchemaWorker(
     private val resolution: SchemaResolution,
     module: SerializersModule = EmptySerializersModule(),
     private val adjacencyShardCount: Int = 16,
+    hopFanoutParallelism: Int = 256,
 ) : NodeIdEngine {
 
     private val log = LoggerFactory.getLogger(AbyssSchemaWorker::class.java)
@@ -75,6 +77,7 @@ internal class AbyssSchemaWorker(
     private val edgesMap: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(edgesMapName)
     private val adjacencyMap: IMap<AdjacencyKey, AdjacencyValue> = hazelcast.getMap("$edgesMapName-adjacency")
     private val tagRegistry = TypeTagRegistry.of(module)
+    override val hopDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(hopFanoutParallelism)
 
     private fun edgeAdapterOf(nid: NodeId) = resolution.edgeAdapterOf(nid)
 

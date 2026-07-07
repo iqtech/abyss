@@ -1,5 +1,6 @@
 package pl.iqtech.abyss.graph
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -20,4 +21,12 @@ interface NodeIdEngine {
     suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean = true): List<Hop>    // edges where toId == nid
     suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>>   // batched value fetch for key-only hops
     fun allNodeIdsRaw(): Flow<NodeId>
+
+    // Shared across every TraversalBuilder fan-out for this engine (one dispatcher instance, not
+    // per-call) so a single supernode-heavy hop can occupy at most hopFanoutParallelism of
+    // Dispatchers.IO's execution slots, leaving room for concurrently-running traversals against the
+    // same engine to interleave instead of queuing behind one hop's unbounded burst. Each engine
+    // (AbyssSchemaWorker, or a Homogeneous/HeterogeneousSchemaGraph container delegating to its own
+    // worker) owns its own dispatcher, sized by its own hopFanoutParallelism constructor param.
+    val hopDispatcher: CoroutineDispatcher
 }
