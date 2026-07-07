@@ -16,6 +16,7 @@ import pl.iqtech.abyss.graph.serialization.customJsonSerializer
 import pl.iqtech.abyss.store.api.abyssSerializersModule
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.TypeTag
 import kotlinx.serialization.serializer
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -24,7 +25,7 @@ import kotlin.uuid.Uuid
 
 // ── test-local domain types ──────────────────────────────────────────────────
 
-@Serializable @SerialName("long_test_node")
+@Serializable @SerialName("long_test_node") @TypeTag(3)
 data class LongTestNode(
     override val id: Long,
     val name: String = "",
@@ -33,7 +34,7 @@ data class LongTestNode(
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : NodeLike<Long>
 
-@Serializable @SerialName("long_test_edge")
+@Serializable @SerialName("long_test_edge") @TypeTag(3)
 data class LongTestEdge(
     override val fromId: Long,
     override val toId: Long,
@@ -42,7 +43,7 @@ data class LongTestEdge(
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Long, Long>
 
-@Serializable @SerialName("str_test_node")
+@Serializable @SerialName("str_test_node") @TypeTag(4)
 data class StrTestNode(
     override val id: String,
     val name: String = "",
@@ -51,7 +52,7 @@ data class StrTestNode(
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : NodeLike<String>
 
-@Serializable @SerialName("str_test_edge")
+@Serializable @SerialName("str_test_edge") @TypeTag(4)
 data class StrTestEdge(
     override val fromId: String,
     override val toId: String,
@@ -60,7 +61,7 @@ data class StrTestEdge(
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<String, String>
 
-@Serializable @SerialName("test_node")
+@Serializable @SerialName("test_node") @TypeTag(1)
 data class TestNode(
     override val id: Uuid,
     override val tags: List<String> = emptyList(),
@@ -69,7 +70,7 @@ data class TestNode(
     val name: String
 ) : NodeLike<Uuid>
 
-@Serializable @SerialName("test_edge")
+@Serializable @SerialName("test_edge") @TypeTag(1)
 data class TestEdge(
     override val fromId: Uuid,
     override val toId: Uuid,

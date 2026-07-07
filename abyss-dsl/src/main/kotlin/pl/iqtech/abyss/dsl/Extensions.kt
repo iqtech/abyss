@@ -77,6 +77,11 @@ suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing
 suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.incoming() =
     addHop(HopDirection.INCOMING, E::class.serialName())
 
+// Untyped/mixed hop — union of neighbors across every edge type (TODO 2.21's adjacency index gives
+// outAt/inAt a real path for this; previously there was no index at all for a type == null hop).
+suspend fun TraversalBuilderLike<*>.outgoingAny() = addHop(HopDirection.OUTGOING, null)
+suspend fun TraversalBuilderLike<*>.incomingAny() = addHop(HopDirection.INCOMING, null)
+
 @JvmName("outgoingEdgePredicate")
 @Suppress("UNCHECKED_CAST")
 suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(noinline predicate: (E) -> Boolean) =

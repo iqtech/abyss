@@ -20,12 +20,12 @@ import kotlin.uuid.Uuid
 class SingleSchemaTest {
 
     @BeforeTest fun clear() {
-        listOf("ss-nodes", "ss-edges", "ss-edges-reverse").forEach { longTestHz.getMap<Any, Any>(it).clear() }
+        listOf("ss-nodes", "ss-edges", "ss-edges-adjacency").forEach { longTestHz.getMap<Any, Any>(it).clear() }
     }
 
     @Test fun singleSchemaGraphHandlesInteroperateOverSameMaps() = runBlocking {
-        val a = SingleSchemaGraph(LongKeyAdapter, longTestHz, "ss-nodes", "ss-edges")
-        val b = SingleSchemaGraph(LongKeyAdapter, longTestHz, "ss-nodes", "ss-edges")
+        val a = SingleSchemaGraph(LongKeyAdapter, longTestHz, "ss-nodes", "ss-edges", module = graphTestModule)
+        val b = SingleSchemaGraph(LongKeyAdapter, longTestHz, "ss-nodes", "ss-edges", module = graphTestModule)
 
         a.transaction {
             addNode(LongTestNode(1L)); addNode(LongTestNode(2L)); addEdge(LongTestEdge(1L, 2L))

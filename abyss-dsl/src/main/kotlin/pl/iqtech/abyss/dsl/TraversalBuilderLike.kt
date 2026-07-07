@@ -41,7 +41,7 @@ data class Subgraph(val nodes: List<NodeLike<*>>, val edges: List<EdgeLike<*, *>
 // filterFrontierByOutEdgeTo, …). The traversal frontier itself is NodeId-based internally, so a
 // walk can leave the home schema across a cross-edge.
 interface TraversalBuilderLike<ID> {
-    suspend fun addHop(direction: HopDirection, edgeType: String, edgePredicate: ((EdgeLike<*, *>) -> Boolean)? = null)
+    suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)? = null)
     suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<*>) -> Boolean)? = null)
     suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<*>) -> Boolean)? = null)
     suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID)

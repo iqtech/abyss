@@ -25,7 +25,7 @@ class AlgorithmsTest {
     @BeforeTest fun clear() {
         graphTestHz.getMap<Any, Any>("g-nodes").clear()
         graphTestHz.getMap<Any, Any>("g-edges").clear()
-        graphTestHz.getMap<Any, Any>("g-edges-reverse").clear()
+        graphTestHz.getMap<Any, Any>("g-edges-adjacency").clear()
     }
 
     private fun putNode(name: String): TestNode {
@@ -254,7 +254,7 @@ class AlgorithmsTest {
     // so a schema sharing multiSchemaHz's map with a sibling schema must never see the sibling's
     // nodes. Identical numeric ids in both schemas is the sharpest case for a decode collision.
     @Test fun `connectedComponents on a Heterogeneous schema only sees its own tag`() = runBlocking {
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cc-nodes", "cc-edges")
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cc-nodes", "cc-edges", module = graphTestModule)
         val a = g.register(SchemaTag(101L), LongKeyAdapter)
         val b = g.register(SchemaTag(102L), LongKeyAdapter)
         try {
@@ -269,7 +269,7 @@ class AlgorithmsTest {
             assertEquals(1, bComponents.size)
             assertEquals(setOf(1L, 9L), bComponents.first())
         } finally {
-            listOf("cc-nodes", "cc-edges", "cc-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cc-nodes", "cc-edges", "cc-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 }

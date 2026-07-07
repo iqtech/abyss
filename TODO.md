@@ -373,14 +373,18 @@
   decision on where the domain type is expressed once nested under `"properties"` isn't backed by
   `@SerialName` alone the way `AbyssJsonLinesCodec` does it.
 
-- **➡️ 2.19 Chunk large per-hop edge fan-out instead of one all-at-once async wave**
-  `TraversalBuilder.addHop` launches one `async { }` per frontier node in a single
-  `coroutineScope { ... }.awaitAll()` wave, regardless of frontier size. A frontier-size sweep found
-  per-edge cost roughly flat (~50-60us) up to 10k concurrent calls in isolation, but aggregate load
-  across many simultaneously-active traversals sharing the same dispatcher/thread pool is the real
-  ceiling, not any single hop. For hops crossing roughly 1000+ edges, chunk the fan-out (e.g. batches
-  of a few hundred, sequential between batches, async within each) instead of one unbounded wave, so
-  one supernode-heavy traversal can't monopolize the shared pool out from under concurrent callers.
+- **✅ 2.19 Chunk large per-hop edge fan-out instead of one all-at-once async wave**
+  `TraversalBuilder.addHop` and its per-frontier-node sibling methods (`addNodeHop`,
+  `filterFrontierByNode/ByEdge/ByEdgeType/ByTraversal`, `countEdges`, `collectSubgraph`,
+  `exhaustReachable`) launched one unbounded `async { }` per frontier node, letting one
+  supernode-heavy traversal monopolize `Dispatchers.IO` out from under concurrent callers. Fixed with
+  a single shared `Dispatchers.IO.limitedParallelism(256)` dispatcher (a companion-object `val`, not
+  per-call), routed through every one of those fan-out sites — a dispatcher-level semaphore, so no
+  one hop can occupy more than 256 execution slots regardless of how many traversals are running
+  concurrently. Chunking (batches + sequential-between) was considered and rejected: it only bounds
+  concurrency within one call, not across concurrently-running traversals sharing the pool. Covered
+  by `SupernodeTraversalTest` (wide fan-out correctness at 1500 edges, plain and predicate-filtered,
+  plus two concurrent supernode traversals not cross-contaminating results).
 
 - **➡️ 2.20 `abyss-store-neo4j` implementation**
   A new module implementing `AbyssStoreLike`/`AbyssEphemeralStoreLike` against Neo4j, alongside
@@ -398,19 +402,33 @@
   property mapping, Cypher identifier-injection safeguard, transaction/TTL handling, file-by-file
   breakdown): `ai-scripts/Neo4jStorePlan.md`.
 
-- **➡️ 2.21 Sharded adjacency index replacing `reverseEdgesMap`, giving `outAt` a real index**
-  Design finalized, ready to implement. New Hazelcast map, key `(NodeId, Shard: Byte)` packing
-  direction + shard index into one byte, value `Set<(neighborId, nodeTypeTag, edgeTypeTag)>` — carrying
-  edge type (not just neighbor node type) makes `RemoveEdge` exact (no reference-count read needed) and
-  lets the index serve typed traversal too, not just mixed/untyped. `outAt`'s existing typed+value-needed
-  fast path (`outgoing<E>()`) is untouched (already 1 round trip, optimal); every other read shape
-  (incoming, untyped/mixed, typed-existence-only) routes through batched per-shard `getAll` + shard-count
-  concurrency. Needs `@TypeTag(Short)` on both `NodeLike` and `EdgeLike` classes (developer-assigned,
-  `@SerialName`-style, two independent namespaces), with its registry populated eagerly at worker
-  construction (not lazily on write) to avoid a restart-tag-resolution gap. `EntryProcessor`-based atomic
-  Set mutation (no existing precedent in this codebase). Land 2.19/`limitedParallelism` first regardless
-  — unrelated, smaller fix for frontier-size fan-out. Full design + file-by-file plan:
-  `ai-scripts/ShardedAdjacencyIndexRFC.md`.
+- **✅ 2.21 Sharded adjacency index replacing `reverseEdgesMap`, giving `outAt` a real index**
+  New Hazelcast map `<edgesMapName>-adjacency`, key `AdjacencyKey(NodeId, Shard: Byte)` packing
+  direction + shard index into one byte, value `AdjacencyValue(Set<AdjacencyEntry(neighborId,
+  nodeTypeTag: Short?, edgeTypeTag: Short)>)` — carrying edge type (not just neighbor node type) makes
+  `RemoveEdge` exact (no reference-count read needed) and lets the index serve typed traversal too,
+  not just mixed/untyped. `nodeTypeTag` is nullable: a neighbor node may not be resolvable at write
+  time (`checkIntegrity=false` dangling edges, or a preload racing the node's own store row) — the
+  edge write still succeeds, just without the (currently unused) type hint. `outAt`'s existing
+  typed+value-needed fast path (`outgoing<E>()`) is untouched (still a direct `edgesMap` partition
+  scan, 1 round trip); every other read shape (incoming, untyped/mixed, typed-existence-only) routes
+  through one batched `getAll` across all N shard keys via `adjacencyRead` — always 1 round trip
+  regardless of N, never a per-shard coroutine fan-out. Shard count (`adjacencyShardCount`, default
+  16) is a write-concurrency knob (spreads concurrent hub-node writers off a single `EntryProcessor`
+  per-key lock via `AdjacencyMutationProcessor`), decoupled from 2.19's `HOP_FANOUT_PARALLELISM` — the
+  two are independently tunable. `@TypeTag(Short)` added on `NodeLike`/`EdgeLike` classes
+  (developer-assigned, `@SerialName`-style, two independent namespaces, resolved via
+  `AnnotationCache.typeTag()`); `TypeTagRegistry` walks a `SerializersModule` eagerly at worker
+  construction (via `SerializersModule.dumpTo` + a small `SerializersModuleCollector`) — both a
+  collision guard (duplicate tag in either namespace fails fast at construction) and the
+  bidirectional edge-type `String ⇄ Short` lookup `RemoveEdge`/`inAt` need. `outgoingAny()`/
+  `incomingAny()` DSL sugar added for untyped/mixed hops (`addHop`'s `edgeType` widened to
+  nullable). `ReverseEdgeKey`/`ReverseEdgeKeySerializer` deleted outright. Covered by
+  `MixedTraversalTest` (untyped-hop union, exact-type removal, fast-path/index-path parity,
+  concurrent-writer `EntryProcessor` atomicity, cold-cache self-heal, restart-equivalent tag
+  resolution, `@TypeTag` collision guard, shard-hash determinism) plus every existing
+  `GraphTest`/`TraversalTest`/`MultiSchemaTest`/etc. suite passing unmodified in behavior. Full
+  design: `ai-scripts/ShardedAdjacencyIndexRFC.md`.
 
 ## 3. Low
 

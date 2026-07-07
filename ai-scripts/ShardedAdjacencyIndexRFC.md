@@ -28,9 +28,13 @@ entry.
 - bit 7: direction (`OUT` / `IN`)
 - bits 0-6: shard index, `0..127`
 
-Shard count is a **concurrency-degree knob** (worker-coroutine count / read-parallelism), not a
-data-scale knob — realistic values track core count, comfortably under the 128-value ceiling this
-leaves.
+Shard count is a **write-concurrency knob**: more shards means more concurrent hub-node writers avoid
+serializing behind the same `EntryProcessor` per-key lock. It is not a data-scale knob, and — per "Read
+path" below — not a read-parallelism knob either, since reads are always one batched `getAll` regardless
+of `N`. It is also independent of however many coroutines the app actually runs concurrently elsewhere
+(2.19's hop-fanout chunk size, any `Dispatchers.IO.limitedParallelism(N)` bound) — those are separate
+knobs tuned for their own reasons, not derived from shard count. Realistic shard-count values track core
+count, comfortably under the 128-value ceiling this leaves.
 
 Value: a `Set` of entries, each **`(neighborId: NodeId, nodeTypeTag: Short, edgeTypeTag: Short)`**:
 - `neighborId` — the other endpoint (target for `OUT`, source for `IN`).

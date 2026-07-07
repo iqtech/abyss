@@ -6,6 +6,7 @@ import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
+import pl.iqtech.abyss.dsl.typeTag
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
@@ -32,17 +33,23 @@ class StringPerformanceTest {
         }
 
         private val perfGraph: AbyssGraphSchema<String> by lazy {
-            AbyssGraphSchema(StringKeyAdapter, stringTestHz, "perf-str-nodes", "perf-str-edges")
+            AbyssGraphSchema(StringKeyAdapter, stringTestHz, "perf-str-nodes", "perf-str-edges", module = graphTestModule)
         }
+
+        // Matches AbyssSchemaWorker's default adjacencyShardCount (perfGraph doesn't override it).
+        private const val ADJACENCY_SHARD_COUNT = 16
 
         private val nodeIds: List<String> by lazy {
             val ids = (1..NODE_COUNT).map { randomId() }
             val nodesMap = stringTestHz.getMap<NodeId, NodeLike<*>>("perf-str-nodes")
             val edgesMap = stringTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-str-edges")
-            val reverseMap = stringTestHz.getMap<ReverseEdgeKey, Unit>("perf-str-edges-reverse")
+            val adjacencyMap = stringTestHz.getMap<AdjacencyKey, AdjacencyValue>("perf-str-edges-adjacency")
             ids.forEach { id ->
                 nodesMap[hstr.toNodeId(id)] = StrTestNode(id = id, name = id)
             }
+            val nodeTag = StrTestNode::class.typeTag()
+            val edgeTag = StrTestEdge::class.typeTag()
+            val adjacency = mutableMapOf<AdjacencyKey, MutableSet<AdjacencyEntry>>()
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
@@ -50,9 +57,11 @@ class StringPerformanceTest {
                     val toNid   = hstr.toNodeId(toId)
                     edgesMap[EdgeKey(fromNid, toNid, "str_test_edge", hstr.partitionKey(fromNid))] =
                         StrTestEdge(fromId = fromId, toId = toId)
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "str_test_edge", hstr.partitionKey(toNid))] = Unit
+                    val inKey = AdjacencyKey(toNid, packShard(AdjacencyDirection.IN, shardIndexOf(fromNid, ADJACENCY_SHARD_COUNT)), hstr.partitionKey(toNid))
+                    adjacency.getOrPut(inKey) { mutableSetOf() } += AdjacencyEntry(fromNid, nodeTag, edgeTag)
                 }
             }
+            adjacencyMap.putAll(adjacency.mapValues { AdjacencyValue(it.value) })
             ids
         }
     }

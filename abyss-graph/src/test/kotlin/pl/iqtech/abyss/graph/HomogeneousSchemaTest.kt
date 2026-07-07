@@ -55,12 +55,12 @@ private val homogeneousUuidTagHz by lazy {
 class HomogeneousSchemaTest {
 
     @BeforeTest fun clear() {
-        listOf("hg-nodes", "hg-edges", "hg-edges-reverse").forEach { homogeneousLongTagHz.getMap<Any, Any>(it).clear() }
-        listOf("hg-uuid-nodes", "hg-uuid-edges", "hg-uuid-edges-reverse").forEach { homogeneousUuidTagHz.getMap<Any, Any>(it).clear() }
+        listOf("hg-nodes", "hg-edges", "hg-edges-adjacency").forEach { homogeneousLongTagHz.getMap<Any, Any>(it).clear() }
+        listOf("hg-uuid-nodes", "hg-uuid-edges", "hg-uuid-edges-adjacency").forEach { homogeneousUuidTagHz.getMap<Any, Any>(it).clear() }
     }
 
     @Test fun twoLongSchemasDisambiguateByTag() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousLongTagHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg-nodes", "hg-edges")
+        val g = HomogeneousSchemaGraph(homogeneousLongTagHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg-nodes", "hg-edges", module = graphTestModule)
         val a = g.forTag(HOMOG_TAG_A)
         val b = g.forTag(HOMOG_TAG_B)
         // Identical numeric ids in both schemas — only the schema tag distinguishes their edge keys.
@@ -75,7 +75,7 @@ class HomogeneousSchemaTest {
     // container where every user's data lives in the same shared maps, isolated purely by tag), with
     // SchemaTagWidth.UUID actually round-tripping a full 128-bit tag for the first time.
     @Test fun uuidTagsIsolateTwoUsersWithNoRegistry() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousUuidTagHz, SchemaTagWidth.UUID, LongKeyAdapter, "hg-uuid-nodes", "hg-uuid-edges")
+        val g = HomogeneousSchemaGraph(homogeneousUuidTagHz, SchemaTagWidth.UUID, LongKeyAdapter, "hg-uuid-nodes", "hg-uuid-edges", module = graphTestModule)
         val userA = g.forTag(SchemaTag.of(Uuid.random()))
         val userB = g.forTag(SchemaTag.of(Uuid.random()))
 

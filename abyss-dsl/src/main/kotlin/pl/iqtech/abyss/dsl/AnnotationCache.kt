@@ -1,6 +1,7 @@
 package pl.iqtech.abyss.dsl
 
 import kotlinx.serialization.SerialName
+import pl.iqtech.abyss.store.api.TypeTag
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
@@ -25,3 +26,6 @@ inline fun <reified A : Annotation> KClass<*>.cachedAnnotation(): A? =
 // edge/node type-resolution call site.
 fun KClass<*>.serialName(): String =
     cachedAnnotation<SerialName>()?.value ?: error("$this missing @SerialName")
+
+fun KClass<*>.typeTag(): Short =
+    cachedAnnotation<TypeTag>()?.value ?: error("$this missing @TypeTag")

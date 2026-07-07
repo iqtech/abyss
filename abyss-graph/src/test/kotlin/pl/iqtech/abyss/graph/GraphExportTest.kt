@@ -28,12 +28,12 @@ class GraphExportTest {
     private val codec = AbyssJsonLinesCodec(graphTestModule)
 
     @BeforeTest fun clear() {
-        listOf("export-src-nodes", "export-src-edges", "export-src-edges-reverse").forEach { longTestHz.getMap<Any, Any>(it).clear() }
-        listOf("export-dst-nodes", "export-dst-edges", "export-dst-edges-reverse").forEach { longTestHz.getMap<Any, Any>(it).clear() }
+        listOf("export-src-nodes", "export-src-edges", "export-src-edges-adjacency").forEach { longTestHz.getMap<Any, Any>(it).clear() }
+        listOf("export-dst-nodes", "export-dst-edges", "export-dst-edges-adjacency").forEach { longTestHz.getMap<Any, Any>(it).clear() }
     }
 
     @Test fun `export then import round-trips a small graph`() = runBlocking {
-        val source = SingleSchemaGraph(LongKeyAdapter, longTestHz, "export-src-nodes", "export-src-edges")
+        val source = SingleSchemaGraph(LongKeyAdapter, longTestHz, "export-src-nodes", "export-src-edges", module = graphTestModule)
         source.transaction {
             addNode(LongTestNode(1L, name = "alice"))
             addNode(LongTestNode(2L, name = "bob"))
@@ -43,7 +43,7 @@ class GraphExportTest {
         val lines = source.exportGraphLines(codec).toList()
         assertEquals(3, lines.size)   // 2 nodes + 1 edge
 
-        val dest = SingleSchemaGraph(LongKeyAdapter, longTestHz, "export-dst-nodes", "export-dst-edges")
+        val dest = SingleSchemaGraph(LongKeyAdapter, longTestHz, "export-dst-nodes", "export-dst-edges", module = graphTestModule)
         val result = dest.importGraphLines(lines.asFlow(), codec)
         assertTrue(result.isRight())
 
@@ -53,7 +53,7 @@ class GraphExportTest {
     }
 
     @Test fun `Subgraph exportLines exports only the visited nodes and edges`() = runBlocking {
-        val g = SingleSchemaGraph(LongKeyAdapter, longTestHz, "export-src-nodes", "export-src-edges")
+        val g = SingleSchemaGraph(LongKeyAdapter, longTestHz, "export-src-nodes", "export-src-edges", module = graphTestModule)
         g.transaction {
             addNode(LongTestNode(1L)); addNode(LongTestNode(2L)); addNode(LongTestNode(3L))
             addEdge(LongTestEdge(1L, 2L))

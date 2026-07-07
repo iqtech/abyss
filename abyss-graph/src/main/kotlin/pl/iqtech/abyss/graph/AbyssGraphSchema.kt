@@ -20,11 +20,14 @@ import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
+import pl.iqtech.abyss.graph.serialization.AdjacencyEntrySerializer
+import pl.iqtech.abyss.graph.serialization.AdjacencyKeySerializer
+import pl.iqtech.abyss.graph.serialization.AdjacencyMutationProcessorSerializer
+import pl.iqtech.abyss.graph.serialization.AdjacencyValueSerializer
 import pl.iqtech.abyss.graph.serialization.EdgeKeySerializer
 import pl.iqtech.abyss.graph.serialization.EdgeLikeHzSerializer
 import pl.iqtech.abyss.graph.serialization.NodeIdSerializer
 import pl.iqtech.abyss.graph.serialization.NodeLikeHzSerializer
-import pl.iqtech.abyss.graph.serialization.ReverseEdgeKeySerializer
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
@@ -66,11 +69,13 @@ class AbyssGraphSchema<ID> internal constructor(
         persistentStore: AbyssStoreLike? = null,
         ephemeralStore: AbyssEphemeralStoreLike? = null,
         asyncCachePopulation: Boolean = false,
+        module: SerializersModule = EmptySerializersModule(),
+        adjacencyShardCount: Int = 16,
     ) : this(
         HeaderlessKeyAdapter(adapter),
         AbyssSchemaWorker(
             hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
-            SingleSchemaResolution(HeaderlessKeyAdapter(adapter)),
+            SingleSchemaResolution(HeaderlessKeyAdapter(adapter)), module, adjacencyShardCount,
         ),
     )
 
@@ -211,11 +216,19 @@ internal fun <K, V> nativeKeyEq(field: String, enc: NodeKeyEncoding): Predicate<
 // Call before creating the HazelcastInstance — serialization config is immutable after startup.
 // Pass the consuming project's SerializersModule so concrete NodeLike/EdgeLike types are known.
 // The adapter must match the KeyAdapter used by every AbyssGraphSchema<ID> sharing this HazelcastInstance:
-// EdgeKey/ReverseEdgeKey compact serialization is bound to one adapter's native field encoding.
+// EdgeKey compact serialization is bound to one adapter's native field encoding.
+//
+// Also validates every registered NodeLike/EdgeLike class's @TypeTag eagerly, here, before the
+// HazelcastInstance even exists — the earliest possible point to fail loudly on a missing or
+// colliding tag (TypeTagRegistry.of throws; its result is otherwise unused here).
 fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersModule = EmptySerializersModule()): Config = apply {
+    TypeTagRegistry.of(module)
     serializationConfig.compactSerializationConfig.addSerializer(NodeIdSerializer())
     serializationConfig.compactSerializationConfig.addSerializer(EdgeKeySerializer(adapter))
-    serializationConfig.compactSerializationConfig.addSerializer(ReverseEdgeKeySerializer(adapter))
+    serializationConfig.compactSerializationConfig.addSerializer(AdjacencyKeySerializer())
+    serializationConfig.compactSerializationConfig.addSerializer(AdjacencyEntrySerializer())
+    serializationConfig.compactSerializationConfig.addSerializer(AdjacencyValueSerializer())
+    serializationConfig.compactSerializationConfig.addSerializer(AdjacencyMutationProcessorSerializer())
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }

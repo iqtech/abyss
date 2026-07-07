@@ -37,6 +37,7 @@ import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.StoredEdge
+import pl.iqtech.abyss.store.api.TypeTag
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -49,7 +50,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
-@Serializable @SerialName("cross_ref")
+@Serializable @SerialName("cross_ref") @TypeTag(5)
 data class CrossRefEdge(
     override val fromId: NodeId,
     override val toId: NodeId,
@@ -65,7 +66,7 @@ private val LONG_TAG_B = SchemaTag(3L)
 
 // Annotation-driven cross edge (O3): declared with real domain types, no manual NodeId construction —
 // addCrossEdge resolves both endpoints from the annotation alone. Tags match newContainer()'s LONG_TAG/UUID_TAG.
-@Serializable @SerialName("lives_in")
+@Serializable @SerialName("lives_in") @TypeTag(6)
 @CrossSchemaEdge(
     fromTag = 2L, fromAdapter = UuidKeyAdapter::class,
     toTag = 1L, toAdapter = LongKeyAdapter::class,
@@ -79,7 +80,7 @@ data class LivesIn(
 ) : EdgeLike<Uuid, Long>
 
 // HomogeneousSchemaGraph fixtures: one ID type (Long) shared by every tag in that container.
-@Serializable @SerialName("tenant_link")
+@Serializable @SerialName("tenant_link") @TypeTag(7)
 @CrossSchemaEdge(
     fromTag = 501L, fromAdapter = LongKeyAdapter::class,
     toTag = 502L, toAdapter = LongKeyAdapter::class,
@@ -92,7 +93,7 @@ data class TenantLink(
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Long, Long>
 
-@Serializable @SerialName("same_tenant_link")
+@Serializable @SerialName("same_tenant_link") @TypeTag(8)
 @CrossSchemaEdge(
     fromTag = 501L, fromAdapter = LongKeyAdapter::class,
     toTag = 501L, toAdapter = LongKeyAdapter::class,
@@ -135,7 +136,7 @@ class MultiSchemaTest {
     private class Ctr(val g: HeterogeneousSchemaGraph, val longS: AbyssGraphSchema<Long>, val uuidS: AbyssGraphSchema<Uuid>)
 
     private fun newContainer(allowCross: Boolean = false): Ctr {
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", allowCrossSchemaEdges = allowCross)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", allowCrossSchemaEdges = allowCross, module = graphTestModule)
         return Ctr(g, g.register(LONG_TAG, LongKeyAdapter), g.register(UUID_TAG, UuidKeyAdapter))
     }
 
@@ -143,7 +144,7 @@ class MultiSchemaTest {
     private fun uuidNodeId(id: Uuid) = SchemaKeyAdapter(UUID_TAG, SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(id)
 
     @BeforeTest fun clear() {
-        listOf("ms-nodes", "ms-edges", "ms-edges-reverse", "ms-edges-cross", "ms-edges-cross-reverse")
+        listOf("ms-nodes", "ms-edges", "ms-edges-adjacency", "ms-edges-cross", "ms-edges-cross-adjacency")
             .forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
     }
 
@@ -282,7 +283,7 @@ class MultiSchemaTest {
 
     @Test fun `transaction with addNode and addCrossEdge is all-or-nothing on store failure`() = runBlocking {
         val store = RecordingStore()
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx7-nodes", "cx7-edges", allowCrossSchemaEdges = true, persistentStore = store)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx7-nodes", "cx7-edges", allowCrossSchemaEdges = true, persistentStore = store, module = graphTestModule)
         val longS = g.register(LONG_TAG, LongKeyAdapter)
         val uuidS = g.register(UUID_TAG, UuidKeyAdapter)
         try {
@@ -301,7 +302,7 @@ class MultiSchemaTest {
             val reached = longS.from(1L) { incoming<LivesIn>(); collectNodes<TestNode>().toList() }.getOrNull()!!
             assertEquals(emptyList(), reached)
         } finally {
-            listOf("cx7-nodes", "cx7-edges", "cx7-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx7-nodes", "cx7-edges", "cx7-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
@@ -349,7 +350,7 @@ class MultiSchemaTest {
 
         assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
 
-        // Delete the TARGET this time — exercises the reverseEdgesMap-driven (incoming) cascade branch.
+        // Delete the TARGET this time — exercises the adjacency-index-driven (incoming) cascade branch.
         c.longS.transaction { removeNode(1L) }
 
         assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
@@ -369,13 +370,13 @@ class MultiSchemaTest {
 
     @Test fun containerLevelTransactionRejectsUnregisteredTag() = runBlocking {
         // A container that never registered the Long tag LivesIn's annotation points at.
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx8-nodes", "cx8-edges", allowCrossSchemaEdges = true)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx8-nodes", "cx8-edges", allowCrossSchemaEdges = true, module = graphTestModule)
         g.register(UUID_TAG, UuidKeyAdapter)
         try {
             val result = g.transaction { addCrossEdge(LivesIn(Uuid.random(), 1L)) }
             assertTrue(result.isLeft())
         } finally {
-            listOf("cx8-nodes", "cx8-edges", "cx8-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx8-nodes", "cx8-edges", "cx8-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
@@ -394,7 +395,7 @@ class MultiSchemaTest {
     // differs from HeterogeneousSchemaGraph's registeredTags check, so it needs its own cases.
 
     @Test fun homogeneousSameTagCrossEdgeAlwaysAllowed() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg1-nodes", "hg1-edges")
+        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg1-nodes", "hg1-edges", module = graphTestModule)
         val s = g.forTag(SchemaTag(501L))
         try {
             s.transaction { addNode(LongTestNode(1L)); addNode(LongTestNode(2L)) }
@@ -404,12 +405,12 @@ class MultiSchemaTest {
             val reached = s.from(1L) { outgoing<SameTenantLink>(); collectNodes<LongTestNode>().toList() }.getOrNull()!!
             assertEquals(setOf(2L), reached.map { it.id }.toSet())
         } finally {
-            listOf("hg1-nodes", "hg1-edges", "hg1-edges-reverse").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
+            listOf("hg1-nodes", "hg1-edges", "hg1-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun homogeneousDifferentTagCrossEdgeNeedsAllowFlag() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg2-nodes", "hg2-edges", allowCrossSchemaEdges = false)
+        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg2-nodes", "hg2-edges", allowCrossSchemaEdges = false, module = graphTestModule)
         val a = g.forTag(SchemaTag(501L))
         val b = g.forTag(SchemaTag(502L))
         try {
@@ -419,12 +420,12 @@ class MultiSchemaTest {
             val rejected = a.transaction { addCrossEdge(TenantLink(1L, 2L)) }
             assertTrue(rejected.isLeft())
         } finally {
-            listOf("hg2-nodes", "hg2-edges", "hg2-edges-reverse").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
+            listOf("hg2-nodes", "hg2-edges", "hg2-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun homogeneousDifferentTagCrossEdgeAllowedWithFlag() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg3-nodes", "hg3-edges", allowCrossSchemaEdges = true)
+        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg3-nodes", "hg3-edges", allowCrossSchemaEdges = true, module = graphTestModule)
         val a = g.forTag(SchemaTag(501L))
         val b = g.forTag(SchemaTag(502L))
         try {
@@ -437,12 +438,12 @@ class MultiSchemaTest {
             val reached = a.from(1L) { outgoing<TenantLink>(); collectNodes<LongTestNode>().toList() }.getOrNull()!!
             assertEquals(setOf(2L), reached.map { it.id }.toSet())
         } finally {
-            listOf("hg3-nodes", "hg3-edges", "hg3-edges-reverse").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
+            listOf("hg3-nodes", "hg3-edges", "hg3-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun homogeneousRemoveNodeCascadesDifferentTagCrossEdge() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg4-nodes", "hg4-edges", allowCrossSchemaEdges = true)
+        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg4-nodes", "hg4-edges", allowCrossSchemaEdges = true, module = graphTestModule)
         val a = g.forTag(SchemaTag(501L))
         val b = g.forTag(SchemaTag(502L))
         try {
@@ -457,7 +458,7 @@ class MultiSchemaTest {
 
             assertEquals(0, g.outAt(fromNid, "tenant_link", needValue = false).size)
         } finally {
-            listOf("hg4-nodes", "hg4-edges", "hg4-edges-reverse").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
+            listOf("hg4-nodes", "hg4-edges", "hg4-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }
     }
 
@@ -466,7 +467,7 @@ class MultiSchemaTest {
 
     @Test fun `addCrossEdge persists through the persistent store`() = runBlocking {
         val store = RecordingStore()
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx-nodes", "cx-edges", allowCrossSchemaEdges = true, persistentStore = store)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx-nodes", "cx-edges", allowCrossSchemaEdges = true, persistentStore = store, module = graphTestModule)
         val longS = g.register(SchemaTag(201L), LongKeyAdapter)
         val uuidS = g.register(SchemaTag(202L), UuidKeyAdapter)
         try {
@@ -484,14 +485,14 @@ class MultiSchemaTest {
             val reached = longS.from(1L) { outgoing<CrossRefEdge>(); collectNodes<TestNode>().toList() }.getOrNull()!!
             assertEquals(setOf(u), reached.map { it.id }.toSet())
         } finally {
-            listOf("cx-nodes", "cx-edges", "cx-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx-nodes", "cx-edges", "cx-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun `addCrossEdge with ttl persists through the ephemeral store, not the persistent one`() = runBlocking {
         val persistent = RecordingStore()
         val ephemeral = RecordingEphemeralStore()
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx2-nodes", "cx2-edges", allowCrossSchemaEdges = true, persistentStore = persistent, ephemeralStore = ephemeral)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx2-nodes", "cx2-edges", allowCrossSchemaEdges = true, persistentStore = persistent, ephemeralStore = ephemeral, module = graphTestModule)
         val longS = g.register(SchemaTag(211L), LongKeyAdapter)
         val uuidS = g.register(SchemaTag(212L), UuidKeyAdapter)
         try {
@@ -506,14 +507,14 @@ class MultiSchemaTest {
             assertEquals(1, ephemeral.savedEdges.size)
             assertEquals(0, persistent.savedEdges.size)
         } finally {
-            listOf("cx2-nodes", "cx2-edges", "cx2-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx2-nodes", "cx2-edges", "cx2-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun `removeCrossEdge fans the delete out to both stores`() = runBlocking {
         val persistent = RecordingStore()
         val ephemeral = RecordingEphemeralStore()
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx3-nodes", "cx3-edges", allowCrossSchemaEdges = true, persistentStore = persistent, ephemeralStore = ephemeral)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx3-nodes", "cx3-edges", allowCrossSchemaEdges = true, persistentStore = persistent, ephemeralStore = ephemeral, module = graphTestModule)
         val longS = g.register(SchemaTag(221L), LongKeyAdapter)
         val uuidS = g.register(SchemaTag(222L), UuidKeyAdapter)
         try {
@@ -532,13 +533,13 @@ class MultiSchemaTest {
             val reached = longS.from(1L) { outgoing<CrossRefEdge>(); collectNodes<TestNode>().toList() }.getOrNull()!!
             assertEquals(emptyList(), reached)
         } finally {
-            listOf("cx3-nodes", "cx3-edges", "cx3-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx3-nodes", "cx3-edges", "cx3-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun `addCrossEdge failure leaves the cache untouched`() = runBlocking {
         val store = RecordingStore(failTx = true)
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx4-nodes", "cx4-edges", allowCrossSchemaEdges = true, persistentStore = store)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx4-nodes", "cx4-edges", allowCrossSchemaEdges = true, persistentStore = store, module = graphTestModule)
         val longS = g.register(SchemaTag(231L), LongKeyAdapter)
         val uuidS = g.register(SchemaTag(232L), UuidKeyAdapter)
         try {
@@ -554,7 +555,7 @@ class MultiSchemaTest {
             val reached = longS.from(1L) { outgoing<CrossRefEdge>(); collectNodes<TestNode>().toList() }.getOrNull()!!
             assertEquals(emptyList(), reached)
         } finally {
-            listOf("cx4-nodes", "cx4-edges", "cx4-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx4-nodes", "cx4-edges", "cx4-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
@@ -565,7 +566,7 @@ class MultiSchemaTest {
         val edge = CrossRefEdge(fromNid, toNid, note = "seeded")
         val store = RecordingStore().apply { seededEdges = listOf(StoredEdge(fromNid, toNid, edge, null)) }
 
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx5-nodes", "cx5-edges", allowCrossSchemaEdges = true, persistentStore = store)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx5-nodes", "cx5-edges", allowCrossSchemaEdges = true, persistentStore = store, module = graphTestModule)
         val longS = g.register(SchemaTag(241L), LongKeyAdapter)
         val uuidS = g.register(SchemaTag(242L), UuidKeyAdapter)
         try {
@@ -576,7 +577,7 @@ class MultiSchemaTest {
             val reached = longS.from(1L) { outgoing<CrossRefEdge>(); collectNodes<TestNode>().toList() }.getOrNull()!!
             assertEquals(setOf(u), reached.map { it.id }.toSet())
         } finally {
-            listOf("cx5-nodes", "cx5-edges", "cx5-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx5-nodes", "cx5-edges", "cx5-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
@@ -587,7 +588,7 @@ class MultiSchemaTest {
     // a cold restart would.
     @Test fun `addCrossEdge integrity check self-heals from store on cache-cold node`() = runBlocking {
         val store = RecordingStore()
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx6-nodes", "cx6-edges", allowCrossSchemaEdges = true, persistentStore = store)
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx6-nodes", "cx6-edges", allowCrossSchemaEdges = true, persistentStore = store, module = graphTestModule)
         g.register(SchemaTag(251L), LongKeyAdapter)
         g.register(SchemaTag(252L), UuidKeyAdapter)
         try {
@@ -599,12 +600,12 @@ class MultiSchemaTest {
             val result = g.addCrossEdge(CrossRefEdge(fromNid, toNid))
             assertTrue(result.isRight())
         } finally {
-            listOf("cx6-nodes", "cx6-edges", "cx6-edges-reverse").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+            listOf("cx6-nodes", "cx6-edges", "cx6-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
         }
     }
 
     @Test fun twoLongSchemasDisambiguateByTag() = runBlocking {
-        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges")
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "ms-nodes", "ms-edges", module = graphTestModule)
         val a = g.register(LONG_TAG, LongKeyAdapter)
         val b = g.register(LONG_TAG_B, LongKeyAdapter)
         // Identical numeric ids in both schemas — only the schema tag distinguishes their edge keys.

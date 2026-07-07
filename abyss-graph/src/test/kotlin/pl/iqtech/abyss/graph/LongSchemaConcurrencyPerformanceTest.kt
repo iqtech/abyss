@@ -12,6 +12,7 @@ import pl.iqtech.abyss.dsl.inEdges
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outEdges
 import pl.iqtech.abyss.dsl.outgoing
+import pl.iqtech.abyss.dsl.typeTag
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
@@ -43,17 +44,23 @@ class LongSchemaConcurrencyPerformanceTest {
         }
         private val hlong = HeaderlessKeyAdapter(LongKeyAdapter)
         private val perfGraph: AbyssGraphSchema<Long> by lazy {
-            AbyssGraphSchema(LongKeyAdapter, perfHz, "perf-longc-nodes", "perf-longc-edges")
+            AbyssGraphSchema(LongKeyAdapter, perfHz, "perf-longc-nodes", "perf-longc-edges", module = graphTestModule)
         }
 
         // Same deterministic ring-wrap seed as LongPerformanceTest, pre-populated directly into the
         // maps (bypassing transaction{}) purely for fast setup at this scale.
+        // Matches AbyssSchemaWorker's default adjacencyShardCount (perfGraph doesn't override it).
+        private const val ADJACENCY_SHARD_COUNT = 16
+
         private val nodeIds: List<Long> by lazy {
             val ids = (1L..NODE_COUNT.toLong()).toList()
             val nodesMap = perfHz.getMap<NodeId, NodeLike<*>>("perf-longc-nodes")
             val edgesMap = perfHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-longc-edges")
-            val reverseMap = perfHz.getMap<ReverseEdgeKey, Unit>("perf-longc-edges-reverse")
+            val adjacencyMap = perfHz.getMap<AdjacencyKey, AdjacencyValue>("perf-longc-edges-adjacency")
             ids.forEach { id -> nodesMap[hlong.toNodeId(id)] = LongTestNode(id = id, name = id.toString()) }
+            val nodeTag = LongTestNode::class.typeTag()
+            val edgeTag = LongTestEdge::class.typeTag()
+            val adjacency = mutableMapOf<AdjacencyKey, MutableSet<AdjacencyEntry>>()
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
@@ -61,9 +68,11 @@ class LongSchemaConcurrencyPerformanceTest {
                     val toNid = hlong.toNodeId(toId)
                     edgesMap[EdgeKey(fromNid, toNid, "long_test_edge", hlong.partitionKey(fromNid))] =
                         LongTestEdge(fromId = fromId, toId = toId)
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "long_test_edge", hlong.partitionKey(toNid))] = Unit
+                    val inKey = AdjacencyKey(toNid, packShard(AdjacencyDirection.IN, shardIndexOf(fromNid, ADJACENCY_SHARD_COUNT)), hlong.partitionKey(toNid))
+                    adjacency.getOrPut(inKey) { mutableSetOf() } += AdjacencyEntry(fromNid, nodeTag, edgeTag)
                 }
             }
+            adjacencyMap.putAll(adjacency.mapValues { AdjacencyValue(it.value) })
             ids
         }
     }

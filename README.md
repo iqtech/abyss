@@ -683,10 +683,10 @@ graph.inEdges<Knows>(bob.id).collect { knows -> println(knows) }
 
 Both directions are partition-local:
 
-- **`outEdges`** — `EdgeKey` is `PartitionAware` on `fromId`, so all outgoing edges of a node live on one partition. The query never scatters.
-- **`inEdges`** — a mirrored `IMap<ReverseEdgeKey, Unit>` is maintained in sync with the edge map. `ReverseEdgeKey` is `PartitionAware` on `toId`, so the reverse lookup is also single-partition. The reverse map holds only keys; actual edge data is fetched via `IMap.getAll` point-lookups on the primary map.
+- **`outEdges<E>()`** (typed, value-needed) — `EdgeKey` is `PartitionAware` on `fromId`, so all outgoing edges of a node live on one partition; the query never scatters. This is the one shape that still hits `edgesMap` directly — already optimal, so the adjacency index below doesn't touch it.
+- **Everything else** (`inEdges`, untyped/mixed hops, typed existence-only checks) — a sharded adjacency index (`IMap<AdjacencyKey, AdjacencyValue>`, one Hazelcast map per `edgesMapName`, named `<edgesMapName>-adjacency`) replaces the old single reverse-key map. `AdjacencyKey` packs direction + a shard index into one byte and is `PartitionAware` on the owning node, so every shard for one node's adjacency lives on that node's partition too — `IMap.getAll` across all shard keys is always exactly **one round trip**, regardless of shard count. Values carry `(neighborId, nodeTypeTag, edgeTypeTag)`, so exact-type edge removal needs no reference-count read against `edgesMap`, and typed existence-only checks are served straight from the index instead of an `edgesMap` partition scan.
 
-The reverse map is maintained for **persistent** edges only, kept consistent by every `addEdge` / `removeEdge`. Ephemeral (TTL) edges are [outgoing-only](#pluggable-storage) and write no reverse entry, so `inEdges` never returns them.
+The adjacency index is maintained for **persistent** edges only, kept consistent by every `addEdge` / `removeEdge` via an `EntryProcessor` (atomic per-shard-key `Set` mutation under Hazelcast's per-key lock, so concurrent writers into the same hub node's shard never race). Ephemeral (TTL) edges are [outgoing-only](#pluggable-storage) and write no adjacency entry, so `inEdges` never returns them. Shard count is a **write-concurrency** knob (spreads concurrent hub-node writers across more `EntryProcessor`-locked keys), independently tunable from any coroutine-level concurrency bound the application uses elsewhere — not derived from it.
 
 #### Node collection
 
@@ -761,7 +761,7 @@ val mutuals = graph.from(alice.id) {
 
 #### Cold-restart behaviour
 
-After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or `inEdges(nodeId)` call, Abyss loads the relevant edges from the store (if configured) and warms both `edgesMap` and `reverseEdgesMap` before executing the query. Subsequent calls for the same node are served from the warm cache.
+After a Hazelcast restart the maps are empty. On the first `outEdges(nodeId)` or `inEdges(nodeId)` call, Abyss loads the relevant edges from the store (if configured) and warms both `edgesMap` and the adjacency index before executing the query. Subsequent calls for the same node are served from the warm cache.
 
 ---
 
@@ -880,11 +880,15 @@ Measured on a single JVM, pure in-memory mode (no persistent store), 10,000 node
 Hardware: AMD Ryzen 5 2600 (6-core/12-thread), 32 GB RAM.
 All queries run single-threaded; real throughput scales linearly with available cores.
 
+These numbers reflect the sharded adjacency index (TODO 2.21) and the shared bounded traversal
+dispatcher (TODO 2.19) — both supersede the figures in earlier revisions of this table, which were
+measured against the old single reverse-key map and an unbounded per-hop coroutine fan-out.
+
 | Adapter | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| `UuidKeyAdapter` | **3,095 ops/sec** | **1,110 ops/sec** | **5.4 ms avg** |
-| `LongKeyAdapter` | **3,442 ops/sec** | **1,213 ops/sec** | **4.3 ms avg** |
-| `StringKeyAdapter` | **2,635 ops/sec** | **879 ops/sec** | **5.4 ms avg** |
+| `UuidKeyAdapter` | **3,129 ops/sec** | **1,605 ops/sec** | **0.4 ms avg** |
+| `LongKeyAdapter` | **2,525 ops/sec** | **1,721 ops/sec** | **0.5 ms avg** |
+| `StringKeyAdapter` | **2,341 ops/sec** | **1,264 ops/sec** | **0.4 ms avg** |
 
 `outEdges`/`inEdges` predicates compare `fromId`/`toId` in each adapter's native encoding (see
 [Edge key encoding](#edge-key-encoding)) rather than the hex strings used previously — a fixed
@@ -893,8 +897,15 @@ char-by-char hex scan at 2× the byte length. This closed most of the gap betwee
 `StringKeyAdapter` now trails `LongKeyAdapter` only because its field is still variable-length
 (10–50 chars, the ID itself) rather than a fixed 8 bytes, not because of a hex-expansion penalty.
 
-`inEdges` is slower than `outEdges` for all adapters: it resolves edge data via `IMap.getAll`
-point-lookups after the reverse-key scan — the reverse map holds only keys, not payloads.
+`inEdges` and 3-hop traversal (which chains existence-only typed hops, not value-needed ones) now
+route through the sharded adjacency index (see [Partition layout](#partition-layout)) instead of an
+unindexed partition-predicate scan — a batched `IMap.getAll` across a node's precomputed shard keys
+(point gets) rather than scanning a partition for matching entries. That's why 3-hop traversal in
+particular dropped from single-digit milliseconds to sub-millisecond: each hop is now a handful of
+point gets instead of a scan. `inEdges` stays the slower of the pair because it still pays a second
+`IMap.getAll` to resolve edge values from `edgesMap` after the adjacency read. `outEdges<E>()` (typed,
+value-needed) is unaffected by any of this — it was already, and remains, a direct single-partition
+`edgesMap` scan.
 
 ### Multi-schema container overhead
 
@@ -902,9 +913,10 @@ A schema registered *inside* a `HeterogeneousSchemaGraph` container does not mat
 throughput. The shared `MultiSchemaAdapter` layout is a fixed superset (`tag`/kind/`hi`/`lo`/`str`),
 and `outEdges` evaluates a two-field predicate (`fromIdTag` + `fromIdLo`) over that wider record
 instead of a single-field compare. Measured same-JVM against a standalone `LongKeyAdapter` schema
-(`MultiSchemaPerformanceTest`): `outEdges` runs at **~0.7×** standalone throughput, while `inEdges`
-and 3-hop traversal are **within noise** (the reverse scan and per-node resolution dominate those,
-not the key predicate).
+(`MultiSchemaPerformanceTest`): `outEdges` runs at **~0.6×** standalone throughput (1,522 vs 2,525
+ops/sec), while `inEdges` (1,904 ops/sec) and 3-hop traversal (0.5 ms avg) are **within noise** of
+the standalone numbers — both go through the same adjacency-index read path regardless of
+container tier, so the per-key predicate cost that hurts `outEdges` doesn't apply there.
 
 The `tag` clause is not optional — two different `ID` shapes can collide on `lo` within a partition,
 so it is what keeps a `Long` query from matching a `Uuid` edge whose low 64 bits coincide. This means
@@ -951,15 +963,15 @@ below:
 
 | N callers | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| 1  | 854 ops/sec | 1,360 ops/sec | 900 ops/sec |
-| 2  | 2,816 ops/sec | 4,347 ops/sec | 2,259 ops/sec |
-| 4  | 7,017 ops/sec | 7,017 ops/sec | 3,940 ops/sec |
-| 8  | 10,738 ops/sec | 11,188 ops/sec | 5,000 ops/sec |
-| 16 | 14,883 ops/sec | 17,391 ops/sec | 5,765 ops/sec |
-| 32 | 16,666 ops/sec | 18,181 ops/sec | 7,795 ops/sec |
+| 1  | 892 ops/sec | 930 ops/sec | 754 ops/sec |
+| 2  | 3,225 ops/sec | 3,478 ops/sec | 1,492 ops/sec |
+| 4  | 7,547 ops/sec | 6,837 ops/sec | 2,797 ops/sec |
+| 8  | 11,034 ops/sec | 10,126 ops/sec | 4,134 ops/sec |
+| 16 | 13,617 ops/sec | 15,311 ops/sec | 5,351 ops/sec |
+| 32 | 16,666 ops/sec | 17,777 ops/sec | 6,195 ops/sec |
 
 Throughput scales close to linearly up to N=4 — roughly this machine's physical core count — then
-the curve bends: each doubling past N=8 buys a shrinking fraction more (`outEdges` N=16→32: +12%,
+the curve bends: each doubling past N=8 buys a shrinking fraction more (`outEdges` N=16→32: +22%,
 not +100%). The flattening isn't purely server-side saturation, either: this benchmark runs its
 callers as coroutines in the *same* JVM as the code being measured, so once N exceeds the hardware
 thread count, some of those 12 threads are busy driving the load rather than serving it — the
@@ -977,23 +989,24 @@ node ring-wrap scale instead of Astronomy's ~28-node fixture (`LongSchemaConcurr
 
 | N callers | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| 1  | 1,129 ops/sec | 1,212 ops/sec | 352 ops/sec |
-| 2  | 2,649 ops/sec | 2,857 ops/sec | 460 ops/sec |
-| 4  | 7,017 ops/sec | 4,678 ops/sec | 754 ops/sec |
-| 8  | 11,678 ops/sec | 6,530 ops/sec | 901 ops/sec |
-| 16 | 16,080 ops/sec | 9,696 ops/sec | 922 ops/sec |
-| 32 | 19,219 ops/sec | 11,721 ops/sec | 921 ops/sec |
+| 1  | 1,398 ops/sec | 1,408 ops/sec | 2,500 ops/sec |
+| 2  | 2,877 ops/sec | 3,539 ops/sec | 1,785 ops/sec |
+| 4  | 7,407 ops/sec | 6,201 ops/sec | 4,188 ops/sec |
+| 8  | 12,030 ops/sec | 10,062 ops/sec | 9,195 ops/sec |
+| 16 | 15,686 ops/sec | 12,851 ops/sec | 13,223 ops/sec |
+| 32 | 19,393 ops/sec | 15,533 ops/sec | 17,777 ops/sec |
 
 **The two fixtures differ in topology, not just scale**, so only `outEdges` is a clean read on the
 architecture cost in isolation: it's at or above the Heterogeneous table at every N (and pulls
-further ahead at N=32: 19,219 vs 16,666), consistent with paying no tag/header decode. `inEdges` and
-3-hop are confounded by fan-out degree, not schema overhead — Long's ring-wrap graph is a uniform
-5-fan-out at every hop (a 3-hop traversal touches up to 155 nodes), while Astronomy's `Orbits` chain
-is near-linear (degree ~1, moon→planet→star→singularity). That's why 3-hop throughput here is both
-lower and flattens almost immediately past N=4 (~920 ops/sec at N=8 through N=32): each traversal is
-doing roughly 40x more work than Astronomy's, so a single traversal's own internal coroutine fan-out
-already saturates the machine — additional concurrent callers buy almost nothing further, unlike
-Astronomy's fan-in-light chain, which keeps climbing to N=32.
+further ahead at N=32: 19,393 vs 16,666), consistent with paying no tag/header decode.
+
+3-hop traversal here no longer flattens early the way it used to: each hop is `outgoing<LongTestEdge>()`
+with no predicate — existence-only — so, same as the single-schema table above, it now routes through
+the sharded adjacency index (batched point-gets) instead of an unindexed `edgesMap` partition scan.
+Long's ring-wrap graph is a uniform 5-fan-out at every hop (a 3-hop traversal touches up to 155
+nodes), so it used to be dominated by that per-hop scan cost; with the scan gone, 3-hop throughput
+tracks `outEdges`/`inEdges` far more closely and keeps climbing through N=32 instead of pinning at
+~920 ops/sec past N=4 the way it did against the old reverse-key map.
 
 To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongSchemaConcurrencyPerformanceTest" -Pperf`
 
@@ -1022,10 +1035,12 @@ The ceiling that actually matters in production isn't a single hop's fan-out, th
 **aggregate concurrent load**. Per-edge cost doesn't rise with K in isolation because Hazelcast's
 local predicate scan and the coroutine dispatcher have room to spare; the flattening seen in
 [Concurrency scaling](#concurrency-scaling) above came from *many simultaneous callers* each doing
-their own fan-out, all sharing the same bounded dispatcher/thread pool — not from any one hop
-touching a lot of edges. A single supernode-sized hop is cheap; many concurrent traversals each
-hitting one is what saturates the machine. See `TODO.md` 2.19 for chunking large per-hop fan-out so
-one such traversal can't monopolize the shared pool out from under concurrent callers.
+their own fan-out, all sharing the same dispatcher/thread pool — not from any one hop touching a lot
+of edges. A single supernode-sized hop is cheap; many concurrent traversals each hitting one is what
+saturates the machine. `TraversalBuilder`'s per-frontier-node fan-out (`addHop` and its siblings) now
+routes through one shared `Dispatchers.IO.limitedParallelism(256)` dispatcher (TODO 2.19) instead of
+an unbounded wave, so one supernode-heavy traversal can occupy at most 256 execution slots at a time
+— leaving room for concurrently-running traversals to interleave instead of queuing behind it.
 
 ---
 

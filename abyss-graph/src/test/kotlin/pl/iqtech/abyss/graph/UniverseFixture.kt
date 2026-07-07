@@ -14,6 +14,7 @@ import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import pl.iqtech.abyss.store.api.StringKeyAdapter
+import pl.iqtech.abyss.store.api.TypeTag
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
@@ -26,7 +27,7 @@ import kotlin.uuid.Uuid
 // no new abstraction.
 
 // ── Users (String id) ─────────────────────────────────────────────────────────
-@Serializable @SerialName("uni_user")
+@Serializable @SerialName("uni_user") @TypeTag(1)
 data class User(
     override val id: String,   // the username doubles as the key
     val age: Int = 0,
@@ -36,33 +37,33 @@ data class User(
 ) : NodeLike<String>
 
 // ── Astronomy (Long id, one shared keyspace across all four node types) ─────────
-@Serializable @SerialName("uni_star")
+@Serializable @SerialName("uni_star") @TypeTag(2)
 data class Star(override val id: Long, val name: String, val mass: Double = 0.0, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Long>
 
-@Serializable @SerialName("uni_planet")
+@Serializable @SerialName("uni_planet") @TypeTag(3)
 data class Planet(override val id: Long, val name: String, val mass: Double = 0.0, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Long>
 
-@Serializable @SerialName("uni_moon")
+@Serializable @SerialName("uni_moon") @TypeTag(4)
 data class Moon(override val id: Long, val name: String, val mass: Double = 0.0, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Long>
 
-@Serializable @SerialName("uni_singularity")
+@Serializable @SerialName("uni_singularity") @TypeTag(5)
 data class Singularity(override val id: Long, val name: String, val mass: Double = 0.0, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Long>
 
 // ── Interests (Uuid id, self-referencing hierarchy) ─────────────────────────────
-@Serializable @SerialName("uni_interest")
+@Serializable @SerialName("uni_interest") @TypeTag(6)
 data class Interest(override val id: Uuid, val name: String, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
 
 // ── Edges ───────────────────────────────────────────────────────────────────────
-@Serializable @SerialName("uni_orbits")   // orbiter → orbited (Moon→Planet, Planet→Star, Star→Singularity)
+@Serializable @SerialName("uni_orbits") @TypeTag(1)   // orbiter → orbited (Moon→Planet, Planet→Star, Star→Singularity)
 data class Orbits(override val fromId: Long, override val toId: Long, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Long, Long>
 
-@Serializable @SerialName("uni_subdomain_of")   // child → parent
+@Serializable @SerialName("uni_subdomain_of") @TypeTag(2)   // child → parent
 data class SubdomainOf(override val fromId: Uuid, override val toId: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
 
-@Serializable @SerialName("uni_interested_in")   // User → Interest
+@Serializable @SerialName("uni_interested_in") @TypeTag(3)   // User → Interest
 data class InterestedIn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<NodeId, NodeId>
 
-@Serializable @SerialName("uni_lives_on")   // User → Astronomy (target is a Planet or a Moon)
+@Serializable @SerialName("uni_lives_on") @TypeTag(4)   // User → Astronomy (target is a Planet or a Moon)
 data class LivesOn(override val fromId: NodeId, override val toId: NodeId, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<NodeId, NodeId>
 
 object UniverseTags { val USERS = SchemaTag(1L); val ASTRONOMY = SchemaTag(2L); val INTERESTS = SchemaTag(3L) }
@@ -92,7 +93,7 @@ data class UniverseData(
 
 /** One HeterogeneousSchemaGraph container fronting the three schemas; cross-schema edges enabled. */
 class UniverseGraph(hz: HazelcastInstance, nodesMapName: String = "uni-nodes", edgesMapName: String = "uni-edges") {
-    val container = HeterogeneousSchemaGraph(hz, SchemaTagWidth.BYTE, nodesMapName, edgesMapName, allowCrossSchemaEdges = true)
+    val container = HeterogeneousSchemaGraph(hz, SchemaTagWidth.BYTE, nodesMapName, edgesMapName, allowCrossSchemaEdges = true, module = universeModule)
     val users = container.register(UniverseTags.USERS, StringKeyAdapter)
     val astronomy = container.register(UniverseTags.ASTRONOMY, LongKeyAdapter)
     val interests = container.register(UniverseTags.INTERESTS, UuidKeyAdapter)
@@ -219,7 +220,7 @@ suspend fun UniverseGraph.build(): UniverseData {
     return UniverseData(interestNodes.associateBy { it.name }, astroByName, users)
 }
 
-/** Clears the shared node/edge/reverse maps (cross edges share these) — call from @BeforeTest. */
+/** Clears the shared node/edge/adjacency maps (cross edges share these) — call from @BeforeTest. */
 fun clearUniverseMaps(hz: HazelcastInstance) {
-    listOf("uni-nodes", "uni-edges", "uni-edges-reverse").forEach { hz.getMap<Any, Any>(it).clear() }
+    listOf("uni-nodes", "uni-edges", "uni-edges-adjacency").forEach { hz.getMap<Any, Any>(it).clear() }
 }

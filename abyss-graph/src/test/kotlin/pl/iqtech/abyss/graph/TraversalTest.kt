@@ -29,7 +29,7 @@ class TraversalTest {
     @BeforeTest fun clear() {
         graphTestHz.getMap<Any, Any>("g-nodes").clear()
         graphTestHz.getMap<Any, Any>("g-edges").clear()
-        graphTestHz.getMap<Any, Any>("g-edges-reverse").clear()
+        graphTestHz.getMap<Any, Any>("g-edges-adjacency").clear()
     }
 
     // helpers

@@ -1,6 +1,8 @@
 package pl.iqtech.abyss.graph
 
 import com.hazelcast.core.HazelcastInstance
+import kotlinx.serialization.modules.EmptySerializersModule
+import kotlinx.serialization.modules.SerializersModule
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.KeyAdapter
@@ -20,5 +22,7 @@ fun <ID> SingleSchemaGraph(
     persistentStore: AbyssStoreLike? = null,
     ephemeralStore: AbyssEphemeralStoreLike? = null,
     asyncCachePopulation: Boolean = false,
+    module: SerializersModule = EmptySerializersModule(),
+    adjacencyShardCount: Int = 16,
 ): AbyssGraphSchema<ID> =
-    AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation)
+    AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation, module, adjacencyShardCount)

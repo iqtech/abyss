@@ -6,6 +6,7 @@ import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
+import pl.iqtech.abyss.dsl.typeTag
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
@@ -27,17 +28,23 @@ class UuidPerformanceTest {
         private val huid = HeaderlessKeyAdapter(UuidKeyAdapter)
 
         private val perfGraph: AbyssGraphSchema<Uuid> by lazy {
-            AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "perf-uuid-nodes", "perf-uuid-edges")
+            AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "perf-uuid-nodes", "perf-uuid-edges", module = graphTestModule)
         }
+
+        // Matches AbyssSchemaWorker's default adjacencyShardCount (perfGraph doesn't override it).
+        private const val ADJACENCY_SHARD_COUNT = 16
 
         private val nodeIds: List<Uuid> by lazy {
             val ids = (1..NODE_COUNT).map { Uuid.random() }
             val nodesMap = graphTestHz.getMap<NodeId, NodeLike<*>>("perf-uuid-nodes")
             val edgesMap = graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-uuid-edges")
-            val reverseMap = graphTestHz.getMap<ReverseEdgeKey, Unit>("perf-uuid-edges-reverse")
+            val adjacencyMap = graphTestHz.getMap<AdjacencyKey, AdjacencyValue>("perf-uuid-edges-adjacency")
             ids.forEach { id ->
                 nodesMap[huid.toNodeId(id)] = TestNode(id = id, name = id.toString())
             }
+            val nodeTag = TestNode::class.typeTag()
+            val edgeTag = TestEdge::class.typeTag()
+            val adjacency = mutableMapOf<AdjacencyKey, MutableSet<AdjacencyEntry>>()
             ids.forEachIndexed { i, fromId ->
                 repeat(EDGES_PER_NODE) { j ->
                     val toId = ids[(i + j + 1) % NODE_COUNT]
@@ -45,9 +52,13 @@ class UuidPerformanceTest {
                     val toNid   = huid.toNodeId(toId)
                     edgesMap[EdgeKey(fromNid, toNid, "test_edge", huid.partitionKey(fromNid))] =
                         TestEdge(fromId = fromId, toId = toId, label = "")
-                    reverseMap[ReverseEdgeKey(toNid, fromNid, "test_edge", huid.partitionKey(toNid))] = Unit
+                    // Only inEdges() needs the adjacency index seeded here (outEdges/outgoing<E>() scan
+                    // edgesMap directly, unaffected by 2.21's index).
+                    val inKey = AdjacencyKey(toNid, packShard(AdjacencyDirection.IN, shardIndexOf(fromNid, ADJACENCY_SHARD_COUNT)), huid.partitionKey(toNid))
+                    adjacency.getOrPut(inKey) { mutableSetOf() } += AdjacencyEntry(fromNid, nodeTag, edgeTag)
                 }
             }
+            adjacencyMap.putAll(adjacency.mapValues { AdjacencyValue(it.value) })
             ids
         }
     }

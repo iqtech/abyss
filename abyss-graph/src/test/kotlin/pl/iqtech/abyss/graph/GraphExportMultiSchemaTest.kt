@@ -41,7 +41,7 @@ class GraphExportMultiSchemaTest {
 
     @BeforeTest fun clearUniverse() {
         clearUniverseMaps(universeHz)
-        listOf("dst-nodes", "dst-edges", "dst-edges-reverse").forEach { universeHz.getMap<Any, Any>(it).clear() }
+        listOf("dst-nodes", "dst-edges", "dst-edges-adjacency").forEach { universeHz.getMap<Any, Any>(it).clear() }
     }
 
     @Test fun `exporting one heterogeneous schema only touches its own nodes and edges`() = runBlocking {
@@ -72,7 +72,7 @@ class GraphExportMultiSchemaTest {
 
         val lines = universe.astronomy.exportGraphLines(universeCodec).toList()
 
-        val dstContainer = HeterogeneousSchemaGraph(universeHz, SchemaTagWidth.BYTE, "dst-nodes", "dst-edges")
+        val dstContainer = HeterogeneousSchemaGraph(universeHz, SchemaTagWidth.BYTE, "dst-nodes", "dst-edges", module = universeModule)
         val dstAstronomy = dstContainer.register(UniverseTags.ASTRONOMY, LongKeyAdapter)
         val result = dstAstronomy.importGraphLines(lines.asFlow(), universeCodec)
         assertTrue(result.isRight())
@@ -96,11 +96,11 @@ class GraphExportMultiSchemaTest {
     private val homogeneousCodec = AbyssJsonLinesCodec(graphTestModule)
 
     @BeforeTest fun clearHomogeneous() {
-        listOf("hgx-nodes", "hgx-edges", "hgx-edges-reverse").forEach { homogeneousHz.getMap<Any, Any>(it).clear() }
+        listOf("hgx-nodes", "hgx-edges", "hgx-edges-adjacency").forEach { homogeneousHz.getMap<Any, Any>(it).clear() }
     }
 
     @Test fun `exporting one homogeneous schema tag leaves the sibling tag's export untouched`() = runBlocking {
-        val g = HomogeneousSchemaGraph(homogeneousHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hgx-nodes", "hgx-edges")
+        val g = HomogeneousSchemaGraph(homogeneousHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hgx-nodes", "hgx-edges", module = graphTestModule)
         val a = g.forTag(SchemaTag(1L))
         val b = g.forTag(SchemaTag(2L))
         // Identical numeric ids in both schemas: the sharpest case for a decode collision.

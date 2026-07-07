@@ -4,6 +4,8 @@ import arrow.core.Either
 import arrow.core.left
 import com.hazelcast.core.HazelcastInstance
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.modules.EmptySerializersModule
+import kotlinx.serialization.modules.SerializersModule
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
@@ -28,7 +30,7 @@ import kotlin.time.Duration
  * back a typed facade the caller holds; the container keeps only the set of registered tags for
  * duplicate-registration and cross-edge integrity guards.
  *
- * Cross-schema edges live in the SAME shared edges/reverse maps as intra-schema edges (their tagged
+ * Cross-schema edges live in the SAME shared edges/adjacency maps as intra-schema edges (their tagged
  * endpoints self-describe: `fromTag != toTag`), so `outgoing<E>()`/`incoming<E>()` reach them as
  * ordinary hops. They are gated by [allowCrossSchemaEdges] and persist through the same stores as an
  * ordinary edge (`worker.transaction`/`worker.ephemeral`) — see [transaction] and [addCrossEdge].
@@ -42,13 +44,15 @@ class HeterogeneousSchemaGraph(
     persistentStore: AbyssStoreLike? = null,
     ephemeralStore: AbyssEphemeralStoreLike? = null,
     asyncCachePopulation: Boolean = false,
+    module: SerializersModule = EmptySerializersModule(),
+    adjacencyShardCount: Int = 16,
 ) : NodeIdEngine {
 
     init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
 
     private val worker = AbyssSchemaWorker(
         hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
-        HeterogeneousSchemaResolution,
+        HeterogeneousSchemaResolution, module, adjacencyShardCount,
     )
 
     private val registeredTags = mutableSetOf<SchemaTag>()
@@ -71,7 +75,7 @@ class HeterogeneousSchemaGraph(
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = worker.resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()
 
-    // --- Cross-schema edges. NodeId-level, in the shared edge/reverse maps, routed through the SAME
+    // --- Cross-schema edges. NodeId-level, in the shared edge/adjacency maps, routed through the SAME
     // worker.transaction/worker.ephemeral pipeline as ordinary node/edge ops — atomic, persisted
     // through the same stores, endpoint-existence + @EdgeConstraint checked for free. -------------
 
