@@ -1,3 +1,7 @@
+## [0.29.0] - 2026-07-07
+
+- Bound `TraversalBuilder`'s per-frontier-node coroutine fan-out behind one shared `Dispatchers.IO.limitedParallelism(256)` dispatcher so a single supernode-heavy traversal can no longer starve concurrent callers (TODO 2.19); replace `reverseEdgesMap`/`ReverseEdgeKey` with a sharded, `EntryProcessor`-backed adjacency index (`AdjacencyKey`/`AdjacencyEntry`/`AdjacencyValue`) giving `outAt`/`inAt` a real, batched-point-get index for untyped, incoming, and existence-only reads instead of an unindexed partition scan — measurably faster (3-hop traversal down from ~5ms to sub-millisecond); add `@TypeTag`/`TypeTagRegistry` (eager, collision-guarded) and `outgoingAny()`/`incomingAny()` DSL sugar for mixed-type hops (TODO 2.21)
+
 ## [0.28.1] - 2026-07-06
 
 - Add a `@CrossSchemaEdge` annotation so cross-schema edges can be declared with real domain types instead of pre-built `NodeId`s, and route `addCrossEdge`/`removeCrossEdge` through the same `transaction{}`/`ephemeral{}` commit pipeline as ordinary node/edge ops (atomic, persisted, `@EdgeConstraint`-checked) instead of an independent store commit; fix `cascadeEdgeRemovals` leaving cross-schema edges dangling after their endpoint node is deleted (a `sameSchema()` filter wrongly excluded them, and is now deleted entirely as dead weight); and cache reflective `findAnnotation<SerialName>`/`<EdgeConstraint>`/`<CrossSchemaEdge>` lookups instead of re-running JVM reflection on every edge/node/hop, measurably speeding up typed traversal (3-hop median down 12-39% across adapters)
