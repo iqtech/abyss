@@ -1,3 +1,7 @@
+## [0.30.0] - 2026-07-07
+
+- Make traversal hop-fanout parallelism a per-engine constructor parameter: `hopFanoutParallelism` (default 256) sits alongside `adjacencyShardCount` on `AbyssGraphSchema`/`SingleSchemaGraph`/`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`, replacing `TraversalBuilder`'s static JVM-wide dispatcher with one owned per `NodeIdEngine` so different graphs in the same process can be tuned independently
+
 ## [0.29.0] - 2026-07-07
 
 - Bound `TraversalBuilder`'s per-frontier-node coroutine fan-out behind one shared `Dispatchers.IO.limitedParallelism(256)` dispatcher so a single supernode-heavy traversal can no longer starve concurrent callers (TODO 2.19); replace `reverseEdgesMap`/`ReverseEdgeKey` with a sharded, `EntryProcessor`-backed adjacency index (`AdjacencyKey`/`AdjacencyEntry`/`AdjacencyValue`) giving `outAt`/`inAt` a real, batched-point-get index for untyped, incoming, and existence-only reads instead of an unindexed partition scan — measurably faster (3-hop traversal down from ~5ms to sub-millisecond); add `@TypeTag`/`TypeTagRegistry` (eager, collision-guarded) and `outgoingAny()`/`incomingAny()` DSL sugar for mixed-type hops (TODO 2.21)
