@@ -517,6 +517,15 @@
   `edgesAdjacencyMapName` was added as parameter to `SingleSchemaGraph`, `HeterogenousSchemaGraph` and
   `HomogeneousSchemaGraph`, all defaulting to the prior computed name.
 
+- **✅ 3.9 Multi-member Hazelcast cluster test**
+  Every existing test ran against a single embedded Hazelcast member, leaving `PartitionAware`
+  co-location (`EdgeKey`/`AdjacencyKey`) and partition-scoped reads (`outAt` fast path,
+  `outEdgeFlow`, `adjacencyRead`, `cascadeEdgeRemovals`) unverified under real cross-member
+  routing. Added `MultiMemberClusterTest` (gated behind `-Pcluster`, mirroring `-Pperf`): starts a
+  real 3-member in-process cluster and asserts traversal/cascade-delete correctness plus genuine
+  per-node key co-location and cross-member data spread. No production code changed — see
+  `ai-scripts/MultiMemberClusterTestSummary.md`.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
