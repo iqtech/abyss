@@ -430,6 +430,29 @@
   `GraphTest`/`TraversalTest`/`MultiSchemaTest`/etc. suite passing unmodified in behavior. Full
   design: `ai-scripts/ShardedAdjacencyIndexRFC.md`.
 
+- **➡️ 2.22 Traversal DSL: `collectEdges<E>()` terminal**
+  `collectNodes<N>()` exists; there's no edge equivalent. To read the actual edge fields (weight,
+  timestamp, quantity, …) for the current frontier's connecting edges, the only option today is
+  `collectSubgraph()`, which materializes every node and edge visited across the *whole* walk, not
+  just the last hop. `TraversalBuilder` already tracks `allTraversedHops` internally
+  (`TraversalBuilder.kt:37-38`) and has a private `resolveHopEdges` to materialize them — add a
+  `collectEdges<E>(): Flow<E>` terminal (mirroring `collectNodes`) that exposes just the most
+  recent hop's edges.
+
+- **➡️ 2.23 Traversal DSL: `shortestPath(targetId)` convenience**
+  `checkReaches`/`reaches` only return `Boolean` — there's no way to get the actual path. `paths()`
+  can technically answer this (DFS/BFS with an `edgeVisitor`/`nodeEvaluator` that prunes once the
+  target is hit) but requires real boilerplate for what's probably the most common single graph
+  query. Add a thin `shortestPath(targetId): Path?` built on top of the existing `paths()`
+  machinery.
+
+- **➡️ 2.24 Traversal DSL: negated connectivity filter**
+  `hasOutgoing<E>(toId)`/`hasOutgoing<E, N>()` (and the `hasIncoming` symmetric pair) keep frontier
+  nodes that *have* a matching edge. There's no way to keep nodes that *don't* (e.g. "users who
+  haven't purchased anything") — today that requires computing the positive set and diffing it
+  outside the DSL. Add a negated form (e.g. a `negate: Boolean` param or `hasNoOutgoing`/
+  `hasNoIncoming` variants).
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
@@ -623,3 +646,14 @@
   the ubiquitous `findAnnotation<SerialName>()!!.value` / `?.value ?: error(...)` pattern repeated at
   nearly every call site. All call sites now route through it instead of calling `findAnnotation`
   directly; reflection now runs exactly once per edge/node class for the lifetime of the process.
+
+- **➡️ 4.10 Traversal DSL: bidirectional single-hop combinator**
+  `outgoingAny()`/`incomingAny()` are untyped (any edge type) hops in *one* direction. There's no
+  "either direction of type E" combinator — following an edge type regardless of whether it points
+  in or out currently requires two separate hops and manually merging frontiers.
+
+- **➡️ 4.11 Traversal API: multi-source `from(nodeIds: Set<ID>, block)` entry point**
+  Only a single-ID `from(nodeId, block)` entry point exists (`AbyssGraphSchema.kt:126`). Overlaps
+  with TODO 2.12's already-tracked `from(nodeIds: Set<ID>, block)` overload (needed there to seed a
+  traversal frontier from indexed-query results) — noting it here too since it's also a
+  traversal-API gap on its own, independent of the indexed-query feature.
