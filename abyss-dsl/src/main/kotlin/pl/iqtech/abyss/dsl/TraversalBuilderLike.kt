@@ -50,12 +50,21 @@ interface TraversalBuilderLike<ID> {
     suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String)
     suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit)
     suspend fun flushFrontierNodes(): Flow<NodeLike<*>>
+    /** Terminal: edges of the most recent hop whose target survived any later frontier filter. */
+    suspend fun flushHopEdges(): Flow<EdgeLike<*, *>>
     /** Terminal: number of distinct nodes in the current frontier (no node materialization). */
     suspend fun count(): Int
     /** Terminal: number of [edgeType] edges from the frontier in [direction] (no edge value or node materialization). */
     suspend fun countEdges(direction: HopDirection, edgeType: String): Int
     suspend fun collectSubgraph(nodeType: String? = null): Subgraph
     suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
+    /**
+     * BFS to [targetId] following [block]'s hops, returning the first (fewest-hops, not
+     * weighted-shortest — this model has no edge weights) path found, or `null` if unreachable.
+     * Mirrors [checkReaches]'s contract: a [targetId] already in the starting frontier does not
+     * count as reached (only a hop-away match does).
+     */
+    suspend fun pathTo(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Path?
     suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph
     suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
     /**

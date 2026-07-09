@@ -136,6 +136,9 @@ suspend fun <ID> TraversalBuilderLike<ID>.hasTraversal(block: suspend TraversalB
 suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.collectNodes(): Flow<N> =
     flushFrontierNodes().filterIsInstance<N>()
 
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.collectEdges(): Flow<E> =
+    flushHopEdges().filterIsInstance<E>()
+
 suspend fun <ID> TraversalBuilderLike<ID>.reaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean = checkReaches(targetId, block)
 
 suspend fun <ID> TraversalBuilderLike<ID>.allReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph = exhaustReachable(block)

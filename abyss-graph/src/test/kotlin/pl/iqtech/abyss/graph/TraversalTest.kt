@@ -6,7 +6,9 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.Subgraph
+import pl.iqtech.abyss.dsl.collectEdges
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.countEdges
 import pl.iqtech.abyss.dsl.hasIncoming
@@ -214,6 +216,42 @@ class TraversalTest {
         }
     }
 
+    // ── collectEdges ──────────────────────────────────────────────────────────
+
+    @Test fun `collectEdges returns the last hop's edge values`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            val ab = putEdge(a.id, b.id)
+            val ac = putEdge(a.id, c.id)
+
+            val result = graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                collectEdges<TestEdge>().toList()
+            }
+            assertIs<Either.Right<List<TestEdge>>>(result)
+            assertEquals(setOf(ab, ac), result.value.toSet())
+        }
+    }
+
+    @Test fun `collectEdges narrows with a later frontier filter`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            val ab = putEdge(a.id, b.id)
+            putEdge(a.id, c.id)
+
+            val result = graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                nodes<TestNode> { it.name == "b" }
+                collectEdges<TestEdge>().toList()
+            }
+            assertEquals(Either.Right(listOf(ab)), result)
+        }
+    }
+
     // ── reaches ───────────────────────────────────────────────────────────────
 
     @Test fun `reaches returns true when target reachable in one hop`() {
@@ -255,6 +293,51 @@ class TraversalTest {
                 reaches(unreachable.id) { outgoing<TestEdge>() }
             }
             assertEquals(Either.Right(false), result)
+        }
+    }
+
+    // ── pathTo ────────────────────────────────────────────────────────────────
+
+    @Test fun `pathTo returns the fewest-hops path when multiple routes exist`() {
+        runBlocking {
+            val a = putNode("a")
+            val x = putNode("x")
+            val y = putNode("y")
+            val z = putNode("z")
+            val target = putNode("target")
+            putEdge(a.id, x.id); putEdge(x.id, y.id); putEdge(y.id, target.id) // 3-hop route
+            val az = putEdge(a.id, z.id)
+            val zTarget = putEdge(z.id, target.id) // 2-hop route
+
+            val result = graphTest.from(a.id) {
+                pathTo(target.id) { outgoing<TestEdge>() }
+            }
+            assertEquals(Either.Right(Path(listOf(a, z, target), listOf(az, zTarget))), result)
+        }
+    }
+
+    @Test fun `pathTo returns null when target is unreachable`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val isolated = putNode("isolated")
+            putEdge(a.id, b.id)
+
+            val result = graphTest.from(a.id) {
+                pathTo(isolated.id) { outgoing<TestEdge>() }
+            }
+            assertEquals(Either.Right(null), result)
+        }
+    }
+
+    @Test fun `pathTo does not treat an already-in-frontier target as reached, matching checkReaches`() {
+        runBlocking {
+            val a = putNode("a")
+
+            val result = graphTest.from(a.id) {
+                pathTo(a.id) { outgoing<TestEdge>() }
+            }
+            assertEquals(Either.Right(null), result)
         }
     }
 

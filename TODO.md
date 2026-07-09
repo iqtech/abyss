@@ -430,21 +430,29 @@
   `GraphTest`/`TraversalTest`/`MultiSchemaTest`/etc. suite passing unmodified in behavior. Full
   design: `ai-scripts/ShardedAdjacencyIndexRFC.md`.
 
-- **➡️ 2.22 Traversal DSL: `collectEdges<E>()` terminal**
-  `collectNodes<N>()` exists; there's no edge equivalent. To read the actual edge fields (weight,
-  timestamp, quantity, …) for the current frontier's connecting edges, the only option today is
-  `collectSubgraph()`, which materializes every node and edge visited across the *whole* walk, not
-  just the last hop. `TraversalBuilder` already tracks `allTraversedHops` internally
-  (`TraversalBuilder.kt:37-38`) and has a private `resolveHopEdges` to materialize them — add a
-  `collectEdges<E>(): Flow<E>` terminal (mirroring `collectNodes`) that exposes just the most
-  recent hop's edges.
+- **✅ 2.22 Traversal DSL: `collectEdges<E>()` terminal**
+  Added `flushHopEdges(): Flow<EdgeLike<*, *>>` to `TraversalBuilderLike` (mirrors
+  `flushFrontierNodes()`) plus `collectEdges<E>()` DSL sugar (mirrors `collectNodes<N>()`).
+  `TraversalBuilder` tracks the most recent `addHop`/`addNodeHop`'s own hops separately from the
+  cumulative `allTraversedHops`, filtered at flush-time by `it.target(dir) in frontier` so a later
+  frontier-narrowing filter (`nodes<N>()`, `hasOutgoing`, …) correctly narrows `collectEdges` too,
+  not just the raw unfiltered hop. Supporting refactor: `resolveHopEdges` now returns
+  `Map<Hop, EdgeLike<*, *>>` instead of a positional `List` (the old `mapNotNull` could silently
+  drop a hop on resolution failure, desyncing any positional pairing) — `collectSubgraph`/
+  `exhaustReachable` updated to `.values.toList()`, unchanged behavior. Covered by `TraversalTest`.
 
-- **➡️ 2.23 Traversal DSL: `shortestPath(targetId)` convenience**
-  `checkReaches`/`reaches` only return `Boolean` — there's no way to get the actual path. `paths()`
-  can technically answer this (DFS/BFS with an `edgeVisitor`/`nodeEvaluator` that prunes once the
-  target is hit) but requires real boilerplate for what's probably the most common single graph
-  query. Add a thin `shortestPath(targetId): Path?` built on top of the existing `paths()`
-  machinery.
+- **✅ 2.23 Traversal DSL: `pathTo(targetId, block)` convenience**
+  Originally scoped as `shortestPath(targetId)`, renamed after review: this model has no edge
+  weights, so there's no Dijkstra to run — what's achievable is the fewest-hops path (BFS-optimal
+  by edge count), and `shortestPath` overclaimed a guarantee the API doesn't make. `pathTo` mirrors
+  `reaches`/`checkReaches`'s exact signature shape (`targetId, block`) and BFS-by-block structure —
+  deliberately not built on `paths()` (untyped/any-edge, would ignore the caller's typed hop
+  `block`). Unlike `checkReaches`'s single batched sub-traversal per BFS level, `pathTo` runs one
+  single-node sub-traversal per current-frontier entry so each hop's edge can be attributed back to
+  the specific path that produced it. Matches `checkReaches`'s contract exactly: a target already
+  in the starting frontier does not count as reached (only a hop-away match does). Covered by
+  `TraversalTest` (fewest-hops-among-multiple-routes, unreachable → `null`, already-in-frontier
+  parity with `checkReaches`).
 
 - **➡️ 2.24 Traversal DSL: negated connectivity filter**
   `hasOutgoing<E>(toId)`/`hasOutgoing<E, N>()` (and the `hasIncoming` symmetric pair) keep frontier
