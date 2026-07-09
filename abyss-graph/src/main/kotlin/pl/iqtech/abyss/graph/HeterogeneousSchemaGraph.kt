@@ -41,6 +41,7 @@ class HeterogeneousSchemaGraph(
     val tagWidth: SchemaTagWidth = SchemaTagWidth.BYTE,
     nodesMapName: String = "abyss-nodes",
     edgesMapName: String = "abyss-edges",
+    edgesAdjacencyMapName: String = "abyss-edges-adjacency",
     private val allowCrossSchemaEdges: Boolean = false,
     persistentStore: AbyssStoreLike? = null,
     ephemeralStore: AbyssEphemeralStoreLike? = null,
@@ -53,7 +54,7 @@ class HeterogeneousSchemaGraph(
     init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
 
     private val worker = AbyssSchemaWorker(
-        hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
+        hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation,
         HeterogeneousSchemaResolution, module, adjacencyShardCount, hopFanoutParallelism,
     )
 

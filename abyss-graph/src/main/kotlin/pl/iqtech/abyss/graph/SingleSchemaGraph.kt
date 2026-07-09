@@ -19,6 +19,7 @@ fun <ID> SingleSchemaGraph(
     hazelcast: HazelcastInstance,
     nodesMapName: String,
     edgesMapName: String,
+    edgesAdjacencyMapName: String = "$edgesMapName-adjacency",
     persistentStore: AbyssStoreLike? = null,
     ephemeralStore: AbyssEphemeralStoreLike? = null,
     asyncCachePopulation: Boolean = false,
@@ -26,4 +27,4 @@ fun <ID> SingleSchemaGraph(
     adjacencyShardCount: Int = 16,
     hopFanoutParallelism: Int = 256,
 ): AbyssGraphSchema<ID> =
-    AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation, module, adjacencyShardCount, hopFanoutParallelism)
+    AbyssGraphSchema(adapter, hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation, module, adjacencyShardCount, hopFanoutParallelism)

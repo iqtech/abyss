@@ -513,6 +513,10 @@
   then lands on a different Hazelcast partition than its source node — breaking `PartitionAware`
   co-location and endpoint integrity. Spare bits stay spare.
 
+- **✅ 3.8 Configurable edges-adjacency map name**
+  `edgesAdjacencyMapName` was added as parameter to `SingleSchemaGraph`, `HeterogenousSchemaGraph` and
+  `HomogeneousSchemaGraph`, all defaulting to the prior computed name.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**

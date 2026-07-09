@@ -62,6 +62,7 @@ internal class AbyssSchemaWorker(
     hazelcast: HazelcastInstance,
     val nodesMapName: String,
     val edgesMapName: String,
+    edgesAdjacencyMapName: String = "$edgesMapName-adjacency",
     private val persistentStore: AbyssStoreLike? = null,
     private val ephemeralStore: AbyssEphemeralStoreLike? = null,
     private val asyncCachePopulation: Boolean = false,
@@ -75,7 +76,7 @@ internal class AbyssSchemaWorker(
 
     private val nodesMap: IMap<NodeId, NodeLike<*>> = hazelcast.getMap(nodesMapName)
     private val edgesMap: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(edgesMapName)
-    private val adjacencyMap: IMap<AdjacencyKey, AdjacencyValue> = hazelcast.getMap("$edgesMapName-adjacency")
+    private val adjacencyMap: IMap<AdjacencyKey, AdjacencyValue> = hazelcast.getMap(edgesAdjacencyMapName)
     private val tagRegistry = TypeTagRegistry.of(module)
     override val hopDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(hopFanoutParallelism)
 
