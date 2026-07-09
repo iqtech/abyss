@@ -1,6 +1,8 @@
 package pl.iqtech.abyss.graph
 
 import arrow.core.Either
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
@@ -74,6 +76,47 @@ class TraversalTest {
             }
             assertIs<Either.Right<List<TestNode>>>(result)
             assertEquals(setOf(b, c), result.value.toSet())
+        }
+    }
+
+    // flushFrontierNodes() as the block's last expression makes `from` return
+    // Either<AbyssError, Flow<NodeLike<*>>> — the flow is cold, so `frontier` is only
+    // read once the caller collects it, well after `from` has returned.
+    @Test fun `from - flushFrontierNodes as last expression yields Flow collectible after from returns`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            putEdge(a.id, b.id)
+            putEdge(a.id, c.id)
+
+            val result = graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                nodes<TestNode>()
+                flushFrontierNodes()
+            }
+            assertIs<Either.Right<Flow<NodeLike<*>>>>(result)
+            val collected = result.value.toList()
+            assertEquals(setOf(b, c), collected.toSet())
+        }
+    }
+
+    @Test fun `from - flushFrontierNodes emits current frontier via collect`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            putEdge(a.id, b.id)
+            putEdge(a.id, c.id)
+
+            val collected = mutableListOf<NodeLike<*>>()
+            val result = graphTest.from(a.id) {
+                outgoing<TestEdge>()
+                nodes<TestNode>()
+                flushFrontierNodes().collect { collected += it }
+            }
+            assertIs<Either.Right<Unit>>(result)
+            assertEquals(setOf(b, c), collected.toSet())
         }
     }
 

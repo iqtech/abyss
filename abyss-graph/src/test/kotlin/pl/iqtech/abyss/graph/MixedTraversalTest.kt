@@ -127,7 +127,7 @@ class MixedTraversalTest {
         val a = TestNode(id = Uuid.random(), name = "a")
         val b = TestNode(id = Uuid.random(), name = "b")
         val fake = ColdStoreFixture(nodes = listOf(a, b), outEdges = listOf(TestEdge(fromId = a.id, toId = b.id, label = "x")))
-        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "mx-nodes", "mx-edges", fake, module = graphTestModule)
+        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "mx-nodes", "mx-edges", persistentStore = fake, module = graphTestModule)
 
         val result = g.from(a.id) { outgoingAny(); nodes<TestNode>(); collectNodes<TestNode>().toList() }
         assertEquals(Either.Right(listOf(b)), result)
@@ -140,7 +140,7 @@ class MixedTraversalTest {
         // Never called addEdge in this process for "test_edge" — only the pre-seeded store knows about
         // it. Resolving it (String -> Short via TypeTagRegistry.edgeTagOf) must not depend on any prior
         // in-process registration: the registry is built once, eagerly, from @TypeTag alone.
-        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "rst-nodes", "rst-edges", fake, module = graphTestModule)
+        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "rst-nodes", "rst-edges", persistentStore = fake, module = graphTestModule)
         val removed = g.transaction { removeEdge<Uuid, TestEdge>(a.id, b.id) }
         assertTrue(removed.isRight())
     }

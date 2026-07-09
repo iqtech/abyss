@@ -66,6 +66,7 @@ class AbyssGraphSchema<ID> internal constructor(
         hazelcast: HazelcastInstance,
         nodesMapName: String,
         edgesMapName: String,
+        edgesAdjacencyMapName: String = "$edgesMapName-adjacency",
         persistentStore: AbyssStoreLike? = null,
         ephemeralStore: AbyssEphemeralStoreLike? = null,
         asyncCachePopulation: Boolean = false,
@@ -75,7 +76,7 @@ class AbyssGraphSchema<ID> internal constructor(
     ) : this(
         HeaderlessKeyAdapter(adapter),
         AbyssSchemaWorker(
-            hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
+            hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation,
             SingleSchemaResolution(HeaderlessKeyAdapter(adapter)), module, adjacencyShardCount, hopFanoutParallelism,
         ),
     )

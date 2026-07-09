@@ -52,6 +52,7 @@ class HomogeneousSchemaGraph<ID>(
     private val keyAdapter: KeyAdapter<ID>,
     nodesMapName: String = "abyss-nodes",
     edgesMapName: String = "abyss-edges",
+    edgesAdjacencyMapName: String = "$edgesMapName-adjacency",
     persistentStore: AbyssStoreLike? = null,
     ephemeralStore: AbyssEphemeralStoreLike? = null,
     private val allowCrossSchemaEdges: Boolean = false,
@@ -64,7 +65,7 @@ class HomogeneousSchemaGraph<ID>(
     init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
 
     private val worker = AbyssSchemaWorker(
-        hazelcast, nodesMapName, edgesMapName, persistentStore, ephemeralStore, asyncCachePopulation,
+        hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation,
         HomogeneousSchemaResolution(tagWidth, keyAdapter.nodeKeyKind), module, adjacencyShardCount, hopFanoutParallelism,
     )
 
