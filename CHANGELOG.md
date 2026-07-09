@@ -1,3 +1,7 @@
+## [0.30.2] - 2026-07-09
+
+- Add traversal DSL `collectEdges<E>()` (mirrors `collectNodes<N>()`, narrows with any later frontier filter) and `pathTo(targetId, block)` (fewest-hops path to a target, sibling to `reaches`/`checkReaches`; TODO 2.22/2.23); wire the already-declared `edgesAdjacencyMapName` container parameter through to `AbyssSchemaWorker` on `SingleSchemaGraph`/`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph` (previously silently ignored); add `MultiMemberClusterTest` (gated behind `-Pcluster`) validating `PartitionAware` co-location and partition-scoped reads against a real 3-member Hazelcast cluster instead of the single-embedded-member setup every other test uses (TODO 2.1)
+
 ## [0.30.0] - 2026-07-07
 
 - Make traversal hop-fanout parallelism a per-engine constructor parameter: `hopFanoutParallelism` (default 256) sits alongside `adjacencyShardCount` on `AbyssGraphSchema`/`SingleSchemaGraph`/`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`, replacing `TraversalBuilder`'s static JVM-wide dispatcher with one owned per `NodeIdEngine` so different graphs in the same process can be tuned independently

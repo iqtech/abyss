@@ -37,15 +37,22 @@ class TraversalBuilder<ID>(
     private val allTraversedHops: MutableList<Hop> = mutableListOf()
     internal val traversedHops: List<Hop> get() = allTraversedHops
 
+    // Most recent addHop/addNodeHop's own hops (not accumulated like allTraversedHops) — backs
+    // flushHopEdges, which exposes just the last hop's edges rather than the whole walk's.
+    private var lastHopEdges: List<Hop> = emptyList()
+    private var lastHopDirection: HopDirection? = null
+
     private suspend fun hops(nid: NodeId, direction: HopDirection, type: String?, needValue: Boolean): List<Hop> =
         if (direction == HopDirection.OUTGOING) engine.outAt(nid, type, needValue) else engine.inAt(nid, type, needValue)
 
-    // Fills in edge values for key-only hops (predicate-free hops skip the fetch) in one batched call,
-    // preserving input order — the single point where Subgraph.edges is materialized.
-    private suspend fun resolveHopEdges(hops: List<Hop>): List<EdgeLike<*, *>> {
+    // Fills in edge values for key-only hops (predicate-free hops skip the fetch) in one batched call
+    // — the single point where Subgraph.edges is materialized. Returns a Map (not a List) so callers
+    // that need to know which hop an edge belongs to (flushHopEdges, pathTo) can look it up directly,
+    // instead of relying on positional correspondence that a dropped (unresolvable) hop would break.
+    private suspend fun resolveHopEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> {
         val unresolved = hops.filter { it.edge == null }
         val resolved = if (unresolved.isEmpty()) emptyMap() else engine.resolveEdges(unresolved)
-        return hops.mapNotNull { it.edge ?: resolved[it] }
+        return hops.mapNotNull { hop -> (hop.edge ?: resolved[hop])?.let { hop to it } }.toMap()
     }
 
     private fun Hop.target(direction: HopDirection): NodeId =
@@ -61,6 +68,7 @@ class TraversalBuilder<ID>(
             }.awaitAll().flatten()
         }
         allTraversedHops += hopEdges
+        lastHopEdges = hopEdges; lastHopDirection = direction
         frontier = hopEdges.map { it.target(direction) }.toSet()
         allVisitedIds += frontier
     }
@@ -78,6 +86,7 @@ class TraversalBuilder<ID>(
             }.awaitAll().flatten()
         }
         allTraversedHops += hopEdges
+        lastHopEdges = hopEdges; lastHopDirection = direction
         frontier = hopEdges.map { it.target(direction) }.toSet()
         allVisitedIds += frontier
     }
@@ -150,6 +159,13 @@ class TraversalBuilder<ID>(
         for (nid in frontier) engine.nodeAt(nid)?.let { emit(it) }
     }
 
+    override suspend fun flushHopEdges(): Flow<EdgeLike<*, *>> = flow {
+        val dir = lastHopDirection ?: return@flow
+        val live = lastHopEdges.filter { it.target(dir) in frontier }
+        val resolved = resolveHopEdges(live)
+        for (hop in live) resolved[hop]?.let { emit(it) }
+    }
+
     override suspend fun count(): Int = frontier.size
 
     override suspend fun countEdges(direction: HopDirection, edgeType: String): Int = coroutineScope {
@@ -162,7 +178,7 @@ class TraversalBuilder<ID>(
         }.filterNotNull().let { all ->
             if (nodeType == null) all else all.filter { it.typeName() == nodeType }
         }
-        return Subgraph(nodes, resolveHopEdges(allTraversedHops))
+        return Subgraph(nodes, resolveHopEdges(allTraversedHops).values.toList())
     }
 
     override suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph {
@@ -180,7 +196,7 @@ class TraversalBuilder<ID>(
         val nodes = coroutineScope {
             visited.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
         }.filterNotNull()
-        return Subgraph(nodes, resolveHopEdges(allHops))
+        return Subgraph(nodes, resolveHopEdges(allHops).values.toList())
     }
 
     override suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean {
@@ -331,5 +347,35 @@ class TraversalBuilder<ID>(
             current = next
         }
         return false
+    }
+
+    // Per-node sub-traversal (unlike checkReaches's single batched sub-traversal over the whole
+    // level) so each hop's edges can be attributed back to the specific path that produced them.
+    override suspend fun pathTo(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Path? {
+        val target = homeAdapter.toNodeId(targetId)
+        data class Entry(val nid: NodeId, val path: Path)
+
+        var current = frontier.mapNotNull { nid -> engine.nodeAt(nid)?.let { Entry(nid, Path(listOf(it), emptyList())) } }
+        val visited = frontier.toMutableSet()
+        while (current.isNotEmpty()) {
+            val next = mutableListOf<Entry>()
+            for (entry in current) {
+                val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
+                sub.block()
+                val edgesByHop = resolveHopEdges(sub.traversedHops)
+                for (hop in sub.traversedHops) {
+                    val neighborNid = if (hop.fromId == entry.nid) hop.toId else hop.fromId
+                    if (neighborNid in visited) continue
+                    val edge = edgesByHop[hop] ?: continue
+                    val neighborNode = engine.nodeAt(neighborNid) ?: continue
+                    visited += neighborNid
+                    val extended = Path(entry.path.nodes + neighborNode, entry.path.edges + edge)
+                    if (neighborNid == target) return extended
+                    next += Entry(neighborNid, extended)
+                }
+            }
+            current = next
+        }
+        return null
     }
 }

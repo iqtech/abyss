@@ -1,5 +1,6 @@
 tasks.test {
     if (project.hasProperty("perf")) systemProperty("perf", "true")
+    if (project.hasProperty("cluster")) systemProperty("cluster", "true")
 }
 
 dependencies {

@@ -430,6 +430,37 @@
   `GraphTest`/`TraversalTest`/`MultiSchemaTest`/etc. suite passing unmodified in behavior. Full
   design: `ai-scripts/ShardedAdjacencyIndexRFC.md`.
 
+- **✅ 2.22 Traversal DSL: `collectEdges<E>()` terminal**
+  Added `flushHopEdges(): Flow<EdgeLike<*, *>>` to `TraversalBuilderLike` (mirrors
+  `flushFrontierNodes()`) plus `collectEdges<E>()` DSL sugar (mirrors `collectNodes<N>()`).
+  `TraversalBuilder` tracks the most recent `addHop`/`addNodeHop`'s own hops separately from the
+  cumulative `allTraversedHops`, filtered at flush-time by `it.target(dir) in frontier` so a later
+  frontier-narrowing filter (`nodes<N>()`, `hasOutgoing`, …) correctly narrows `collectEdges` too,
+  not just the raw unfiltered hop. Supporting refactor: `resolveHopEdges` now returns
+  `Map<Hop, EdgeLike<*, *>>` instead of a positional `List` (the old `mapNotNull` could silently
+  drop a hop on resolution failure, desyncing any positional pairing) — `collectSubgraph`/
+  `exhaustReachable` updated to `.values.toList()`, unchanged behavior. Covered by `TraversalTest`.
+
+- **✅ 2.23 Traversal DSL: `pathTo(targetId, block)` convenience**
+  Originally scoped as `shortestPath(targetId)`, renamed after review: this model has no edge
+  weights, so there's no Dijkstra to run — what's achievable is the fewest-hops path (BFS-optimal
+  by edge count), and `shortestPath` overclaimed a guarantee the API doesn't make. `pathTo` mirrors
+  `reaches`/`checkReaches`'s exact signature shape (`targetId, block`) and BFS-by-block structure —
+  deliberately not built on `paths()` (untyped/any-edge, would ignore the caller's typed hop
+  `block`). Unlike `checkReaches`'s single batched sub-traversal per BFS level, `pathTo` runs one
+  single-node sub-traversal per current-frontier entry so each hop's edge can be attributed back to
+  the specific path that produced it. Matches `checkReaches`'s contract exactly: a target already
+  in the starting frontier does not count as reached (only a hop-away match does). Covered by
+  `TraversalTest` (fewest-hops-among-multiple-routes, unreachable → `null`, already-in-frontier
+  parity with `checkReaches`).
+
+- **➡️ 2.24 Traversal DSL: negated connectivity filter**
+  `hasOutgoing<E>(toId)`/`hasOutgoing<E, N>()` (and the `hasIncoming` symmetric pair) keep frontier
+  nodes that *have* a matching edge. There's no way to keep nodes that *don't* (e.g. "users who
+  haven't purchased anything") — today that requires computing the positive set and diffing it
+  outside the DSL. Add a negated form (e.g. a `negate: Boolean` param or `hasNoOutgoing`/
+  `hasNoIncoming` variants).
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
@@ -516,6 +547,15 @@
 - **✅ 3.8 Configurable edges-adjacency map name**
   `edgesAdjacencyMapName` was added as parameter to `SingleSchemaGraph`, `HeterogenousSchemaGraph` and
   `HomogeneousSchemaGraph`, all defaulting to the prior computed name.
+
+- **✅ 3.9 Multi-member Hazelcast cluster test**
+  Every existing test ran against a single embedded Hazelcast member, leaving `PartitionAware`
+  co-location (`EdgeKey`/`AdjacencyKey`) and partition-scoped reads (`outAt` fast path,
+  `outEdgeFlow`, `adjacencyRead`, `cascadeEdgeRemovals`) unverified under real cross-member
+  routing. Added `MultiMemberClusterTest` (gated behind `-Pcluster`, mirroring `-Pperf`): starts a
+  real 3-member in-process cluster and asserts traversal/cascade-delete correctness plus genuine
+  per-node key co-location and cross-member data spread. No production code changed — see
+  `ai-scripts/MultiMemberClusterTestSummary.md`.
 
 ## 4. Uncategorized
 
@@ -614,3 +654,14 @@
   the ubiquitous `findAnnotation<SerialName>()!!.value` / `?.value ?: error(...)` pattern repeated at
   nearly every call site. All call sites now route through it instead of calling `findAnnotation`
   directly; reflection now runs exactly once per edge/node class for the lifetime of the process.
+
+- **➡️ 4.10 Traversal DSL: bidirectional single-hop combinator**
+  `outgoingAny()`/`incomingAny()` are untyped (any edge type) hops in *one* direction. There's no
+  "either direction of type E" combinator — following an edge type regardless of whether it points
+  in or out currently requires two separate hops and manually merging frontiers.
+
+- **➡️ 4.11 Traversal API: multi-source `from(nodeIds: Set<ID>, block)` entry point**
+  Only a single-ID `from(nodeId, block)` entry point exists (`AbyssGraphSchema.kt:126`). Overlaps
+  with TODO 2.12's already-tracked `from(nodeIds: Set<ID>, block)` overload (needed there to seed a
+  traversal frontier from indexed-query results) — noting it here too since it's also a
+  traversal-API gap on its own, independent of the indexed-query feature.
