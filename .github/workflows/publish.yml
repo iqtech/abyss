@@ -18,7 +18,7 @@ jobs:
           java-version: "21"
           distribution: temurin
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache
+      - run: ./gradlew publishAllPublicationsToMavenCentralRepository --no-configuration-cache
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
