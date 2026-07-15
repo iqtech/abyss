@@ -353,12 +353,16 @@ class TraversalBuilder<ID>(
     // level) so each hop's edges can be attributed back to the specific path that produced them —
     // but every entry's sub-traversal is independent I/O, so they're fanned out concurrently
     // (same coroutineScope+async+awaitAll shape as collectSubgraph/exhaustReachable) rather than
-    // awaited one at a time. The dedup/target-match pass runs after the gather, sequentially, in
-    // the same entry/hop order the old serial loop used, so a shared neighbor still resolves to
-    // whichever entry reached it first — only the round trips are parallel, not the semantics.
-    // Trade-off: like checkReaches, the target is only checked once the whole level's fetches are
-    // in, not mid-level — a few extra fetches in exchange for the level no longer costing one
-    // round trip per node.
+    // awaited one at a time. Fan-out is two-layered: entries in parallel across the level, and each
+    // entry's own neighbor nodeAt lookups in parallel too — a single high-degree entry (supernode)
+    // would otherwise still pay one round trip per neighbor with no other entries to hide behind.
+    // Both layers share hopDispatcher, so its limitedParallelism still bounds total concurrent
+    // engine calls regardless of nesting. The dedup/target-match pass runs after the gather,
+    // sequentially, in the same entry/hop order the old serial loop used, so a shared neighbor still
+    // resolves to whichever entry reached it first — only the round trips are parallel, not the
+    // semantics. Trade-off: like checkReaches, the target is only checked once the whole level's
+    // fetches are in, not mid-level — a few extra fetches in exchange for the level no longer costing
+    // one round trip per node (or per neighbor of one node).
     override suspend fun pathTo(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Path? {
         val target = homeAdapter.toNodeId(targetId)
         data class Entry(val nid: NodeId, val path: Path)
@@ -373,12 +377,15 @@ class TraversalBuilder<ID>(
                         val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
                         sub.block()
                         val edgesByHop = resolveHopEdges(sub.traversedHops)
-                        sub.traversedHops.mapNotNull { hop ->
-                            val neighborNid = if (hop.fromId == entry.nid) hop.toId else hop.fromId
-                            val edge = edgesByHop[hop] ?: return@mapNotNull null
-                            val neighborNode = engine.nodeAt(neighborNid) ?: return@mapNotNull null
-                            Candidate(neighborNid, edge, neighborNode, entry.path)
-                        }
+                        val resolvedHops = sub.traversedHops.mapNotNull { hop -> edgesByHop[hop]?.let { hop to it } }
+                        coroutineScope {
+                            resolvedHops.map { (hop, edge) ->
+                                async(engine.hopDispatcher) {
+                                    val neighborNid = if (hop.fromId == entry.nid) hop.toId else hop.fromId
+                                    engine.nodeAt(neighborNid)?.let { Candidate(neighborNid, edge, it, entry.path) }
+                                }
+                            }.awaitAll()
+                        }.filterNotNull()
                     }
                 }.awaitAll()
             }.flatten()

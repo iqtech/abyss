@@ -69,6 +69,35 @@ class PathToPerformanceTest {
             }
             return children to ids[0]
         }
+
+        // root -> hub -> `width` leaves. Only the hub is ever the sole entry in `current` at its
+        // level, so entry-level fan-out (already parallel) has nothing to parallelize across — this
+        // isolates the per-hop nodeAt resolution loop *within* one entry's own sub-traversal.
+        private fun buildStar(width: Int): Pair<Map<NodeId, List<NodeId>>, NodeId> {
+            val root = UuidKeyAdapter.toNodeId(Uuid.random())
+            val hub = UuidKeyAdapter.toNodeId(Uuid.random())
+            val leaves = List(width) { UuidKeyAdapter.toNodeId(Uuid.random()) }
+            return mapOf(root to listOf(hub), hub to leaves) to root
+        }
+    }
+
+    @Test fun `pathTo throughput over a single supernode`() {
+        if (System.getProperty("perf") == null) return
+        val width = 300
+        val (children, root) = buildStar(width)
+        val engine = DelayedFakeEngine(children, LATENCY_MS)
+        val target = Uuid.random() // not present among the star's node ids
+
+        fun run() = runBlocking {
+            TraversalBuilder(engine, setOf(root), UuidKeyAdapter).pathTo(target) { outgoing<TestEdge>() }
+        }
+
+        assertNull(run())
+
+        val n = 3
+        val elapsed = measureTime { repeat(n) { run() } }
+        val msEach = elapsed.inWholeMilliseconds.toDouble() / n
+        println("\npathTo (single supernode width=$width, latency=${LATENCY_MS}ms): ${"%.0f".format(msEach)}ms avg ($n runs, ${elapsed.inWholeMilliseconds}ms total)")
     }
 
     @Test fun `pathTo throughput over a wide unreachable-target tree`() {
