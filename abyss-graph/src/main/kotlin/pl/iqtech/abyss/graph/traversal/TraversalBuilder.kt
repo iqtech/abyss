@@ -350,29 +350,46 @@ class TraversalBuilder<ID>(
     }
 
     // Per-node sub-traversal (unlike checkReaches's single batched sub-traversal over the whole
-    // level) so each hop's edges can be attributed back to the specific path that produced them.
+    // level) so each hop's edges can be attributed back to the specific path that produced them —
+    // but every entry's sub-traversal is independent I/O, so they're fanned out concurrently
+    // (same coroutineScope+async+awaitAll shape as collectSubgraph/exhaustReachable) rather than
+    // awaited one at a time. The dedup/target-match pass runs after the gather, sequentially, in
+    // the same entry/hop order the old serial loop used, so a shared neighbor still resolves to
+    // whichever entry reached it first — only the round trips are parallel, not the semantics.
+    // Trade-off: like checkReaches, the target is only checked once the whole level's fetches are
+    // in, not mid-level — a few extra fetches in exchange for the level no longer costing one
+    // round trip per node.
     override suspend fun pathTo(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Path? {
         val target = homeAdapter.toNodeId(targetId)
         data class Entry(val nid: NodeId, val path: Path)
+        data class Candidate(val neighborNid: NodeId, val edge: EdgeLike<*, *>, val neighborNode: NodeLike<*>, val fromPath: Path)
 
         var current = frontier.mapNotNull { nid -> engine.nodeAt(nid)?.let { Entry(nid, Path(listOf(it), emptyList())) } }
         val visited = frontier.toMutableSet()
         while (current.isNotEmpty()) {
+            val candidates = coroutineScope {
+                current.map { entry ->
+                    async(engine.hopDispatcher) {
+                        val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
+                        sub.block()
+                        val edgesByHop = resolveHopEdges(sub.traversedHops)
+                        sub.traversedHops.mapNotNull { hop ->
+                            val neighborNid = if (hop.fromId == entry.nid) hop.toId else hop.fromId
+                            val edge = edgesByHop[hop] ?: return@mapNotNull null
+                            val neighborNode = engine.nodeAt(neighborNid) ?: return@mapNotNull null
+                            Candidate(neighborNid, edge, neighborNode, entry.path)
+                        }
+                    }
+                }.awaitAll()
+            }.flatten()
+
             val next = mutableListOf<Entry>()
-            for (entry in current) {
-                val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
-                sub.block()
-                val edgesByHop = resolveHopEdges(sub.traversedHops)
-                for (hop in sub.traversedHops) {
-                    val neighborNid = if (hop.fromId == entry.nid) hop.toId else hop.fromId
-                    if (neighborNid in visited) continue
-                    val edge = edgesByHop[hop] ?: continue
-                    val neighborNode = engine.nodeAt(neighborNid) ?: continue
-                    visited += neighborNid
-                    val extended = Path(entry.path.nodes + neighborNode, entry.path.edges + edge)
-                    if (neighborNid == target) return extended
-                    next += Entry(neighborNid, extended)
-                }
+            for (c in candidates) {
+                if (c.neighborNid in visited) continue
+                visited += c.neighborNid
+                val extended = Path(c.fromPath.nodes + c.neighborNode, c.fromPath.edges + c.edge)
+                if (c.neighborNid == target) return extended
+                next += Entry(c.neighborNid, extended)
             }
             current = next
         }
