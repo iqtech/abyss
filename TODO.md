@@ -557,6 +557,16 @@
   per-node key co-location and cross-member data spread. No production code changed — see
   `ai-scripts/MultiMemberClusterTestSummary.md`.
 
+- **➡️ 3.10 Type-level `SchemaGraph` model for schema visualization**
+  Derive a `NodeType --EdgeType--> OtherNodeType` graph straight from `@TypeTag`/`@SerialName`/
+  `@EdgeConstraint` annotations, for visualizing the schema itself rather than instance data.
+  `Subgraph`/`GraphExport` can't be reused as-is — they hold real `NodeLike`/`EdgeLike` instances,
+  serialized via the polymorphic serializer, and a bare `KClass` has no value to serialize. Needs a
+  parallel type-level shape (`SchemaNodeType`/`SchemaEdgeType`/`SchemaGraph`), built by reusing
+  `TypeTagRegistry`'s existing `SubclassCollector` walk. Edge types with no `@EdgeConstraint`, or
+  with either `fromTypes`/`toTypes` side empty, are dropped from the strict edge list and reported
+  separately by name. Full design: `ai-scripts/SchemaGraphVisualizationPlan.md`.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**

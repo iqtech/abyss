@@ -10,16 +10,16 @@ Abyss is a Kotlin JVM library (4 submodules, group `pl.iqtech.abyss`, version `0
 
 ## What's Missing (in order)
 
-| # | Item | Status |
-|---|---|---|
-| 1 | LICENSE file | ✅ Done |
-| 2 | Sonatype Central Portal account | Not set up |
-| 3 | Namespace verification (`pl.iqtech`) | Not done |
-| 4 | GPG signing key | Not created |
-| 5 | POM metadata + sources + javadoc | Not configured |
-| 6 | Publishing repository (Central Portal) | Not configured |
+| # | Item | Status          |
+|---|---|-----------------|
+| 1 | LICENSE file | ✅ Done          |
+| 2 | Sonatype Central Portal account | ✅ Done          |
+| 3 | Namespace verification (`pl.iqtech`) | ✅ Done                |
+| 4 | GPG signing key | Not created     |
+| 5 | POM metadata + sources + javadoc | Not configured  |
+| 6 | Publishing repository (Central Portal) | Not configured  |
 | 7 | GitHub Actions CI/CD workflow | No .github/ dir |
-| 8 | GitHub repo secrets | Not configured |
+| 8 | GitHub repo secrets | Not configured  |
 
 ---
 
@@ -164,7 +164,7 @@ In `iqtech/abyss` repo → Settings → Secrets and variables → Actions:
 
 ## Manual prerequisites (user must complete before CI can publish)
 
-- [ ] Register at https://central.sonatype.com
+- [x] Register at https://central.sonatype.com
 - [ ] Verify `pl.iqtech` namespace (DNS TXT on iqtech.pl) — or decide to switch to `io.github.iqtech`
 - [ ] Generate deployment token in Central Portal
 - [ ] Generate GPG key and upload public key to keyserver.ubuntu.com
