@@ -15,7 +15,7 @@ subprojects {
     apply(plugin = "com.vanniktech.maven.publish")
 
     configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
-        publishToMavenCentral()   // Central Portal (central.sonatype.com)
+        publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
         signAllPublications()
         pom {
             name.set(project.name)
