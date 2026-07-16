@@ -1,3 +1,12 @@
+## [0.31.1] - 2026-07-16
+
+- Add `batchTransaction { }` (TODO 1.21): chunked JDBC `addBatch`/`executeBatch` commits (default `batchSize` 1000, one DB transaction per chunk) for bulk YSQL loads, replacing one `executeUpdate()` per op so million-op loads don't pay sequential round-trips inside a single ever-growing distributed transaction; cascade expansion and integrity checks still run once over the full op list before chunking
+- Parallelize `pathTo`'s per-level frontier fan-out and per-entry neighbor resolution with `coroutineScope`/`async`/`awaitAll` (sharing the existing hop dispatcher), fixing sequential `nodeAt` round trips per frontier node and per supernode neighbor; measured ~19.5x and ~21x speedups respectively (`PathToPerformanceTest`, `-Pperf`)
+
+## [0.31.0] - 2026-07-15
+
+- First release published to Maven Central
+
 ## [0.30.2] - 2026-07-09
 
 - Add traversal DSL `collectEdges<E>()` (mirrors `collectNodes<N>()`, narrows with any later frontier filter) and `pathTo(targetId, block)` (fewest-hops path to a target, sibling to `reaches`/`checkReaches`; TODO 2.22/2.23); wire the already-declared `edgesAdjacencyMapName` container parameter through to `AbyssSchemaWorker` on `SingleSchemaGraph`/`HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph` (previously silently ignored); add `MultiMemberClusterTest` (gated behind `-Pcluster`) validating `PartitionAware` co-location and partition-scoped reads against a real 3-member Hazelcast cluster instead of the single-embedded-member setup every other test uses (TODO 2.1)
