@@ -252,6 +252,34 @@ internal class AbyssSchemaWorker(
         return Unit.right()
     }
 
+    // Bulk-load path, independent of transaction(): commits the persistent side in `batchSize`-sized
+    // chunks (each its own DB transaction, see YugabytePersistentStore.batchTransaction) instead of
+    // one atomic transaction for the whole op list. Cascade expansion and the integrity check still
+    // run ONCE over the full expanded op list before any chunking happens — a RemoveNode and its
+    // cascade-deleted edges must never be split across chunks, and integrity's addedInTx map needs
+    // every add in the batch visible regardless of which chunk it lands in.
+    suspend fun batchTransaction(baseOps: List<NodeOp>, batchSize: Int, checkIntegrity: Boolean): Either<AbyssError, Unit> {
+        val ops = expandCascades(baseOps)
+        integrityError(ops, checkIntegrity)?.let { return it.left() }
+
+        if (persistentStore != null) {
+            val storeResult = persistentStore.batchTransaction(batchSize) { ops.forEach { applyPersistentOp(it) } }
+            if (storeResult.isLeft()) {
+                log.error("Batch transaction failed partway; chunks committed before the failure remain persisted [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                return storeResult
+            }
+        }
+        val deletes = ops.filter { it is NodeOp.RemoveNode || it is NodeOp.RemoveEdge }
+        if (ephemeralStore != null && deletes.isNotEmpty()) {
+            ephemeralStore.transaction { deletes.forEach { applyEphemeralOp(it) } }
+                .onLeft { log.warn("Ephemeral delete fanout failed during batch transaction; stale ephemeral data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
+        }
+
+        populateCache(ops, "Cache update failed after batch store commit; cache may be stale")
+        log.debug("Batch transaction committed [{} op(s), batchSize={}, nodes={}, edges={}]", ops.size, batchSize, nodesMapName, edgesMapName)
+        return Unit.right()
+    }
+
     suspend fun ephemeral(baseOps: List<NodeOp>, checkIntegrity: Boolean): Either<AbyssError, Unit> {
         val ops = expandCascades(baseOps)
         integrityError(ops, checkIntegrity)?.let { return it.left() }

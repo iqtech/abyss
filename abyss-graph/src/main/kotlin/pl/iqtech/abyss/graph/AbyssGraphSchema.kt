@@ -139,6 +139,22 @@ class AbyssGraphSchema<ID> internal constructor(
         return worker.transaction(buffer.ops.map { it.toNodeOp(adapter, width, headerless) }, checkIntegrity)
     }
 
+    override suspend fun batchTransaction(
+        batchSize: Int,
+        checkIntegrity: Boolean,
+        block: suspend AbyssTransactionLike<ID>.() -> Unit
+    ): Either<AbyssError, Unit> {
+        val buffer = BufferedTransaction<ID>(
+            readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
+            readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
+        )
+        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
+        val width = crossEdgeTagWidth()
+        crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }
+        return worker.batchTransaction(buffer.ops.map { it.toNodeOp(adapter, width, headerless) }, batchSize, checkIntegrity)
+    }
+
     override suspend fun ephemeral(ttl: Duration, checkIntegrity: Boolean, block: suspend AbyssEphemeralTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
         val buffer = BufferedEphemeralTransaction<ID>(
             ttl = ttl,

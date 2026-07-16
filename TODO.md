@@ -205,24 +205,28 @@
     `worker.nodeExists(...)` (already suspend, self-healing); `containsNodeInCache` deleted as dead
     code. Covered by `GraphTest`/`MultiSchemaTest`.
 
-- **➡️ 1.21 `batchTransaction{}` for bulk YSQL loads**
-  A new API, fully independent from the existing `transaction{}` (no shared code path/implementation
-  reuse required) — for populating huge graphs (e.g. ~1M elements) fast via `YugabytePersistentStore`.
-  Findings from investigation:
-  - `transaction{}` already commits the whole op list as ONE JDBC transaction (`autoCommit = false`,
-    single commit in `commitYsql`) — that part isn't the gap.
-  - `commitYsql` does one `executeUpdate()` per op (no `addBatch()`/`executeBatch()`, no
-    `reWriteBatchedInserts` on the Hikari/pgjdbc datasource) — 1M sequential round-trips inside that
-    one txn is the real throughput problem.
-  - YugabyteDB is DocDB underneath, not vanilla Postgres — very large single transactions accumulate
-    provisional records/intents across tablets; YB guidance favors chunked sub-transactions (low
-    thousands of rows) over one flat 1M-row commit. `batchTransaction` should auto-chunk rather than
-    force one giant transaction.
-  - Non-SQL bottlenecks upstream of the store call matter as much at this scale: `expandCascades`'
-    per-node cascade lookups (deletes), `integrityError`'s per-edge `readNode` self-heal (skip via
-    `checkIntegrity = false`), and `populateCache`'s blocking `awaitAll()` over up to ~3M
-    `CompletionStage`s when `asyncCachePopulation = false` (the default). A bulk path should address
-    these too, not just SQL batching.
+- **✅ 1.21 `batchTransaction{}` for bulk YSQL loads**
+  New independent `batchTransaction{}` API added at every layer (`AbyssEngineLike`/
+  `AbyssTransactionLike` DSL → `AbyssGraphSchema` → `AbyssSchemaWorker` → `AbyssStoreLike` →
+  `YugabytePersistentStore`), never calling into `transaction()`/`commitYsql` at any layer.
+  `AbyssStoreLike.batchTransaction` has a default implementation delegating to `transaction()`
+  (unchunked) so the 4 existing test-fake `AbyssStoreLike` implementers needed no changes;
+  `YugabytePersistentStore` overrides it with a new `commitYsqlBatched`: one connection for the whole
+  call, one `conn.commit()` per `batchSize`-sized chunk (JDBC `addBatch()`/`executeBatch()`,
+  run-length-grouped by statement type within a chunk to preserve the caller's original op order
+  across mixed add/remove-same-key sequences), plus `reWriteBatchedInserts = true` added to the
+  Hikari datasource config. `AbyssSchemaWorker.batchTransaction` runs `expandCascades`/
+  `integrityError` ONCE over the full op list before any chunking (chunking only happens inside the
+  store), so cascade-deletes and cross-op integrity checks are unaffected by chunk boundaries.
+  Trade-off vs `transaction()`: batch commits are not atomic across the whole call — a failing chunk
+  rolls back, but chunks already committed before it stay committed (documented, and intended for
+  idempotent bulk-load scenarios where `saveNode`/`saveEdge`'s upsert semantics make retrying safe).
+  `batchSize` defaults to 1000. Covered by a new `BatchTransactionTest` (worker-level, fake store, in
+  `abyss-graph`) and 4 new `LoadTest` cases against a live YugabyteDB (`abyss-store-yugabyte`):
+  multi-chunk commit correctness, add-then-remove and remove-then-add same-key ordering preservation,
+  and partial-chunk-failure semantics (via a `FailAfterNCommitsDataSource` JDBC proxy forcing a
+  deterministic mid-batch failure). YCQL/ephemeral batching stays out of scope (TODO 2.25). Design
+  plan: `ai-scripts/BatchTransactionPlan.md`.
 
 ## 2. Medium
 

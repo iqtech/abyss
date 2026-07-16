@@ -84,6 +84,20 @@ class YugabytePersistentStore(
             if (tx.ops.isNotEmpty()) withContext(Dispatchers.IO) { commitYsql(tx.ops) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
+    // Bulk-load path, independent of transaction()/commitYsql: commits ops in chunks of `batchSize`,
+    // each chunk its own DB transaction via JDBC addBatch()/executeBatch() instead of one
+    // executeUpdate() per op. Trades whole-call atomicity for throughput and bounded per-transaction
+    // size — a failing chunk rolls back, but chunks already committed before it stay committed.
+    override suspend fun batchTransaction(
+        batchSize: Int,
+        block: suspend AbyssStoreTransactionLike.() -> Unit
+    ): Either<AbyssError, Unit> =
+        Either.catch {
+            val tx = PersistentTransaction()
+            tx.block()
+            if (tx.ops.isNotEmpty()) withContext(Dispatchers.IO) { commitYsqlBatched(tx.ops, batchSize) }
+        }.mapLeft { AbyssError.Unexpected(it) }
+
     override fun close() {
         runCatching { (ysql as? Closeable)?.close() }.onFailure { log.warn("Failed to close YSQL DataSource", it) }
     }
@@ -179,6 +193,79 @@ class YugabytePersistentStore(
         }
     }
 
+    // Independent of commitYsql (own inline binding, not shared with it) — kept that way
+    // deliberately so this never risks the existing, already-tested single-transaction commit path.
+    // One connection for the whole call, but one conn.commit() per chunk (bounded transaction size).
+    // Within a chunk, consecutive ops of the same statement type are run-length-grouped into one
+    // addBatch()/executeBatch() round, preserving the caller's original cross-type op order (so a
+    // mixed AddNode(X)/RemoveNode(X) sequence within one chunk still resolves the same way
+    // commitYsql's op-by-op execution would).
+    private fun commitYsqlBatched(ops: List<PersistentOp>, batchSize: Int) {
+        ysql.connection.use { conn ->
+            conn.autoCommit = false
+            val upsertNode = conn.prepareStatement(
+                "INSERT INTO $ysqlSchema.nodes (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, tags = EXCLUDED.tags, updated_at = EXCLUDED.updated_at"
+            )
+            val upsertEdge = conn.prepareStatement(
+                "INSERT INTO $ysqlSchema.edges (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT (from_id, to_id, type) DO UPDATE SET data = EXCLUDED.data, tags = EXCLUDED.tags, updated_at = EXCLUDED.updated_at"
+            )
+            val delNode = conn.prepareStatement("DELETE FROM $ysqlSchema.nodes WHERE id = ?")
+            val delEdge = conn.prepareStatement("DELETE FROM $ysqlSchema.edges WHERE from_id = ? AND to_id = ? AND type = ?")
+
+            fun bind(op: PersistentOp): java.sql.PreparedStatement = when (op) {
+                is PersistentOp.SaveNode -> {
+                    val (type, data) = jsonPair(nodeSer, op.node)
+                    upsertNode.setBytes(1, op.id.bytes)
+                    upsertNode.setString(2, type)
+                    upsertNode.setObject(3, data, Types.OTHER)
+                    upsertNode.setArray(4, conn.createArrayOf("text", op.node.tags.toTypedArray()))
+                    upsertNode.setTimestamp(5, Timestamp.from(op.node.createdAt.toJavaInstant()))
+                    upsertNode.setTimestamp(6, Timestamp.from(op.node.updatedAt.toJavaInstant()))
+                    upsertNode
+                }
+                is PersistentOp.SaveEdge -> {
+                    val (type, data) = jsonPair(edgeSer, op.edge)
+                    upsertEdge.setBytes(1, op.fromId.bytes)
+                    upsertEdge.setBytes(2, op.toId.bytes)
+                    upsertEdge.setString(3, type)
+                    upsertEdge.setObject(4, data, Types.OTHER)
+                    upsertEdge.setArray(5, conn.createArrayOf("text", op.edge.tags.toTypedArray()))
+                    upsertEdge.setTimestamp(6, Timestamp.from(op.edge.createdAt.toJavaInstant()))
+                    upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt.toJavaInstant()))
+                    upsertEdge
+                }
+                is PersistentOp.DeleteNode -> delNode.apply { setBytes(1, op.id.bytes) }
+                is PersistentOp.DeleteEdge -> delEdge.apply {
+                    setBytes(1, op.fromId.bytes)
+                    setBytes(2, op.toId.bytes)
+                    setString(3, op.type)
+                }
+            }
+
+            for (chunk in ops.chunked(batchSize)) {
+                try {
+                    var i = 0
+                    while (i < chunk.size) {
+                        val stmt = bind(chunk[i]).also { it.addBatch() }
+                        var j = i + 1
+                        while (j < chunk.size && chunk[j]::class == chunk[i]::class) {
+                            bind(chunk[j]).addBatch()
+                            j++
+                        }
+                        stmt.executeBatch()
+                        i = j
+                    }
+                    conn.commit()
+                } catch (e: Throwable) {
+                    conn.rollback()
+                    throw e
+                }
+            }
+        }
+    }
+
     private inner class PersistentTransaction : AbyssStoreTransactionLike {
         val ops = mutableListOf<PersistentOp>()
         override fun saveNode(id: NodeId, node: NodeLike<*>) { ops += PersistentOp.SaveNode(id, node) }
@@ -204,6 +291,9 @@ class YugabytePersistentStore(
                 maximumPoolSize = ysqlMaxPoolSize
                 minimumIdle     = ysqlMaxPoolSize
                 addDataSourceProperty("prepareThreshold", "1")
+                // Lets pgjdbc rewrite addBatch()/executeBatch() calls into one multi-values INSERT
+                // wire message (commitYsqlBatched). No-op for commitYsql's plain executeUpdate() loop.
+                addDataSourceProperty("reWriteBatchedInserts", "true")
             })
             return YugabytePersistentStore(dataSource, module, ysqlSchema)
         }

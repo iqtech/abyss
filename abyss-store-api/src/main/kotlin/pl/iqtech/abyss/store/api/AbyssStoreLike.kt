@@ -17,6 +17,15 @@ interface AbyssStoreLike {
     suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
+
+    // Bulk-load path, deliberately independent of transaction(): commits ops in chunks of
+    // `batchSize`, each chunk its own DB transaction, instead of one atomic transaction for the
+    // whole list. Default just delegates to transaction() unchunked (correct, not faster) — only
+    // YugabytePersistentStore overrides this with real JDBC batch commits.
+    suspend fun batchTransaction(
+        batchSize: Int = 1000,
+        block: suspend AbyssStoreTransactionLike.() -> Unit
+    ): Either<AbyssError, Unit> = transaction(block)
 }
 
 interface AbyssStoreTransactionLike {
