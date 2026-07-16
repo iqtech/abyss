@@ -34,6 +34,17 @@ interface AbyssEngineLike<ID> {
         checkIntegrity: Boolean = true,
         block: suspend AbyssEphemeralTransactionLike<ID>.() -> Unit
     ): Either<AbyssError, Unit>
+
+    // Bulk-load path: commits ops in independent chunks of `batchSize` instead of one atomic
+    // transaction. Trades whole-call atomicity for throughput and bounded per-DB-transaction size —
+    // on partial failure, chunks already committed stay committed. Intended for populating huge
+    // graphs (e.g. ~1M elements), where saveNode/saveEdge's upsert semantics make retrying the
+    // whole call after a failure safe.
+    suspend fun batchTransaction(
+        batchSize: Int = 1000,
+        checkIntegrity: Boolean = true,
+        block: suspend AbyssTransactionLike<ID>.() -> Unit
+    ): Either<AbyssError, Unit>
 }
 
 interface AbyssTransactionLike<ID> {

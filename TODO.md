@@ -205,6 +205,29 @@
     `worker.nodeExists(...)` (already suspend, self-healing); `containsNodeInCache` deleted as dead
     code. Covered by `GraphTest`/`MultiSchemaTest`.
 
+- **✅ 1.21 `batchTransaction{}` for bulk YSQL loads**
+  New independent `batchTransaction{}` API added at every layer (`AbyssEngineLike`/
+  `AbyssTransactionLike` DSL → `AbyssGraphSchema` → `AbyssSchemaWorker` → `AbyssStoreLike` →
+  `YugabytePersistentStore`), never calling into `transaction()`/`commitYsql` at any layer.
+  `AbyssStoreLike.batchTransaction` has a default implementation delegating to `transaction()`
+  (unchunked) so the 4 existing test-fake `AbyssStoreLike` implementers needed no changes;
+  `YugabytePersistentStore` overrides it with a new `commitYsqlBatched`: one connection for the whole
+  call, one `conn.commit()` per `batchSize`-sized chunk (JDBC `addBatch()`/`executeBatch()`,
+  run-length-grouped by statement type within a chunk to preserve the caller's original op order
+  across mixed add/remove-same-key sequences), plus `reWriteBatchedInserts = true` added to the
+  Hikari datasource config. `AbyssSchemaWorker.batchTransaction` runs `expandCascades`/
+  `integrityError` ONCE over the full op list before any chunking (chunking only happens inside the
+  store), so cascade-deletes and cross-op integrity checks are unaffected by chunk boundaries.
+  Trade-off vs `transaction()`: batch commits are not atomic across the whole call — a failing chunk
+  rolls back, but chunks already committed before it stay committed (documented, and intended for
+  idempotent bulk-load scenarios where `saveNode`/`saveEdge`'s upsert semantics make retrying safe).
+  `batchSize` defaults to 1000. Covered by a new `BatchTransactionTest` (worker-level, fake store, in
+  `abyss-graph`) and 4 new `LoadTest` cases against a live YugabyteDB (`abyss-store-yugabyte`):
+  multi-chunk commit correctness, add-then-remove and remove-then-add same-key ordering preservation,
+  and partial-chunk-failure semantics (via a `FailAfterNCommitsDataSource` JDBC proxy forcing a
+  deterministic mid-batch failure). YCQL/ephemeral batching stays out of scope (TODO 2.25). Design
+  plan: `ai-scripts/BatchTransactionPlan.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
@@ -461,6 +484,20 @@
   outside the DSL. Add a negated form (e.g. a `negate: Boolean` param or `hasNoOutgoing`/
   `hasNoIncoming` variants).
 
+- **➡️ 2.25 Batch ephemeral (YCQL) writes**
+  `YugabyteEphemeralStore.commitYcql` is strictly one `ycql.execute()` per op, serial and blocking;
+  `SaveNode`/`SaveEdge` also build ad-hoc `SimpleStatement` text per call instead of a cached
+  `PreparedStatement` like deletes do. Driver already supports `BatchStatement`/`BatchStatementBuilder`
+  (`com.yugabyte:java-driver-core:4.19.0-yb-1`, DataStax 4.x line) — no new dependency needed.
+  Partition-key-aware plan required, not a blanket batch:
+  - `ephemeral_edges`: partition key is `from_id` — group same-`from_id` ops into one UNLOGGED
+    single-partition `BatchStatement`, genuine win.
+  - `ephemeral_nodes`: partition key is `id` (every node its own partition) — cross-partition
+    `BatchStatement` is an anti-pattern here (adds coordinator/batchlog overhead, defeats
+    token-aware routing). Use `executeAsync()` fan-out with bounded concurrency instead, not
+    `BatchStatement`.
+  Do not touch this yet.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
@@ -675,3 +712,40 @@
   with TODO 2.12's already-tracked `from(nodeIds: Set<ID>, block)` overload (needed there to seed a
   traversal frontier from indexed-query results) — noting it here too since it's also a
   traversal-API gap on its own, independent of the indexed-query feature.
+
+- **➡️ 4.12 Other `TraversalBuilder` methods share `pathTo`'s pre-fix serial-fan-out bottleneck**
+  `pathTo` (`TraversalBuilder.kt:366`) was fixed in two passes — entry-level fan-out (many frontier
+  nodes processed one at a time) and per-entry fan-out (many neighbors of one high-degree node
+  processed one at a time) — both replaced with `coroutineScope`/`async(engine.hopDispatcher)`/
+  `awaitAll()`. The same two bottleneck shapes exist, unfixed, in several sibling methods in this
+  file:
+  - `flushFrontierNodes` (`TraversalBuilder.kt:158`) — `for (nid in frontier) engine.nodeAt(nid)`
+    is a plain sequential loop; `collectSubgraph`/`exhaustReachable` already do the parallel
+    version of exactly this (`TraversalBuilder.kt:176`, `197`) so this is a one-line-shape fix.
+  - `addNodeHop` (`TraversalBuilder.kt:76`) — frontier nodes already fan out in parallel, but
+    inside each one, `hops(...).filter { engine.nodeAt(hop.target(direction)) ... }` (line 81)
+    resolves every hop's target node sequentially. A single frontier node with high out-degree
+    (supernode) pays one round trip per neighbor with no other frontier node to hide behind —
+    the exact case TODO's `pathTo` supernode fix addressed.
+  - `filterFrontierByEdgeType` (`TraversalBuilder.kt:119`) — same shape at line 123
+    (`hops(...).any { engine.nodeAt(...) }`); `.any` short-circuits on the first type match, so
+    it's only the worst case (no match, or a late match) that pays the full sequential cost.
+  - `paths()` (`TraversalBuilder.kt:227`), both strategies — `dfsLoop` (line 252) and `bfsLoop`
+    (line 297) each call `engine.nodeAt(nextNid)` (lines 272, 316) inside a sequential `for (hop in
+    edges)` loop over one node's hop list — the per-entry bottleneck. `bfsLoop` additionally
+    processes its queue one `Entry` at a time (`queue.removeFirst()`, line 308) with no fan-out
+    across entries at the same conceptual depth — the entry-level bottleneck, i.e. `bfsLoop` has
+    both of `pathTo`'s pre-fix problems at once. `dfsLoop`'s per-hop `nodeAt` loop is fixable the
+    same way; its recursive depth-first structure is not a good fit for entry-level fan-out (would
+    change DFS ordering/early-exit semantics), so leave that part alone.
+  - `detectCycle`/`dfsCycle` (`TraversalBuilder.kt:202`) — siblings at each DFS level are visited
+    one at a time (`for (neighbor in sub.frontier)`, line 219), each potentially triggering a full
+    recursive sub-search before the next sibling starts. Same entry-level shape as the others, but
+    parallelizing it safely needs care: `visited`/`inStack` are shared mutable state read *during*
+    the fan-out (not just merged after, like `pathTo`'s fix does), and the early "cycle found" exit
+    would need to cancel sibling coroutines rather than just skip remaining loop iterations.
+  Fix shape for the straightforward cases: same `coroutineScope { xs.map { async(engine.hopDispatcher)
+  { ... } } }.awaitAll()` pattern already used four times in this file. Worth doing given the
+  public/unknown-graph-shape performance stance — see `pathTo`'s benchmark files
+  (`PathToPerformanceTest.kt`, `-Pperf`) as the template: isolate with a synthetic supernode/wide-
+  frontier graph, measure baseline, fix, remeasure.

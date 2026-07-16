@@ -3,6 +3,8 @@ package pl.iqtech.abyss.store.yugabyte
 import arrow.core.Either
 import com.datastax.oss.driver.api.core.CqlSession
 import com.datastax.oss.driver.api.core.cql.SimpleStatement
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Instant
 import kotlinx.serialization.SerialName
@@ -10,14 +12,19 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
 import kotlinx.serialization.modules.subclass
+import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
+import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.sql.Connection
 import java.sql.DriverManager
+import java.sql.SQLException
 import java.sql.Types
+import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -227,6 +234,76 @@ class LoadTest {
         val inResult = runBlocking { ybEphemeralStore.loadInEdges(nid(edge.toId)) }
         assertEquals(0, (inResult as Either.Right).value.size)
     }
+
+    // ── batchTransaction (TODO 1.21) ────────────────────────────────────────────
+
+    @Test fun `batchTransaction commits more ops than batchSize across multiple chunks`() {
+        val ids = List(125) { Uuid.random() }
+        val result = runBlocking {
+            ybPersistentStore.batchTransaction(batchSize = 50) {
+                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batched")) }
+            }
+        }
+        assertIs<Either.Right<Unit>>(result)
+        ids.forEach { id ->
+            val loaded = runBlocking { ybPersistentStore.loadNode(nid(id)) }
+            assertEquals("batched", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
+        }
+    }
+
+    @Test fun `batchTransaction preserves op order for add-then-remove of the same key`() {
+        val node = YbTestNode(id = Uuid.random(), name = "add-then-remove")
+        val result = runBlocking {
+            ybPersistentStore.batchTransaction {
+                saveNode(nid(node.id), node)
+                deleteNode(nid(node.id))
+            }
+        }
+        assertIs<Either.Right<Unit>>(result)
+        val loaded = runBlocking { ybPersistentStore.loadNode(nid(node.id)) }
+        assertEquals(null, (loaded as Either.Right).value.first)
+    }
+
+    @Test fun `batchTransaction preserves op order for remove-then-add of the same key`() {
+        val node = YbTestNode(id = Uuid.random(), name = "remove-then-add")
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), YbTestNode(id = node.id, name = "stale")) } }
+
+        val result = runBlocking {
+            ybPersistentStore.batchTransaction {
+                deleteNode(nid(node.id))
+                saveNode(nid(node.id), node)
+            }
+        }
+        assertIs<Either.Right<Unit>>(result)
+        val loaded = runBlocking { ybPersistentStore.loadNode(nid(node.id)) }
+        assertEquals("remove-then-add", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
+    }
+
+    // Proves the documented non-atomic-across-chunks trade-off: a failure partway through only
+    // rolls back its own chunk, chunks committed before it stay committed, and chunks after it are
+    // never attempted. FailAfterNCommitsDataSource throws on the connection's Nth conn.commit()
+    // call (the 2nd, i.e. chunk 2 of 3), simulated at the JDBC layer since nothing in the public
+    // store API (upserts, unconditional deletes) can be made to fail deterministically otherwise.
+    @Test fun `batchTransaction failure partway leaves earlier chunks committed and later chunks absent`() {
+        val ids = List(6) { Uuid.random() }
+        val failingStore = YugabytePersistentStore(FailAfterNCommitsDataSource(rawYsqlDataSource(), failAtCommit = 2), ybModule)
+
+        val result = runBlocking {
+            failingStore.batchTransaction(batchSize = 2) {
+                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batch-fail")) }
+            }
+        }
+        assertIs<Either.Left<AbyssError>>(result)
+
+        ids.take(2).forEach { id ->
+            val loaded = runBlocking { ybPersistentStore.loadNode(nid(id)) }
+            assertEquals("batch-fail", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
+        }
+        ids.drop(2).forEach { id ->
+            val loaded = runBlocking { ybPersistentStore.loadNode(nid(id)) }
+            assertEquals(null, (loaded as Either.Right).value.first)
+        }
+    }
 }
 
 private fun nodeJson(id: Uuid, name: String) =
@@ -292,5 +369,35 @@ private fun insertYcqlEdge(fromId: Uuid, toId: Uuid, json: String) {
                 )
             )
         }
+}
+
+private fun rawYsqlDataSource(): DataSource = HikariDataSource(HikariConfig().apply {
+    jdbcUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph"
+    username = "abyss"
+    password = "abyss"
+    driverClassName = "org.postgresql.Driver"
+    maximumPoolSize = 2
+    minimumIdle = 1
+})
+
+// Wraps a real DataSource's connections so the Nth conn.commit() call throws instead of committing
+// — the only way to force a deterministic mid-batch failure, since every op batchTransaction's
+// public API exposes (upserts, unconditional deletes) succeeds regardless of prior state.
+private class FailAfterNCommitsDataSource(
+    private val delegate: DataSource,
+    private val failAtCommit: Int,
+) : DataSource by delegate {
+    private var commitCount = 0
+
+    override fun getConnection(): Connection {
+        val real = delegate.connection
+        return Proxy.newProxyInstance(Connection::class.java.classLoader, arrayOf(Connection::class.java)) { _, method, args ->
+            if (method.name == "commit") {
+                commitCount++
+                if (commitCount == failAtCommit) throw SQLException("simulated failure at commit #$commitCount")
+            }
+            if (args == null) method.invoke(real) else method.invoke(real, *args)
+        } as Connection
+    }
 }
 
