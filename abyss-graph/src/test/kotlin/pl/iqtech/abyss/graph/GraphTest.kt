@@ -713,6 +713,57 @@ class GraphTest {
         }
     }
 
+    // TODO 1.22: preloadOut/preloadIn used to hit the persistent store on every outAt/inAt call, even
+    // when the adjacency cache was already warm for that node+direction — a self-heal mechanism with
+    // no "only heal on an actual miss" guard.
+    @Test fun `outEdges hits the persistent store once per node, not once per call`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "warm-repeat")
+            val fake = WarmingFakeStore(outEdges = listOf(edge))
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "wr-nodes", "wr-edges", persistentStore = fake, module = graphTestModule)
+
+            repeat(5) { g.outEdges(edge.fromId).toList() }
+
+            assertEquals(1, fake.loadEdgesCalls)
+            graphTestHz.getMap<Any, Any>("wr-nodes").clear()
+            graphTestHz.getMap<Any, Any>("wr-edges").clear()
+            graphTestHz.getMap<Any, Any>("wr-edges-adjacency").clear()
+        }
+    }
+
+    @Test fun `inEdges hits the persistent store once per node, not once per call`() {
+        runBlocking {
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "warm-repeat-in")
+            val fake = WarmingFakeStore(inEdges = listOf(edge))
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "wri-nodes", "wri-edges", persistentStore = fake, module = graphTestModule)
+
+            repeat(5) { g.inEdges(edge.toId).toList() }
+
+            assertEquals(1, fake.loadInEdgesCalls)
+            graphTestHz.getMap<Any, Any>("wri-nodes").clear()
+            graphTestHz.getMap<Any, Any>("wri-edges").clear()
+            graphTestHz.getMap<Any, Any>("wri-edges-adjacency").clear()
+        }
+    }
+
+    // Accepted ceiling (see AbyssSchemaWorker.adjacencyRead): a genuinely edgeless node can't be told
+    // apart from a never-preloaded one without a dedicated warm marker, so it retries the store on
+    // every call. Locked in here so a future change to that behavior is a deliberate decision.
+    @Test fun `outEdges retries the store on every call for a node with no adjacency data`() {
+        runBlocking {
+            val fake = WarmingFakeStore()
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "wempty-nodes", "wempty-edges", persistentStore = fake, module = graphTestModule)
+            val nid = Uuid.random()
+
+            repeat(3) { g.outEdges(nid).toList() }
+
+            assertEquals(3, fake.loadEdgesCalls)
+            graphTestHz.getMap<Any, Any>("wempty-nodes").clear()
+            graphTestHz.getMap<Any, Any>("wempty-edges").clear()
+            graphTestHz.getMap<Any, Any>("wempty-edges-adjacency").clear()
+        }
+    }
+
     @Test fun `transaction with store commits to store before cache`() {
         runBlocking {
             val fake = FakeStore()
@@ -784,14 +835,22 @@ private class WarmingFakeStore(
     private val nodes: List<NodeLike<Uuid>> = emptyList(),
 ) : AbyssStoreLike {
     val deletedEdges = mutableListOf<Pair<NodeId, NodeId>>()
+    var loadEdgesCalls = 0
+        private set
+    var loadInEdgesCalls = 0
+        private set
 
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> =
         Either.Right(nodes.find { huid.toNodeId(it.id) == id } to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
-        Either.Right(outEdges.filter { huid.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, huid.toNodeId(it.toId), it, null) })
-    override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =
-        Either.Right(inEdges.filter { huid.toNodeId(it.toId) == toId }.map { StoredEdge(huid.toNodeId(it.fromId), toId, it, null) })
+    override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> {
+        loadEdgesCalls++
+        return Either.Right(outEdges.filter { huid.toNodeId(it.fromId) == fromId }.map { StoredEdge(fromId, huid.toNodeId(it.toId), it, null) })
+    }
+    override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> {
+        loadInEdgesCalls++
+        return Either.Right(inEdges.filter { huid.toNodeId(it.toId) == toId }.map { StoredEdge(huid.toNodeId(it.fromId), toId, it, null) })
+    }
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssStoreTransactionLike {

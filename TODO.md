@@ -228,6 +228,29 @@
   deterministic mid-batch failure). YCQL/ephemeral batching stays out of scope (TODO 2.25). Design
   plan: `ai-scripts/BatchTransactionPlan.md`.
 
+- **✅ 1.22 `preloadOut`/`preloadIn` stop re-hitting the persistent store on every warm-cache call**
+  `AbyssSchemaWorker.outAt`/`inAt` (plus `outEdgeFlow`/`inEdgeFlow` and `cascadeEdgeRemovals`) called
+  `preloadOut`/`preloadIn` unconditionally before every adjacency-cache read, and `preloadOut`/
+  `preloadIn` unconditionally called `persistentStore.loadEdges`/`loadInEdges` on every invocation —
+  even when the adjacency cache was already fully warm for that node+direction. Every multi-hop
+  traversal over a warm cache with persistence enabled paid one YSQL round trip per hop it didn't
+  need. Fixed with check-then-load instead of load-then-check: `adjacencyRead` now fetches the node's
+  real adjacency shards first (a read it already had to do) and only calls `preloadOut`/`preloadIn`
+  if that fetch comes back empty; `outAt`'s edgesMap fast path, `outEdgeFlow`, and
+  `cascadeEdgeRemovals` (which all bypass `adjacencyRead`) share a small `ensureOutWarm` helper doing
+  the same check. No new persisted state, no new Hazelcast map/config/serializer — `preloadOut`/
+  `preloadIn` themselves are unchanged. Accepted, documented ceiling: a node with genuinely zero
+  edges in a direction is indistinguishable from "never preloaded" (no shard entry to tell them
+  apart), so it retries the store on every call rather than caching "confirmed empty" — this also
+  means a transient store failure self-corrects for free (next call just retries) with no special-
+  cased success/failure handling needed. An earlier design added a synthetic warm-marker shard key to
+  solve this; rejected as unneeded complexity once the simpler check-then-load restructuring covered
+  the actual bug. Covered by 3 new `GraphTest` cases (call-count assertions on an extended
+  `WarmingFakeStore`, including one locking in the accepted-ceiling behavior) and a new perf test,
+  `AdjacencyPreloadPerformanceTest` (`-Pperf`): 500 repeated `outEdges` calls on the same warm node
+  went from 500 store hits / 6.18ms avg / 3091ms total before the fix to 1 store hit / 1.91ms avg /
+  953ms total after. Design plan: `ai-scripts/AdjacencyPreloadWarmCheckPlan.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

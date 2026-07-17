@@ -129,11 +129,11 @@ internal class AbyssSchemaWorker(
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
-        preloadOut(nid)
         // Already-optimal hottest path (edgesMap is partitioned by fromId) — don't route it through
         // the adjacency index, which would cost 2 round trips (adjacency read, then edgesMap.getAll)
         // for no gain.
         if (type != null && needValue) {
+            ensureOutWarm(nid)
             val pred = Predicates.and<EdgeKey, Any>(keyEq<EdgeKey, Any>("fromId", nid), Predicates.equal<EdgeKey, Any>("__key.type", type))
             val part = Predicates.partitionPredicate<EdgeKey, Any>(partitionKey(nid), pred)
             val map = edgesMap as IMap<EdgeKey, Any>
@@ -142,9 +142,19 @@ internal class AbyssSchemaWorker(
         return adjacencyRead(nid, AdjacencyDirection.OUT, type, needValue)
     }
 
-    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
-        preloadIn(nid)
-        return adjacencyRead(nid, AdjacencyDirection.IN, type, needValue)
+    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> =
+        adjacencyRead(nid, AdjacencyDirection.IN, type, needValue)
+
+    private fun shardKeysFor(nid: NodeId, direction: AdjacencyDirection): Set<AdjacencyKey> {
+        val pk = partitionKey(nid)
+        return (0 until adjacencyShardCount).map { AdjacencyKey(nid, packShard(direction, it), pk) }.toSet()
+    }
+
+    // preloadOut warms both edgesMap and adjacencyMap together, so an empty adjacency read for a
+    // node's OUT side is also the signal that edgesMap's fast-path scan below needs warming — used by
+    // callers that bypass adjacencyRead (outAt's fast path, outEdgeFlow, cascadeEdgeRemovals).
+    private suspend fun ensureOutWarm(nid: NodeId) {
+        if (withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeysFor(nid, AdjacencyDirection.OUT)) }.isEmpty()) preloadOut(nid)
     }
 
     // One batched getAll across every shard key for nid — Hazelcast groups getAll by owning partition
@@ -152,9 +162,17 @@ internal class AbyssSchemaWorker(
     // trip regardless of adjacencyShardCount, never a per-shard coroutine fan-out.
     @Suppress("UNCHECKED_CAST")
     private suspend fun adjacencyRead(nid: NodeId, direction: AdjacencyDirection, type: String?, needValue: Boolean): List<Hop> {
-        val pk = partitionKey(nid)
-        val shardKeys = (0 until adjacencyShardCount).map { AdjacencyKey(nid, packShard(direction, it), pk) }.toSet()
-        val entries = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys) }.values.flatMap { it.entries }
+        val shardKeys = shardKeysFor(nid, direction)
+        var raw = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys) }
+        if (raw.isEmpty()) {
+            // ponytail: a node with genuinely zero edges in this direction is indistinguishable from
+            // "never preloaded" (no shard entry to tell them apart) — it retries the store on every
+            // call instead of caching "confirmed empty". Upgrade to a dedicated warm-marker key if a
+            // hot zero-degree node's repeated store hits ever show up in profiling.
+            if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
+            raw = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys) }
+        }
+        val entries = raw.values.flatMap { it.entries }
         val edgeTag = type?.let { tagRegistry.edgeTagOf(it) }
         val filtered = if (edgeTag != null) entries.filter { it.edgeTypeTag == edgeTag } else entries
         val hops = filtered.map { entry ->
@@ -185,13 +203,12 @@ internal class AbyssSchemaWorker(
     // endpoint-existence/@EdgeConstraint-checked for free, instead of an independent store commit.
 
     private fun outEdgeFlow(nid: NodeId, predicate: Predicate<EdgeKey, EdgeLike<*, *>>): Flow<EdgeLike<*, *>> = flow {
-        preloadOut(nid)
+        ensureOutWarm(nid)
         val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike<*, *>>(partitionKey(nid), predicate)
         withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
     }
 
     private fun inEdgeFlow(nid: NodeId, typeFilter: String? = null): Flow<EdgeLike<*, *>> = flow {
-        preloadIn(nid)
         adjacencyRead(nid, AdjacencyDirection.IN, typeFilter, needValue = true).forEach { hop -> hop.edge?.let { emit(it) } }
     }
 
@@ -337,8 +354,7 @@ internal class AbyssSchemaWorker(
     // way — a cross-schema edge left dangling after its endpoint is deleted is exactly the bug this
     // used to have (a since-removed `sameSchema(...)` filter excluded cross-schema edges here).
     private suspend fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
-        preloadOut(nid)
-        preloadIn(nid)
+        ensureOutWarm(nid)
         val pk = partitionKey(nid)
         val out = withContext(Dispatchers.IO) {
             edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid)))
