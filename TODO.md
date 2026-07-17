@@ -251,6 +251,14 @@
   went from 500 store hits / 6.18ms avg / 3091ms total before the fix to 1 store hit / 1.91ms avg /
   953ms total after. Design plan: `ai-scripts/AdjacencyPreloadWarmCheckPlan.md`.
 
+- **➡️ 1.23 `AbyssStoreLike` has no DB scan/query capability**
+  `allNodeIds()` is Hazelcast-cache-only (misses cold/evicted nodes — disqualifying for admin/orphan
+  sweeps) and there's no tag-based lookup either; both need the same missing piece: a scan capability
+  on `AbyssStoreLike`, which doesn't exist today (point-gets and writes only). YSQL is cheap to fix
+  (existing GIN-indexed `tags` column covers tag lookup, no schema change); YCQL is structurally
+  harder (secondary indexes conflict with per-row TTL). Full writeup:
+  `ai-scripts/StoreScanCapabilityRFC.md`. No design plan yet.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
