@@ -1,3 +1,8 @@
+## [0.31.2] - 2026-07-17
+
+- Stop `preloadOut`/`preloadIn` from re-hitting the persistent store on every warm-cache `outAt`/`inAt` call (TODO 1.22): `adjacencyRead` now checks the already-cached adjacency shards first and only falls through to the store when that comes back empty, instead of preloading unconditionally on every call; measured 500 store hits down to 1 on a repeated warm-node read (`AdjacencyPreloadPerformanceTest`, `-Pperf`)
+- Move `hazelcast.yaml` from `abyss-graph`'s shipped `main/resources` into `test/resources` — it was only ever consumed by tests, not by any main-source code path, so it no longer risks becoming a consuming app's default Hazelcast config via classpath auto-discovery
+
 ## [0.31.1] - 2026-07-16
 
 - Add `batchTransaction { }` (TODO 1.21): chunked JDBC `addBatch`/`executeBatch` commits (default `batchSize` 1000, one DB transaction per chunk) for bulk YSQL loads, replacing one `executeUpdate()` per op so million-op loads don't pay sequential round-trips inside a single ever-growing distributed transaction; cascade expansion and integrity checks still run once over the full op list before chunking
