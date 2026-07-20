@@ -1,3 +1,7 @@
+## [0.31.3] - 2026-07-20
+
+- Widen `container.transaction { }` on `HeterogeneousSchemaGraph`/`HomogeneousSchemaGraph` into a multi-schema transaction: `on(schema)` now stages `addNode`/`addEdge`/`removeNode`/`removeEdge`/`modifyNode`/`modifyEdge` against any schema registered on the container, committed atomically alongside `addCrossEdge`/`removeCrossEdge` in the same `worker.transaction` call. Source-compatible with every existing cross-edge-only call site; also fixes `HeterogeneousSchemaGraph`'s `allowCrossSchemaEdges` gate to only apply when the transaction actually contains cross edges
+
 ## [0.31.2] - 2026-07-17
 
 - Stop `preloadOut`/`preloadIn` from re-hitting the persistent store on every warm-cache `outAt`/`inAt` call (TODO 1.22): `adjacencyRead` now checks the already-cached adjacency shards first and only falls through to the store when that comes back empty, instead of preloading unconditionally on every call; measured 500 store hits down to 1 on a repeated warm-node read (`AdjacencyPreloadPerformanceTest`, `-Pperf`)
