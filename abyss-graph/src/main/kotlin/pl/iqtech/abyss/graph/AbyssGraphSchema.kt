@@ -128,15 +128,25 @@ class AbyssGraphSchema<ID> internal constructor(
             .mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
-        val buffer = BufferedTransaction<ID>(
-            readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
-            readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
-        )
+        val buffer = newBuffer()
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
         val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
         val width = crossEdgeTagWidth()
         crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }
-        return worker.transaction(buffer.ops.map { it.toNodeOp(adapter, width, headerless) }, checkIntegrity)
+        return worker.transaction(toNodeOps(buffer.ops), checkIntegrity)
+    }
+
+    // Shared with MultiSchemaTransactionBuffer.on(schema): lets a container-level transaction stage
+    // ops against this schema through the same buffering/conversion path a solo transaction{} uses.
+    internal fun newBuffer(): BufferedTransaction<ID> = BufferedTransaction(
+        readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
+        readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
+    )
+
+    internal fun toNodeOps(ops: List<Op>): List<NodeOp> {
+        val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
+        val width = crossEdgeTagWidth()
+        return ops.map { it.toNodeOp(adapter, width, headerless) }
     }
 
     override suspend fun batchTransaction(
@@ -253,7 +263,7 @@ fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersMod
 
 // Typed op collectors: buffer the domain-level calls, then the facade maps each to a NodeId-level
 // NodeOp (via its adapter) for the worker. modify* fetch the old value through the worker at read time.
-private sealed interface Op {
+internal sealed interface Op {
     data class AddNode(val node: NodeLike<*>, val ttl: Duration?) : Op
     data class RemoveNode(val id: Any?) : Op
     data class AddEdge(val edge: EdgeLike<*, *>, val ttl: Duration?) : Op
@@ -263,7 +273,7 @@ private sealed interface Op {
 }
 
 @Suppress("UNCHECKED_CAST")
-private fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>, width: SchemaTagWidth, headerless: Boolean): NodeOp = when (this) {
+internal fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>, width: SchemaTagWidth, headerless: Boolean): NodeOp = when (this) {
     is Op.AddNode    -> NodeOp.AddNode(adapter.toNodeId((node as NodeLike<ID>).id), node, ttl)
     is Op.RemoveNode -> NodeOp.RemoveNode(adapter.toNodeId(id as ID))
     is Op.AddEdge    -> NodeOp.AddEdge(adapter.toNodeId((edge as EdgeLike<ID, ID>).fromId), adapter.toNodeId(edge.toId), edge, ttl)
@@ -272,7 +282,7 @@ private fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>, width: SchemaTagWidth, hea
     is Op.RemoveCrossEdge -> crossSchemaEndpoints(edgeClass, fromId, toId, width, headerless).let { (f, t) -> NodeOp.RemoveEdge(f, t, crossSchemaEdgeType(edgeClass)) }
 }
 
-private class BufferedTransaction<ID>(
+internal class BufferedTransaction<ID>(
     private val readNode: suspend (ID) -> NodeLike<ID>?,
     private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID, ID>?
 ) : AbyssTransactionLike<ID> {

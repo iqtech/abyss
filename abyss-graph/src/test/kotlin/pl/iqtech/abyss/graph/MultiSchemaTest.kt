@@ -390,6 +390,75 @@ class MultiSchemaTest {
         assertTrue(result.isLeft())
     }
 
+    // --- container.transaction { on(schema)... } — multi-schema node/edge ops plus cross edges, all
+    // committed atomically through the same worker.transaction as the cross-edge-only case above. ---
+
+    @Test fun containerLevelTransactionSpansMultipleSchemasWithOnAtomically() = runBlocking {
+        val c = newContainer(allowCross = true)
+        val u = Uuid.random()
+
+        val result = c.g.transaction {
+            on(c.longS).addNode(LongTestNode(1L, name = "L"))
+            on(c.uuidS).addNode(TestNode(u, name = "U"))
+            addCrossEdge(LivesIn(u, 1L))
+        }
+        assertTrue(result.isRight())
+
+        assertEquals("L", c.longS.node<LongTestNode>(1L).getOrNull()?.name)
+        assertEquals("U", c.uuidS.node<TestNode>(u).getOrNull()?.name)
+        val reached = c.uuidS.from(u) { outgoing<LivesIn>(); collectNodes<LongTestNode>().toList() }.getOrNull()!!
+        assertEquals(setOf(1L), reached.map { it.id }.toSet())
+    }
+
+    @Test fun `container-level on(schema) writes are all-or-nothing on store failure`() = runBlocking {
+        val store = RecordingStore()
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx9-nodes", "cx9-edges", allowCrossSchemaEdges = true, persistentStore = store, module = graphTestModule)
+        val longS = g.register(LONG_TAG, LongKeyAdapter)
+        val uuidS = g.register(UUID_TAG, UuidKeyAdapter)
+        try {
+            val u = Uuid.random()
+            store.failTx = true
+            val result = g.transaction {
+                on(longS).addNode(LongTestNode(1L))
+                on(uuidS).addNode(TestNode(u, name = "frank"))
+                addCrossEdge(LivesIn(u, 1L))
+            }
+            assertIs<Either.Left<AbyssError>>(result)
+
+            assertTrue(longS.node<LongTestNode>(1L).isLeft())
+            assertTrue(uuidS.node<TestNode>(u).isLeft())
+        } finally {
+            listOf("cx9-nodes", "cx9-edges", "cx9-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    @Test fun containerLevelTransactionOnRejectsSchemaFromDifferentContainer() = runBlocking {
+        val c = newContainer(allowCross = true)
+        val other = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx10-nodes", "cx10-edges", allowCrossSchemaEdges = true, module = graphTestModule)
+        val foreignLongS = other.register(LONG_TAG_B, LongKeyAdapter)
+        try {
+            val result = c.g.transaction { on(foreignLongS).addNode(LongTestNode(1L)) }
+            assertTrue(result.isLeft())
+        } finally {
+            listOf("cx10-nodes", "cx10-edges", "cx10-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    @Test fun containerLevelTransactionAllowsMultiSchemaWritesWithoutCrossEdgeWhenDisabled() = runBlocking {
+        val c = newContainer() // allowCrossSchemaEdges = false
+        val u = Uuid.random()
+
+        // No addCrossEdge in this block — spanning two schemas' own node ops shouldn't need the
+        // cross-edge gate at all.
+        val result = c.g.transaction {
+            on(c.longS).addNode(LongTestNode(1L))
+            on(c.uuidS).addNode(TestNode(u, name = "j"))
+        }
+        assertTrue(result.isRight())
+        assertEquals(1L, c.longS.node<LongTestNode>(1L).getOrNull()?.id)
+        assertEquals(u, c.uuidS.node<TestNode>(u).getOrNull()?.id)
+    }
+
     // HomogeneousSchemaGraph had zero cross-edge test coverage before this change — its gating logic
     // (same-tag always allowed; different-tag needs allowCrossSchemaEdges, only when checkIntegrity)
     // differs from HeterogeneousSchemaGraph's registeredTags check, so it needs its own cases.

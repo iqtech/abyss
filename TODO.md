@@ -780,3 +780,14 @@
   public/unknown-graph-shape performance stance — see `pathTo`'s benchmark files
   (`PathToPerformanceTest.kt`, `-Pperf`) as the template: isolate with a synthetic supernode/wide-
   frontier graph, measure baseline, fix, remeasure.
+
+- **✅ 4.13 Widen container.transaction into a multi-schema transaction**
+  `HeterogeneousSchemaGraph`/`HomogeneousSchemaGraph`'s `container.transaction { }` is currently
+  cross-edge-only (`CrossSchemaTransactionLike`: `addCrossEdge`/`removeCrossEdge`) — no way to
+  atomically `addNode`/`addEdge`/`modifyNode`/etc against two or more registered schemas plus a
+  cross edge in one commit, even though the underlying `AbyssSchemaWorker.transaction(ops:
+  List<NodeOp>)` is already schema-agnostic and shared by every schema registered on a container.
+  Plan: widen `CrossSchemaTransactionLike`/`CrossSchemaTransactionBuffer` in place into
+  `MultiSchemaTransactionLike`/`MultiSchemaTransactionBuffer` with an added `on(schema)` accessor,
+  rather than adding a second parallel transaction method. Full plan in
+  `ai-scripts/multi-schema-transaction.md`.

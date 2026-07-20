@@ -1,5 +1,6 @@
 package pl.iqtech.abyss.graph
 
+import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.cachedAnnotation
 import pl.iqtech.abyss.dsl.serialName
 import pl.iqtech.abyss.store.api.CrossSchemaEdge
@@ -45,14 +46,17 @@ internal fun crossSchemaEndpoints(edge: EdgeLike<*, *>, width: SchemaTagWidth, h
 
 internal fun crossSchemaEdgeType(edgeClass: KClass<out EdgeLike<*, *>>): String = edgeClass.serialName()
 
-// --- Container-level transaction { addCrossEdge(...) } builder, shared by Homogeneous/Heterogeneous ---
+// --- Container-level transaction { } builder, shared by Homogeneous/Heterogeneous. Cross edges plus,
+// via on(schema), staged node/edge ops against any schema registered on the same container — all
+// committed as one atomic worker.transaction. ------------------------------------------------------
 
-interface CrossSchemaTransactionLike {
+interface MultiSchemaTransactionLike {
     fun addCrossEdge(edge: EdgeLike<*, *>)
     fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?)
+    fun <ID> on(schema: AbyssGraphSchema<ID>): AbyssTransactionLike<ID>
 }
 
-inline fun <reified E : EdgeLike<*, *>> CrossSchemaTransactionLike.removeCrossEdge(fromId: Any?, toId: Any?) =
+inline fun <reified E : EdgeLike<*, *>> MultiSchemaTransactionLike.removeCrossEdge(fromId: Any?, toId: Any?) =
     removeCrossEdge(E::class, fromId, toId)
 
 internal sealed interface CrossSchemaOp {
@@ -70,10 +74,22 @@ internal fun CrossSchemaOp.toNodeOp(width: SchemaTagWidth, headerless: Boolean):
     is CrossSchemaOp.Remove -> endpoints(width, headerless).let { (f, t) -> NodeOp.RemoveEdge(f, t, crossSchemaEdgeType(edgeClass)) }
 }
 
-internal class CrossSchemaTransactionBuffer : CrossSchemaTransactionLike {
-    val ops = mutableListOf<CrossSchemaOp>()
-    override fun addCrossEdge(edge: EdgeLike<*, *>) { ops += CrossSchemaOp.Add(edge) }
+// `container` is the owning Homogeneous/HeterogeneousSchemaGraph — on() checks a schema passed in was
+// actually registered there (AbyssGraphSchema.traversalEngine is set to the owning container by
+// register()/forTag()), so a schema from a different container fails fast instead of silently writing
+// through the wrong worker.
+internal class MultiSchemaTransactionBuffer(private val container: NodeIdEngine) : MultiSchemaTransactionLike {
+    val crossOps = mutableListOf<CrossSchemaOp>()
+    val schemaBuffers = LinkedHashMap<AbyssGraphSchema<*>, BufferedTransaction<*>>()
+
+    override fun addCrossEdge(edge: EdgeLike<*, *>) { crossOps += CrossSchemaOp.Add(edge) }
     override fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?) {
-        ops += CrossSchemaOp.Remove(edgeClass, fromId, toId)
+        crossOps += CrossSchemaOp.Remove(edgeClass, fromId, toId)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override fun <ID> on(schema: AbyssGraphSchema<ID>): AbyssTransactionLike<ID> {
+        require(schema.traversalEngine === container) { "on(schema) called with a schema not registered on this container" }
+        return schemaBuffers.getOrPut(schema) { schema.newBuffer() } as AbyssTransactionLike<ID>
     }
 }

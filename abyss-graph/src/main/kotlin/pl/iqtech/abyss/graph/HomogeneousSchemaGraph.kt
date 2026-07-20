@@ -89,17 +89,22 @@ class HomogeneousSchemaGraph<ID>(
     // worker.transaction/worker.ephemeral pipeline as ordinary node/edge ops — atomic, persisted
     // through the same stores, endpoint-existence + @EdgeConstraint checked for free. -------------
 
-    // Batch of addCrossEdge/removeCrossEdge calls, committed as one atomic worker.transaction.
-    suspend fun transaction(checkIntegrity: Boolean = true, block: suspend CrossSchemaTransactionLike.() -> Unit): Either<AbyssError, Unit> {
-        val buffer = CrossSchemaTransactionBuffer()
+    // Batch of on(schema).addNode/addEdge/etc plus addCrossEdge/removeCrossEdge calls, committed as
+    // one atomic worker.transaction — able to span every tag registered on this container in one commit.
+    suspend fun transaction(checkIntegrity: Boolean = true, block: suspend MultiSchemaTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+        val buffer = MultiSchemaTransactionBuffer(this)
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+
         if (checkIntegrity) {
-            for (op in buffer.ops) {
+            for (op in buffer.crossOps) {
                 val (fromNid, toNid) = op.endpoints(tagWidth, headerless = true)
                 tagCheckFailure(fromNid, toNid)?.let { return it.left() }
             }
         }
-        return worker.transaction(buffer.ops.map { it.toNodeOp(tagWidth, headerless = true) }, checkIntegrity)
+
+        val ops = buffer.schemaBuffers.entries.flatMap { (schema, buf) -> schema.toNodeOps(buf.ops) } +
+            buffer.crossOps.map { it.toNodeOp(tagWidth, headerless = true) }
+        return worker.transaction(ops, checkIntegrity)
     }
 
     // Raw NodeId escape hatch (no @CrossSchemaEdge required) — kept for schemas without a static tag.
