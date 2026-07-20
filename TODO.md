@@ -265,6 +265,12 @@
   added/modified element can carry a set of tags. Tags are system-wide (e.g. indexing/admin
   metadata), not user-specific domain data.
   Design plan: `ai-scripts/TransactionTagsPlan.md`.
+  Follow-up: writes are additive, not full-replace — YSQL upserts union tags via
+  `ARRAY(SELECT DISTINCT UNNEST(...))` against the existing row, YCQL uses `UPDATE ... SET tags =
+  tags + ?`, both in the same single write statement (no extra read, no second op/path). YCQL's
+  `tags` column changed from `LIST<TEXT>` to `SET<TEXT>` so repeated appends dedupe at the DB level.
+  Tag removal is intentionally not implemented — an operational task done directly via
+  `cqlsh`/`ysqlsh` when needed, not a code path.
 
 ## 2. Medium
 
