@@ -259,6 +259,13 @@
   harder (secondary indexes conflict with per-row TTL). Full writeup:
   `ai-scripts/StoreScanCapabilityRFC.md`. No design plan yet.
 
+- **✅ 1.24 Move tags off domain objects and into the table; add `tags` param to `transaction{}`**
+  Remove tags from domain objects, keep them inside the table (backing store column, not a
+  node/edge property). Introduce an additional parameter to `transaction { }` — `tags` — so each
+  added/modified element can carry a set of tags. Tags are system-wide (e.g. indexing/admin
+  metadata), not user-specific domain data.
+  Design plan: `ai-scripts/TransactionTagsPlan.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

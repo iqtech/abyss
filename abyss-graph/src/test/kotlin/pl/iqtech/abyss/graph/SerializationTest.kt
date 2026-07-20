@@ -29,7 +29,6 @@ import kotlin.uuid.Uuid
 data class LongTestNode(
     override val id: Long,
     val name: String = "",
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : NodeLike<Long>
@@ -38,7 +37,6 @@ data class LongTestNode(
 data class LongTestEdge(
     override val fromId: Long,
     override val toId: Long,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Long, Long>
@@ -47,7 +45,6 @@ data class LongTestEdge(
 data class StrTestNode(
     override val id: String,
     val name: String = "",
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : NodeLike<String>
@@ -56,7 +53,6 @@ data class StrTestNode(
 data class StrTestEdge(
     override val fromId: String,
     override val toId: String,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<String, String>
@@ -64,7 +60,6 @@ data class StrTestEdge(
 @Serializable @SerialName("test_node") @TypeTag(1)
 data class TestNode(
     override val id: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val name: String
@@ -74,7 +69,6 @@ data class TestNode(
 data class TestEdge(
     override val fromId: Uuid,
     override val toId: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String

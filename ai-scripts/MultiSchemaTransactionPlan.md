@@ -1,6 +1,6 @@
 # Widen container.transaction into a multi-schema transaction
 
-TODO 4.13.
+TODO 4.13. Status: **implemented and published** (v0.31.3).
 
 ## Context
 

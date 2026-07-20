@@ -264,21 +264,21 @@ fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersMod
 // Typed op collectors: buffer the domain-level calls, then the facade maps each to a NodeId-level
 // NodeOp (via its adapter) for the worker. modify* fetch the old value through the worker at read time.
 internal sealed interface Op {
-    data class AddNode(val node: NodeLike<*>, val ttl: Duration?) : Op
+    data class AddNode(val node: NodeLike<*>, val ttl: Duration?, val tags: Set<String>) : Op
     data class RemoveNode(val id: Any?) : Op
-    data class AddEdge(val edge: EdgeLike<*, *>, val ttl: Duration?) : Op
+    data class AddEdge(val edge: EdgeLike<*, *>, val ttl: Duration?, val tags: Set<String>) : Op
     data class RemoveEdge(val fromId: Any?, val toId: Any?, val type: String) : Op
-    data class AddCrossEdge(val edge: EdgeLike<*, *>, val ttl: Duration?) : Op
+    data class AddCrossEdge(val edge: EdgeLike<*, *>, val ttl: Duration?, val tags: Set<String>) : Op
     data class RemoveCrossEdge(val edgeClass: KClass<out EdgeLike<*, *>>, val fromId: Any?, val toId: Any?) : Op
 }
 
 @Suppress("UNCHECKED_CAST")
 internal fun <ID> Op.toNodeOp(adapter: KeyAdapter<ID>, width: SchemaTagWidth, headerless: Boolean): NodeOp = when (this) {
-    is Op.AddNode    -> NodeOp.AddNode(adapter.toNodeId((node as NodeLike<ID>).id), node, ttl)
+    is Op.AddNode    -> NodeOp.AddNode(adapter.toNodeId((node as NodeLike<ID>).id), node, ttl, tags)
     is Op.RemoveNode -> NodeOp.RemoveNode(adapter.toNodeId(id as ID))
-    is Op.AddEdge    -> NodeOp.AddEdge(adapter.toNodeId((edge as EdgeLike<ID, ID>).fromId), adapter.toNodeId(edge.toId), edge, ttl)
+    is Op.AddEdge    -> NodeOp.AddEdge(adapter.toNodeId((edge as EdgeLike<ID, ID>).fromId), adapter.toNodeId(edge.toId), edge, ttl, tags)
     is Op.RemoveEdge -> NodeOp.RemoveEdge(adapter.toNodeId(fromId as ID), adapter.toNodeId(toId as ID), type)
-    is Op.AddCrossEdge -> crossSchemaEndpoints(edge, width, headerless).let { (f, t) -> NodeOp.AddEdge(f, t, edge, ttl) }
+    is Op.AddCrossEdge -> crossSchemaEndpoints(edge, width, headerless).let { (f, t) -> NodeOp.AddEdge(f, t, edge, ttl, tags) }
     is Op.RemoveCrossEdge -> crossSchemaEndpoints(edgeClass, fromId, toId, width, headerless).let { (f, t) -> NodeOp.RemoveEdge(f, t, crossSchemaEdgeType(edgeClass)) }
 }
 
@@ -287,20 +287,20 @@ internal class BufferedTransaction<ID>(
     private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID, ID>?
 ) : AbyssTransactionLike<ID> {
     val ops = mutableListOf<Op>()
-    override fun addNode(node: NodeLike<ID>)                          { ops += Op.AddNode(node, null) }
+    override fun addNode(node: NodeLike<ID>, tags: Set<String>)                          { ops += Op.AddNode(node, null, tags) }
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike<ID, ID>)                          { ops += Op.AddEdge(edge, null) }
+    override fun addEdge(edge: EdgeLike<ID, ID>, tags: Set<String>)                          { ops += Op.AddEdge(edge, null, tags) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
-    override fun addCrossEdge(edge: EdgeLike<*, *>)                    { ops += Op.AddCrossEdge(edge, null) }
+    override fun addCrossEdge(edge: EdgeLike<*, *>, tags: Set<String>)                    { ops += Op.AddCrossEdge(edge, null, tags) }
     override fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?) {
         ops += Op.RemoveCrossEdge(edgeClass, fromId, toId)
     }
-    override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
-        ops += Op.AddNode(transform(readNode(id)), null)
+    override suspend fun modifyNode(id: ID, tags: Set<String>, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
+        ops += Op.AddNode(transform(readNode(id)), null, tags)
     }
-    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>) {
+    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, tags: Set<String>, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>) {
         ops += Op.RemoveEdge(fromId, toId, type)
-        ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), null)
+        ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), null, tags)
     }
 }
 
@@ -310,19 +310,19 @@ private class BufferedEphemeralTransaction<ID>(
     private val readEdge: suspend (ID, ID, String) -> EdgeLike<ID, ID>?
 ) : AbyssEphemeralTransactionLike<ID> {
     val ops = mutableListOf<Op>()
-    override fun addNode(node: NodeLike<ID>)                          { ops += Op.AddNode(node, ttl) }
+    override fun addNode(node: NodeLike<ID>, tags: Set<String>)                          { ops += Op.AddNode(node, ttl, tags) }
     override fun removeNode(id: ID)                                    { ops += Op.RemoveNode(id) }
-    override fun addEdge(edge: EdgeLike<ID, ID>)                          { ops += Op.AddEdge(edge, ttl) }
+    override fun addEdge(edge: EdgeLike<ID, ID>, tags: Set<String>)                          { ops += Op.AddEdge(edge, ttl, tags) }
     override fun removeEdge(fromId: ID, toId: ID, type: String)       { ops += Op.RemoveEdge(fromId, toId, type) }
-    override fun addCrossEdge(edge: EdgeLike<*, *>)                    { ops += Op.AddCrossEdge(edge, ttl) }
+    override fun addCrossEdge(edge: EdgeLike<*, *>, tags: Set<String>)                    { ops += Op.AddCrossEdge(edge, ttl, tags) }
     override fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?) {
         ops += Op.RemoveCrossEdge(edgeClass, fromId, toId)
     }
-    override suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
-        ops += Op.AddNode(transform(readNode(id)), ttl)
+    override suspend fun modifyNode(id: ID, tags: Set<String>, transform: (NodeLike<ID>?) -> NodeLike<ID>) {
+        ops += Op.AddNode(transform(readNode(id)), ttl, tags)
     }
-    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>) {
+    override suspend fun modifyEdge(fromId: ID, toId: ID, type: String, tags: Set<String>, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>) {
         ops += Op.RemoveEdge(fromId, toId, type)
-        ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), ttl)
+        ops += Op.AddEdge(transform(readEdge(fromId, toId, type)), ttl, tags)
     }
 }

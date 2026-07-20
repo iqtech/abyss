@@ -36,7 +36,6 @@ import kotlin.uuid.Uuid
 @SerialName("yb_test_node")
 data class YbTestNode(
     override val id: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val name: String
@@ -47,7 +46,6 @@ data class YbTestNode(
 data class YbTestEdge(
     override val fromId: Uuid,
     override val toId: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val label: String
@@ -103,7 +101,7 @@ class LoadTest {
 
     @Test fun `loadNode from ycql returns positive remaining TTL`() {
         val node = YbTestNode(id = Uuid.random(), name = "ttl-node")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds, emptySet()) } })
 
         val result = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
         assertIs<Either.Right<Pair<NodeLike<*>?, *>>>(result)
@@ -131,28 +129,55 @@ class LoadTest {
 
     @Test fun `transaction saveNode persists to ysql`() {
         val node = YbTestNode(id = Uuid.random(), name = "tx-ysql-node")
-        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node, emptySet()) } })
         val loaded = runBlocking { ybPersistentStore.loadNode(nid(node.id)) }
         assertEquals("tx-ysql-node", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
     }
 
     @Test fun `transaction saveNode with ttl persists to ycql`() {
         val node = YbTestNode(id = Uuid.random(), name = "tx-ycql-node")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds, emptySet()) } })
         val loaded = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
         assertEquals("tx-ycql-node", assertIs<YbTestNode>((loaded as Either.Right).value.first).name)
     }
 
     @Test fun `transaction saveEdge persists to ysql`() {
         val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tx-ysql-edge")
-        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, emptySet()) } })
         val loaded = runBlocking { ybPersistentStore.loadEdge(nid(edge.fromId), nid(edge.toId), "yb_test_edge") }
         assertEquals("tx-ysql-edge", assertIs<YbTestEdge>((loaded as Either.Right).value.first).label)
     }
 
+    // ── tags (TODO 1.24): write-only column, round-tripped via a raw read since AbyssStoreLike
+    // itself has no read path for tags yet (TODO 1.23). ─────────────────────────────────────────
+
+    @Test fun `transaction saveNode persists tags to the ysql tags column`() {
+        val node = YbTestNode(id = Uuid.random(), name = "tagged-ysql-node")
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node, setOf("alpha", "beta")) } }
+        assertEquals(setOf("alpha", "beta"), readYsqlNodeTags(node.id))
+    }
+
+    @Test fun `transaction saveEdge persists tags to the ysql tags column`() {
+        val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tagged-ysql-edge")
+        runBlocking { ybPersistentStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, setOf("gamma")) } }
+        assertEquals(setOf("gamma"), readYsqlEdgeTags(edge.fromId, edge.toId))
+    }
+
+    @Test fun `transaction saveNode persists tags to the ycql tags column`() {
+        val node = YbTestNode(id = Uuid.random(), name = "tagged-ycql-node")
+        runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds, setOf("delta")) } }
+        assertEquals(setOf("delta"), readYcqlNodeTags(node.id))
+    }
+
+    @Test fun `transaction saveEdge persists tags to the ycql tags column`() {
+        val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tagged-ycql-edge")
+        runBlocking { ybEphemeralStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, 3600.seconds, setOf("epsilon")) } }
+        assertEquals(setOf("epsilon"), readYcqlEdgeTags(edge.fromId, edge.toId))
+    }
+
     @Test fun `ephemeral node with ttl is readable before expiry and gone after`() {
         val node = YbTestNode(id = Uuid.random(), name = "ephemeral")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 5.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 5.seconds, emptySet()) } })
 
         Thread.sleep(1_000)
         val before = runBlocking { ybEphemeralStore.loadNode(nid(node.id)) }
@@ -165,7 +190,7 @@ class LoadTest {
 
     @Test fun `transaction deleteNode removes from ysql`() {
         val node = YbTestNode(id = Uuid.random(), name = "to-delete")
-        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node) } }
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node, emptySet()) } }
         assertIs<Either.Right<Unit>>(runBlocking { ybPersistentStore.transaction { deleteNode(nid(node.id)) } })
         val loaded = runBlocking { ybPersistentStore.loadNode(nid(node.id)) }
         assertEquals(null, (loaded as Either.Right).value.first)
@@ -226,7 +251,7 @@ class LoadTest {
 
     @Test fun `ephemeral saveEdge is outgoing-only - found via loadEdges, absent via loadInEdges`() {
         val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "outgoing-only")
-        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, 3600.seconds) } })
+        assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, 3600.seconds, emptySet()) } })
 
         val outResult = runBlocking { ybEphemeralStore.loadEdges(nid(edge.fromId)) }
         assertEquals(1, (outResult as Either.Right).value.size)
@@ -241,7 +266,7 @@ class LoadTest {
         val ids = List(125) { Uuid.random() }
         val result = runBlocking {
             ybPersistentStore.batchTransaction(batchSize = 50) {
-                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batched")) }
+                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batched"), emptySet()) }
             }
         }
         assertIs<Either.Right<Unit>>(result)
@@ -255,7 +280,7 @@ class LoadTest {
         val node = YbTestNode(id = Uuid.random(), name = "add-then-remove")
         val result = runBlocking {
             ybPersistentStore.batchTransaction {
-                saveNode(nid(node.id), node)
+                saveNode(nid(node.id), node, emptySet())
                 deleteNode(nid(node.id))
             }
         }
@@ -266,12 +291,12 @@ class LoadTest {
 
     @Test fun `batchTransaction preserves op order for remove-then-add of the same key`() {
         val node = YbTestNode(id = Uuid.random(), name = "remove-then-add")
-        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), YbTestNode(id = node.id, name = "stale")) } }
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), YbTestNode(id = node.id, name = "stale"), emptySet()) } }
 
         val result = runBlocking {
             ybPersistentStore.batchTransaction {
                 deleteNode(nid(node.id))
-                saveNode(nid(node.id), node)
+                saveNode(nid(node.id), node, emptySet())
             }
         }
         assertIs<Either.Right<Unit>>(result)
@@ -290,7 +315,7 @@ class LoadTest {
 
         val result = runBlocking {
             failingStore.batchTransaction(batchSize = 2) {
-                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batch-fail")) }
+                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batch-fail"), emptySet()) }
             }
         }
         assertIs<Either.Left<AbyssError>>(result)
@@ -307,10 +332,10 @@ class LoadTest {
 }
 
 private fun nodeJson(id: Uuid, name: String) =
-    """{"type":"yb_test_node","id":"$id","tags":[],"createdAt":"1970-01-01T00:00:00Z","updatedAt":"1970-01-01T00:00:00Z","name":"$name"}"""
+    """{"type":"yb_test_node","id":"$id","createdAt":"1970-01-01T00:00:00Z","updatedAt":"1970-01-01T00:00:00Z","name":"$name"}"""
 
 private fun edgeJson(fromId: Uuid, toId: Uuid, label: String) =
-    """{"type":"yb_test_edge","fromId":"$fromId","toId":"$toId","tags":[],"createdAt":"1970-01-01T00:00:00Z","updatedAt":"1970-01-01T00:00:00Z","label":"$label"}"""
+    """{"type":"yb_test_edge","fromId":"$fromId","toId":"$toId","createdAt":"1970-01-01T00:00:00Z","updatedAt":"1970-01-01T00:00:00Z","label":"$label"}"""
 
 private fun insertYsqlNode(id: Uuid, json: String) {
     DriverManager.getConnection("jdbc:postgresql://localhost:5433/abyss_test_graph", "abyss", "abyss").use { conn ->
@@ -370,6 +395,51 @@ private fun insertYcqlEdge(fromId: Uuid, toId: Uuid, json: String) {
             )
         }
 }
+
+private fun readYsqlNodeTags(id: Uuid): Set<String> =
+    DriverManager.getConnection("jdbc:postgresql://localhost:5433/abyss_test_graph", "abyss", "abyss").use { conn ->
+        conn.prepareStatement("SELECT tags FROM abyss.nodes WHERE id = ?").use { stmt ->
+            stmt.setBytes(1, UuidKeyAdapter.toNodeId(id).bytes)
+            stmt.executeQuery().use { rs -> rs.next(); (rs.getArray("tags").array as Array<*>).map { it as String }.toSet() }
+        }
+    }
+
+private fun readYsqlEdgeTags(fromId: Uuid, toId: Uuid): Set<String> =
+    DriverManager.getConnection("jdbc:postgresql://localhost:5433/abyss_test_graph", "abyss", "abyss").use { conn ->
+        conn.prepareStatement("SELECT tags FROM abyss.edges WHERE from_id = ? AND to_id = ?").use { stmt ->
+            stmt.setBytes(1, UuidKeyAdapter.toNodeId(fromId).bytes)
+            stmt.setBytes(2, UuidKeyAdapter.toNodeId(toId).bytes)
+            stmt.executeQuery().use { rs -> rs.next(); (rs.getArray("tags").array as Array<*>).map { it as String }.toSet() }
+        }
+    }
+
+private fun readYcqlNodeTags(id: Uuid): Set<String> =
+    CqlSession.builder()
+        .addContactPoint(InetSocketAddress("localhost", 9042))
+        .withLocalDatacenter("datacenter1")
+        .build()
+        .use { session ->
+            session.execute(
+                SimpleStatement.newInstance(
+                    "SELECT tags FROM abyss_test_graph.ephemeral_nodes WHERE id = ?",
+                    ByteBuffer.wrap(UuidKeyAdapter.toNodeId(id).bytes)
+                )
+            ).one()!!.getList("tags", String::class.java)!!.toSet()
+        }
+
+private fun readYcqlEdgeTags(fromId: Uuid, toId: Uuid): Set<String> =
+    CqlSession.builder()
+        .addContactPoint(InetSocketAddress("localhost", 9042))
+        .withLocalDatacenter("datacenter1")
+        .build()
+        .use { session ->
+            session.execute(
+                SimpleStatement.newInstance(
+                    "SELECT tags FROM abyss_test_graph.ephemeral_edges WHERE from_id = ? AND to_id = ?",
+                    ByteBuffer.wrap(UuidKeyAdapter.toNodeId(fromId).bytes), ByteBuffer.wrap(UuidKeyAdapter.toNodeId(toId).bytes)
+                )
+            ).one()!!.getList("tags", String::class.java)!!.toSet()
+        }
 
 private fun rawYsqlDataSource(): DataSource = HikariDataSource(HikariConfig().apply {
     jdbcUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph"

@@ -54,7 +54,6 @@ import kotlin.uuid.Uuid
 data class CrossRefEdge(
     override val fromId: NodeId,
     override val toId: NodeId,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
     val note: String = "",
@@ -74,7 +73,6 @@ private val LONG_TAG_B = SchemaTag(3L)
 data class LivesIn(
     override val fromId: Uuid,
     override val toId: Long,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Uuid, Long>
@@ -88,7 +86,6 @@ data class LivesIn(
 data class TenantLink(
     override val fromId: Long,
     override val toId: Long,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Long, Long>
@@ -101,7 +98,6 @@ data class TenantLink(
 data class SameTenantLink(
     override val fromId: Long,
     override val toId: Long,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Long, Long>
@@ -769,8 +765,8 @@ private class RecordingStore(var failTx: Boolean = false) : AbyssStoreLike {
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         if (failTx) return AbyssError.Unexpected(RuntimeException("store down")).left()
         val tx = object : AbyssStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>) {}
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) { savedEdges += Triple(fromId, toId, edge) }
+            override fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) { savedEdges += Triple(fromId, toId, edge) }
             override fun deleteNode(id: NodeId) {}
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { deletedEdges += Triple(fromId, toId, type) }
         }
@@ -788,8 +784,8 @@ private class RecordingEphemeralStore : AbyssEphemeralStoreLike {
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssEphemeralStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) {}
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration) { savedEdges += Triple(fromId, toId, edge) }
+            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) { savedEdges += Triple(fromId, toId, edge) }
             override fun deleteNode(id: NodeId) {}
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { deletedEdges += Triple(fromId, toId, type) }
         }

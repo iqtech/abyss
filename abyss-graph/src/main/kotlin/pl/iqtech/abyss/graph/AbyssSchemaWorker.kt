@@ -42,9 +42,9 @@ import kotlin.time.Duration
 // its adapter) before handing them to the worker.
 internal sealed interface NodeOp {
     val ttl: Duration?
-    data class AddNode(val id: NodeId, val node: NodeLike<*>, override val ttl: Duration?) : NodeOp
+    data class AddNode(val id: NodeId, val node: NodeLike<*>, override val ttl: Duration?, val tags: Set<String>) : NodeOp
     data class RemoveNode(val id: NodeId) : NodeOp { override val ttl: Duration? get() = null }
-    data class AddEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, override val ttl: Duration?) : NodeOp
+    data class AddEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, override val ttl: Duration?, val tags: Set<String>) : NodeOp
     data class RemoveEdge(val fromId: NodeId, val toId: NodeId, val type: String) : NodeOp { override val ttl: Duration? get() = null }
 }
 
@@ -367,16 +367,16 @@ internal class AbyssSchemaWorker(
     }
 
     private fun AbyssStoreTransactionLike.applyPersistentOp(op: NodeOp) = when (op) {
-        is NodeOp.AddNode    -> saveNode(op.id, op.node)
+        is NodeOp.AddNode    -> saveNode(op.id, op.node, op.tags)
         is NodeOp.RemoveNode -> deleteNode(op.id)
-        is NodeOp.AddEdge    -> saveEdge(op.fromId, op.toId, op.edge)
+        is NodeOp.AddEdge    -> saveEdge(op.fromId, op.toId, op.edge, op.tags)
         is NodeOp.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
     }
 
     private fun AbyssEphemeralStoreTransactionLike.applyEphemeralOp(op: NodeOp) = when (op) {
-        is NodeOp.AddNode    -> saveNode(op.id, op.node, op.ttl!!)
+        is NodeOp.AddNode    -> saveNode(op.id, op.node, op.ttl!!, op.tags)
         is NodeOp.RemoveNode -> deleteNode(op.id)
-        is NodeOp.AddEdge    -> saveEdge(op.fromId, op.toId, op.edge, op.ttl!!)
+        is NodeOp.AddEdge    -> saveEdge(op.fromId, op.toId, op.edge, op.ttl!!, op.tags)
         is NodeOp.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
     }
 

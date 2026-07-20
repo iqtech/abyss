@@ -26,7 +26,6 @@ import kotlin.uuid.Uuid
 // and callers pattern-match on concrete types rather than Unknown* — so the mismatch is harmless.
 data class UnknownNode(val raw: JsonElement) : NodeLike<Uuid> {
     override val id: Uuid = raw.jsonObject["id"]?.jsonPrimitive?.content?.let(Uuid::parse) ?: Uuid.parse("00000000-0000-0000-0000-000000000000")
-    override val tags: List<String> = emptyList()
     override val createdAt: Instant = Instant.fromEpochSeconds(0)
     override val updatedAt: Instant = Instant.fromEpochSeconds(0)
     override fun toString() = raw.toString()
@@ -37,7 +36,6 @@ data class UnknownNode(val raw: JsonElement) : NodeLike<Uuid> {
 data class UnknownEdge(val raw: JsonElement) : EdgeLike<NodeId, NodeId> {
     override val fromId: NodeId = raw.jsonObject["fromId"]?.jsonPrimitive?.content?.let(::nodeIdOrEmpty) ?: NodeId(ByteArray(0))
     override val toId: NodeId   = raw.jsonObject["toId"]?.jsonPrimitive?.content?.let(::nodeIdOrEmpty) ?: NodeId(ByteArray(0))
-    override val tags: List<String> = emptyList()
     override val createdAt: Instant = Instant.fromEpochSeconds(0)
     override val updatedAt: Instant = Instant.fromEpochSeconds(0)
     override fun toString() = raw.toString()

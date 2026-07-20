@@ -39,8 +39,8 @@ private class DelayedFakeStore(
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>) {}
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
+            override fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) {}
             override fun deleteNode(id: NodeId) {}
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }

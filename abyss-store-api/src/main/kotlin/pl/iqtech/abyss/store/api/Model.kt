@@ -6,7 +6,6 @@ import kotlinx.serialization.Polymorphic
 @Polymorphic
 interface NodeLike<ID> {
     val id: ID
-    val tags: List<String>
     val createdAt: Instant
     val updatedAt: Instant
 }
@@ -16,7 +15,6 @@ interface NodeLike<ID> {
 interface EdgeLike<FID, TID> {
     val fromId: FID
     val toId: TID
-    val tags: List<String>
     val createdAt: Instant
     val updatedAt: Instant
 }

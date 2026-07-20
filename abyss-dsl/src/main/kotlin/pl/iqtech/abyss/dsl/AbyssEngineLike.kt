@@ -48,25 +48,25 @@ interface AbyssEngineLike<ID> {
 }
 
 interface AbyssTransactionLike<ID> {
-    fun addNode(node: NodeLike<ID>)
+    fun addNode(node: NodeLike<ID>, tags: Set<String> = emptySet())
     fun removeNode(id: ID)
-    fun addEdge(edge: EdgeLike<ID, ID>)
+    fun addEdge(edge: EdgeLike<ID, ID>, tags: Set<String> = emptySet())
     fun removeEdge(fromId: ID, toId: ID, type: String)
     // Cross-schema: requires a Homogeneous/HeterogeneousSchemaGraph container and edge::class to
     // carry @CrossSchemaEdge — see AbyssGraphSchema.transaction's crossEdgeCheck.
-    fun addCrossEdge(edge: EdgeLike<*, *>)
+    fun addCrossEdge(edge: EdgeLike<*, *>, tags: Set<String> = emptySet())
     fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?)
-    suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>)
-    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>)
+    suspend fun modifyNode(id: ID, tags: Set<String> = emptySet(), transform: (NodeLike<ID>?) -> NodeLike<ID>)
+    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, tags: Set<String> = emptySet(), transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>)
 }
 
 interface AbyssEphemeralTransactionLike<ID> {
-    fun addNode(node: NodeLike<ID>)
+    fun addNode(node: NodeLike<ID>, tags: Set<String> = emptySet())
     fun removeNode(id: ID)
-    fun addEdge(edge: EdgeLike<ID, ID>)
+    fun addEdge(edge: EdgeLike<ID, ID>, tags: Set<String> = emptySet())
     fun removeEdge(fromId: ID, toId: ID, type: String)
-    fun addCrossEdge(edge: EdgeLike<*, *>)
+    fun addCrossEdge(edge: EdgeLike<*, *>, tags: Set<String> = emptySet())
     fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?)
-    suspend fun modifyNode(id: ID, transform: (NodeLike<ID>?) -> NodeLike<ID>)
-    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>)
+    suspend fun modifyNode(id: ID, tags: Set<String> = emptySet(), transform: (NodeLike<ID>?) -> NodeLike<ID>)
+    suspend fun modifyEdge(fromId: ID, toId: ID, type: String, tags: Set<String> = emptySet(), transform: (EdgeLike<ID, ID>?) -> EdgeLike<ID, ID>)
 }

@@ -51,7 +51,7 @@ internal fun crossSchemaEdgeType(edgeClass: KClass<out EdgeLike<*, *>>): String 
 // committed as one atomic worker.transaction. ------------------------------------------------------
 
 interface MultiSchemaTransactionLike {
-    fun addCrossEdge(edge: EdgeLike<*, *>)
+    fun addCrossEdge(edge: EdgeLike<*, *>, tags: Set<String> = emptySet())
     fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?)
     fun <ID> on(schema: AbyssGraphSchema<ID>): AbyssTransactionLike<ID>
 }
@@ -60,7 +60,7 @@ inline fun <reified E : EdgeLike<*, *>> MultiSchemaTransactionLike.removeCrossEd
     removeCrossEdge(E::class, fromId, toId)
 
 internal sealed interface CrossSchemaOp {
-    data class Add(val edge: EdgeLike<*, *>) : CrossSchemaOp
+    data class Add(val edge: EdgeLike<*, *>, val tags: Set<String>) : CrossSchemaOp
     data class Remove(val edgeClass: KClass<out EdgeLike<*, *>>, val fromId: Any?, val toId: Any?) : CrossSchemaOp
 }
 
@@ -70,7 +70,7 @@ internal fun CrossSchemaOp.endpoints(width: SchemaTagWidth, headerless: Boolean)
 }
 
 internal fun CrossSchemaOp.toNodeOp(width: SchemaTagWidth, headerless: Boolean): NodeOp = when (this) {
-    is CrossSchemaOp.Add -> endpoints(width, headerless).let { (f, t) -> NodeOp.AddEdge(f, t, edge, null) }
+    is CrossSchemaOp.Add -> endpoints(width, headerless).let { (f, t) -> NodeOp.AddEdge(f, t, edge, null, tags) }
     is CrossSchemaOp.Remove -> endpoints(width, headerless).let { (f, t) -> NodeOp.RemoveEdge(f, t, crossSchemaEdgeType(edgeClass)) }
 }
 
@@ -82,7 +82,7 @@ internal class MultiSchemaTransactionBuffer(private val container: NodeIdEngine)
     val crossOps = mutableListOf<CrossSchemaOp>()
     val schemaBuffers = LinkedHashMap<AbyssGraphSchema<*>, BufferedTransaction<*>>()
 
-    override fun addCrossEdge(edge: EdgeLike<*, *>) { crossOps += CrossSchemaOp.Add(edge) }
+    override fun addCrossEdge(edge: EdgeLike<*, *>, tags: Set<String>) { crossOps += CrossSchemaOp.Add(edge, tags) }
     override fun removeCrossEdge(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?) {
         crossOps += CrossSchemaOp.Remove(edgeClass, fromId, toId)
     }

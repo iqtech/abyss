@@ -107,17 +107,17 @@ class HeterogeneousSchemaGraph(
     }
 
     // Raw NodeId escape hatch (no @CrossSchemaEdge required) — kept for schemas without a static tag.
-    suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
+    suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, tags: Set<String> = emptySet(), checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
         crossEdgeGateFailure()?.let { return it.left() }
         if (checkIntegrity) tagCheckFailure(edge.fromId, edge.toId)?.let { return it.left() }
-        return worker.transaction(listOf(NodeOp.AddEdge(edge.fromId, edge.toId, edge, null)), checkIntegrity)
+        return worker.transaction(listOf(NodeOp.AddEdge(edge.fromId, edge.toId, edge, null, tags)), checkIntegrity)
     }
 
     // Ephemeral (TTL) cross edge — same gate and tag check, routes to the ephemeral store instead.
-    suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, ttl: Duration, checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
+    suspend fun addCrossEdge(edge: EdgeLike<NodeId, NodeId>, ttl: Duration, tags: Set<String> = emptySet(), checkIntegrity: Boolean = true): Either<AbyssError, Unit> {
         crossEdgeGateFailure()?.let { return it.left() }
         if (checkIntegrity) tagCheckFailure(edge.fromId, edge.toId)?.let { return it.left() }
-        return worker.ephemeral(listOf(NodeOp.AddEdge(edge.fromId, edge.toId, edge, ttl)), checkIntegrity)
+        return worker.ephemeral(listOf(NodeOp.AddEdge(edge.fromId, edge.toId, edge, ttl, tags)), checkIntegrity)
     }
 
     suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> =

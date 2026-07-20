@@ -31,8 +31,8 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 private sealed interface EphemeralOp {
-    data class SaveNode(val id: NodeId, val node: NodeLike<*>, val ttl: Duration) : EphemeralOp
-    data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val ttl: Duration) : EphemeralOp
+    data class SaveNode(val id: NodeId, val node: NodeLike<*>, val ttl: Duration, val tags: Set<String>) : EphemeralOp
+    data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val ttl: Duration, val tags: Set<String>) : EphemeralOp
     data class DeleteNode(val id: NodeId) : EphemeralOp
     data class DeleteEdge(val fromId: NodeId, val toId: NodeId, val type: String) : EphemeralOp
 }
@@ -151,7 +151,7 @@ class YugabyteEphemeralStore(
                 val expiresAt = now.plusSeconds(ttl)
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO $ycqlKeyspace.ephemeral_nodes (id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    idBuf(op.id), type, data, op.node.tags, now, now, expiresAt
+                    idBuf(op.id), type, data, op.tags.toList(), now, now, expiresAt
                 ))
             }
             // Outgoing-only (TODO 1.13): a single-row INSERT is atomic in YCQL, so no reverse
@@ -164,7 +164,7 @@ class YugabyteEphemeralStore(
                 ycql.execute(SimpleStatement.newInstance(
                     "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
                     idBuf(op.fromId), idBuf(op.toId), type, data,
-                    op.edge.tags, now, now, expiresAt
+                    op.tags.toList(), now, now, expiresAt
                 ))
             }
             is EphemeralOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(idBuf(op.id)))
@@ -174,8 +174,8 @@ class YugabyteEphemeralStore(
 
     private inner class EphemeralTransaction : AbyssEphemeralStoreTransactionLike {
         val ops = mutableListOf<EphemeralOp>()
-        override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { ops += EphemeralOp.SaveNode(id, node, ttl) }
-        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration) { ops += EphemeralOp.SaveEdge(fromId, toId, edge, ttl) }
+        override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) { ops += EphemeralOp.SaveNode(id, node, ttl, tags) }
+        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) { ops += EphemeralOp.SaveEdge(fromId, toId, edge, ttl, tags) }
         override fun deleteNode(id: NodeId) { ops += EphemeralOp.DeleteNode(id) }
         override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { ops += EphemeralOp.DeleteEdge(fromId, toId, type) }
     }

@@ -190,8 +190,8 @@ private class ColdStoreFixture(
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>) {}
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
+            override fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) {}
             override fun deleteNode(id: NodeId) {}
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
@@ -203,19 +203,19 @@ private class ColdStoreFixture(
 // Collision-guard fixtures — never registered in graphTestModule, only in small local modules built
 // inline per-test above, so their tags don't need to be collision-free with the shared fixtures.
 @Serializable @SerialName("dup_node_a") @TypeTag(90)
-private data class DupNodeA(override val id: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
+private data class DupNodeA(override val id: Uuid, override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
 
 @Serializable @SerialName("dup_node_b") @TypeTag(90)
-private data class DupNodeB(override val id: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
+private data class DupNodeB(override val id: Uuid, override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
 
 @Serializable @SerialName("dup_edge_a") @TypeTag(91)
-private data class DupEdgeA(override val fromId: Uuid, override val toId: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
+private data class DupEdgeA(override val fromId: Uuid, override val toId: Uuid, override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
 
 @Serializable @SerialName("dup_edge_b") @TypeTag(91)
-private data class DupEdgeB(override val fromId: Uuid, override val toId: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
+private data class DupEdgeB(override val fromId: Uuid, override val toId: Uuid, override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
 
 @Serializable @SerialName("cross_ns_node") @TypeTag(92)
-private data class CrossNsNode(override val id: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
+private data class CrossNsNode(override val id: Uuid, override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : NodeLike<Uuid>
 
 @Serializable @SerialName("cross_ns_edge") @TypeTag(92)
-private data class CrossNsEdge(override val fromId: Uuid, override val toId: Uuid, override val tags: List<String> = emptyList(), override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>
+private data class CrossNsEdge(override val fromId: Uuid, override val toId: Uuid, override val createdAt: Instant = Instant.fromEpochSeconds(0), override val updatedAt: Instant = Instant.fromEpochSeconds(0)) : EdgeLike<Uuid, Uuid>

@@ -49,7 +49,6 @@ import kotlin.uuid.Uuid
 @Serializable @SerialName("other_node") @TypeTag(2)
 data class OtherNode(
     override val id: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : NodeLike<Uuid>
@@ -59,7 +58,6 @@ data class OtherNode(
 data class TypedEdge(
     override val fromId: Uuid,
     override val toId: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Uuid, Uuid>
@@ -788,12 +786,102 @@ class GraphTest {
             assertIs<Either.Left<AbyssError>>(result)
         }
     }
+
+    // ── tags (TODO 1.24) ─────────────────────────────────────────────────────────
+
+    @Test fun `transaction addNode passes tags through to the store`() {
+        runBlocking {
+            val fake = FakeStore()
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "tag-nodes", "tag-edges", persistentStore = fake, module = graphTestModule)
+            val node = TestNode(id = Uuid.random(), name = "tagged")
+
+            storeGraph.transaction { addNode(node, tags = setOf("a", "b")) }
+
+            assertEquals(setOf("a", "b"), fake.savedNodeTags[node.id])
+            graphTestHz.getMap<Any, Any>("tag-nodes").clear()
+            graphTestHz.getMap<Any, Any>("tag-edges").clear()
+        }
+    }
+
+    @Test fun `transaction addNode with no tags argument saves an empty tag set`() {
+        runBlocking {
+            val fake = FakeStore()
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "notag-nodes", "notag-edges", persistentStore = fake, module = graphTestModule)
+            val node = TestNode(id = Uuid.random(), name = "untagged")
+
+            storeGraph.transaction { addNode(node) }
+
+            assertEquals(emptySet(), fake.savedNodeTags[node.id])
+            graphTestHz.getMap<Any, Any>("notag-nodes").clear()
+            graphTestHz.getMap<Any, Any>("notag-edges").clear()
+        }
+    }
+
+    @Test fun `transaction addEdge passes tags through to the store`() {
+        runBlocking {
+            val fake = FakeStore()
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "tage-nodes", "tage-edges", persistentStore = fake, module = graphTestModule)
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+
+            storeGraph.transaction {
+                addNode(a); addNode(b)
+                addEdge(TestEdge(fromId = a.id, toId = b.id, label = "x"), tags = setOf("edge-tag"))
+            }
+
+            assertEquals(setOf("edge-tag"), fake.savedEdgeTags[a.id to b.id])
+            graphTestHz.getMap<Any, Any>("tage-nodes").clear()
+            graphTestHz.getMap<Any, Any>("tage-edges").clear()
+            graphTestHz.getMap<Any, Any>("tage-edges-adjacency").clear()
+        }
+    }
+
+    @Test fun `transaction modifyNode's replacement AddNode carries the given tags`() {
+        runBlocking {
+            val fake = FakeStore()
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "tagm-nodes", "tagm-edges", persistentStore = fake, module = graphTestModule)
+            val node = TestNode(id = Uuid.random(), name = "orig")
+            storeGraph.transaction { addNode(node) }
+
+            storeGraph.transaction {
+                modifyNode(node.id, tags = setOf("modified")) { (it as TestNode).copy(name = "changed") }
+            }
+
+            assertEquals(setOf("modified"), fake.savedNodeTags[node.id])
+            graphTestHz.getMap<Any, Any>("tagm-nodes").clear()
+            graphTestHz.getMap<Any, Any>("tagm-edges").clear()
+        }
+    }
+
+    @Test fun `transaction modifyEdge's replacement AddEdge carries the given tags`() {
+        runBlocking {
+            val fake = FakeStore()
+            val storeGraph = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "tagme-nodes", "tagme-edges", persistentStore = fake, module = graphTestModule)
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+            storeGraph.transaction {
+                addNode(a); addNode(b)
+                addEdge(TestEdge(fromId = a.id, toId = b.id, label = "x"))
+            }
+
+            storeGraph.transaction {
+                modifyEdge(a.id, b.id, "test_edge", tags = setOf("retag")) { (it as TestEdge).copy(label = "y") }
+            }
+
+            assertEquals(setOf("retag"), fake.savedEdgeTags[a.id to b.id])
+            graphTestHz.getMap<Any, Any>("tagme-nodes").clear()
+            graphTestHz.getMap<Any, Any>("tagme-edges").clear()
+            graphTestHz.getMap<Any, Any>("tagme-edges-adjacency").clear()
+        }
+    }
 }
 
 // Fakes speak the untyped NodeId-keyed store API; they convert via UuidKeyAdapter so the tests can
 // still assert against domain Uuids and construct domain edges.
 private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
+    val savedNodeTags = mutableMapOf<Uuid, Set<String>>()
+    val savedEdgeTags = mutableMapOf<Pair<Uuid, Uuid>, Set<String>>()
 
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
@@ -801,8 +889,13 @@ private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         if (failTx) return AbyssError.Unexpected(RuntimeException("store down")).left()
         val tx = object : AbyssStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>) { saveNodeCalls += huid.fromNodeId(id) }
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
+            override fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>) {
+                saveNodeCalls += huid.fromNodeId(id)
+                savedNodeTags[huid.fromNodeId(id)] = tags
+            }
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) {
+                savedEdgeTags[huid.fromNodeId(fromId) to huid.fromNodeId(toId)] = tags
+            }
             override fun deleteNode(id: NodeId) { saveNodeCalls -= huid.fromNodeId(id) }
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
@@ -819,8 +912,8 @@ private class FakeEphemeralStore : AbyssEphemeralStoreLike {
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssEphemeralStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration) { saveNodeCalls += huid.fromNodeId(id) }
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration) {}
+            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) { saveNodeCalls += huid.fromNodeId(id) }
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) {}
             override fun deleteNode(id: NodeId) { saveNodeCalls -= huid.fromNodeId(id) }
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
@@ -854,8 +947,8 @@ private class WarmingFakeStore(
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssStoreTransactionLike {
-            override fun saveNode(id: NodeId, node: NodeLike<*>) {}
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) {}
+            override fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) {}
             override fun deleteNode(id: NodeId) {}
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { deletedEdges += fromId to toId }
         }

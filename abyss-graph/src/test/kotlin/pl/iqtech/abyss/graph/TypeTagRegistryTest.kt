@@ -69,7 +69,6 @@ class TypeTagRegistryTest {
 @Serializable @SerialName("rt_node") @TypeTag(1)
 private data class RtNode(
     override val id: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : NodeLike<Uuid>
@@ -78,7 +77,6 @@ private data class RtNode(
 private data class RtEdgeA(
     override val fromId: Uuid,
     override val toId: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Uuid, Uuid>
@@ -87,7 +85,6 @@ private data class RtEdgeA(
 private data class RtEdgeB(
     override val fromId: Uuid,
     override val toId: Uuid,
-    override val tags: List<String> = emptyList(),
     override val createdAt: Instant = Instant.fromEpochSeconds(0),
     override val updatedAt: Instant = Instant.fromEpochSeconds(0),
 ) : EdgeLike<Uuid, Uuid>

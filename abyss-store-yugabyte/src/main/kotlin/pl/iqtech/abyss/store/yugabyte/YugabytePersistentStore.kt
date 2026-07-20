@@ -30,8 +30,8 @@ import javax.sql.DataSource
 import kotlin.time.toJavaInstant
 
 private sealed interface PersistentOp {
-    data class SaveNode(val id: NodeId, val node: NodeLike<*>) : PersistentOp
-    data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>) : PersistentOp
+    data class SaveNode(val id: NodeId, val node: NodeLike<*>, val tags: Set<String>) : PersistentOp
+    data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val tags: Set<String>) : PersistentOp
     data class DeleteNode(val id: NodeId) : PersistentOp
     data class DeleteEdge(val fromId: NodeId, val toId: NodeId, val type: String) : PersistentOp
 }
@@ -161,7 +161,7 @@ class YugabytePersistentStore(
                         upsertNode.setBytes(1, op.id.bytes)
                         upsertNode.setString(2, type)
                         upsertNode.setObject(3, data, Types.OTHER)
-                        upsertNode.setArray(4, conn.createArrayOf("text", op.node.tags.toTypedArray()))
+                        upsertNode.setArray(4, conn.createArrayOf("text", op.tags.toTypedArray()))
                         upsertNode.setTimestamp(5, Timestamp.from(op.node.createdAt.toJavaInstant()))
                         upsertNode.setTimestamp(6, Timestamp.from(op.node.updatedAt.toJavaInstant()))
                         upsertNode.executeUpdate()
@@ -172,7 +172,7 @@ class YugabytePersistentStore(
                         upsertEdge.setBytes(2, op.toId.bytes)
                         upsertEdge.setString(3, type)
                         upsertEdge.setObject(4, data, Types.OTHER)
-                        upsertEdge.setArray(5, conn.createArrayOf("text", op.edge.tags.toTypedArray()))
+                        upsertEdge.setArray(5, conn.createArrayOf("text", op.tags.toTypedArray()))
                         upsertEdge.setTimestamp(6, Timestamp.from(op.edge.createdAt.toJavaInstant()))
                         upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt.toJavaInstant()))
                         upsertEdge.executeUpdate()
@@ -220,7 +220,7 @@ class YugabytePersistentStore(
                     upsertNode.setBytes(1, op.id.bytes)
                     upsertNode.setString(2, type)
                     upsertNode.setObject(3, data, Types.OTHER)
-                    upsertNode.setArray(4, conn.createArrayOf("text", op.node.tags.toTypedArray()))
+                    upsertNode.setArray(4, conn.createArrayOf("text", op.tags.toTypedArray()))
                     upsertNode.setTimestamp(5, Timestamp.from(op.node.createdAt.toJavaInstant()))
                     upsertNode.setTimestamp(6, Timestamp.from(op.node.updatedAt.toJavaInstant()))
                     upsertNode
@@ -231,7 +231,7 @@ class YugabytePersistentStore(
                     upsertEdge.setBytes(2, op.toId.bytes)
                     upsertEdge.setString(3, type)
                     upsertEdge.setObject(4, data, Types.OTHER)
-                    upsertEdge.setArray(5, conn.createArrayOf("text", op.edge.tags.toTypedArray()))
+                    upsertEdge.setArray(5, conn.createArrayOf("text", op.tags.toTypedArray()))
                     upsertEdge.setTimestamp(6, Timestamp.from(op.edge.createdAt.toJavaInstant()))
                     upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt.toJavaInstant()))
                     upsertEdge
@@ -268,8 +268,8 @@ class YugabytePersistentStore(
 
     private inner class PersistentTransaction : AbyssStoreTransactionLike {
         val ops = mutableListOf<PersistentOp>()
-        override fun saveNode(id: NodeId, node: NodeLike<*>) { ops += PersistentOp.SaveNode(id, node) }
-        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>) { ops += PersistentOp.SaveEdge(fromId, toId, edge) }
+        override fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>) { ops += PersistentOp.SaveNode(id, node, tags) }
+        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) { ops += PersistentOp.SaveEdge(fromId, toId, edge, tags) }
         override fun deleteNode(id: NodeId) { ops += PersistentOp.DeleteNode(id) }
         override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { ops += PersistentOp.DeleteEdge(fromId, toId, type) }
     }

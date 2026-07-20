@@ -29,8 +29,8 @@ interface AbyssStoreLike {
 }
 
 interface AbyssStoreTransactionLike {
-    fun saveNode(id: NodeId, node: NodeLike<*>)
-    fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>)
+    fun saveNode(id: NodeId, node: NodeLike<*>, tags: Set<String>)
+    fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>)
     fun deleteNode(id: NodeId)
     fun deleteEdge(fromId: NodeId, toId: NodeId, type: String)
 }
@@ -44,8 +44,8 @@ interface AbyssEphemeralStoreLike {
 }
 
 interface AbyssEphemeralStoreTransactionLike {
-    fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration)
-    fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration)
+    fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>)
+    fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>)
     fun deleteNode(id: NodeId)
     fun deleteEdge(fromId: NodeId, toId: NodeId, type: String)
 }
