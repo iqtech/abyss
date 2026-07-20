@@ -1,3 +1,8 @@
+## [0.32.1] - 2026-07-20
+
+- Make tag writes additive instead of full-replace (follow-up to TODO 1.24): YSQL upserts now union tags via `ARRAY(SELECT DISTINCT UNNEST(...))` against the existing row instead of overwriting with `EXCLUDED.tags`; YCQL switches from `INSERT` to `UPDATE ... USING TTL ... SET tags = tags + ?` for the same semantics, both within the same single write statement (no extra read, no second op/path)
+- Fix YCQL `tags` column from `LIST<TEXT>` to `SET<TEXT>` so repeated appends dedupe at the DB level instead of accumulating duplicates; tag removal remains an intentional non-goal, done operationally via `cqlsh`/`ysqlsh` when needed
+
 ## [0.32.0] - 2026-07-20
 
 - Move `tags` off `NodeLike`/`EdgeLike` domain objects entirely (TODO 1.24): `addNode`/`addEdge`/`modifyNode`/`modifyEdge`/`addCrossEdge` now take an explicit `tags: Set<String> = emptySet()` parameter, threaded through `Op`/`NodeOp`/`CrossSchemaOp` to the store's `saveNode`/`saveEdge` the same way `ttl` already flows — tags are store/table-level metadata (backed by the existing GIN-indexed YSQL column and YCQL column) rather than a caller-set domain property; `modifyNode`/`modifyEdge` fully replace tags on write, no read-modify-merge
