@@ -1,3 +1,7 @@
+## [0.32.0] - 2026-07-20
+
+- Move `tags` off `NodeLike`/`EdgeLike` domain objects entirely (TODO 1.24): `addNode`/`addEdge`/`modifyNode`/`modifyEdge`/`addCrossEdge` now take an explicit `tags: Set<String> = emptySet()` parameter, threaded through `Op`/`NodeOp`/`CrossSchemaOp` to the store's `saveNode`/`saveEdge` the same way `ttl` already flows — tags are store/table-level metadata (backed by the existing GIN-indexed YSQL column and YCQL column) rather than a caller-set domain property; `modifyNode`/`modifyEdge` fully replace tags on write, no read-modify-merge
+
 ## [0.31.3] - 2026-07-20
 
 - Widen `container.transaction { }` on `HeterogeneousSchemaGraph`/`HomogeneousSchemaGraph` into a multi-schema transaction: `on(schema)` now stages `addNode`/`addEdge`/`removeNode`/`removeEdge`/`modifyNode`/`modifyEdge` against any schema registered on the container, committed atomically alongside `addCrossEdge`/`removeCrossEdge` in the same `worker.transaction` call. Source-compatible with every existing cross-edge-only call site; also fixes `HeterogeneousSchemaGraph`'s `allowCrossSchemaEdges` gate to only apply when the transaction actually contains cross edges
