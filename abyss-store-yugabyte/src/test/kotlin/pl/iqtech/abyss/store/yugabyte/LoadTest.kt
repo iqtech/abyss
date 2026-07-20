@@ -175,6 +175,34 @@ class LoadTest {
         assertEquals(setOf("epsilon"), readYcqlEdgeTags(edge.fromId, edge.toId))
     }
 
+    @Test fun `repeated saveNode adds ysql tags instead of replacing them`() {
+        val node = YbTestNode(id = Uuid.random(), name = "tagged-ysql-node-2")
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node, setOf("alpha", "beta")) } }
+        runBlocking { ybPersistentStore.transaction { saveNode(nid(node.id), node, setOf("beta", "gamma")) } }
+        assertEquals(setOf("alpha", "beta", "gamma"), readYsqlNodeTags(node.id))
+    }
+
+    @Test fun `repeated saveEdge adds ysql tags instead of replacing them`() {
+        val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tagged-ysql-edge-2")
+        runBlocking { ybPersistentStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, setOf("alpha", "beta")) } }
+        runBlocking { ybPersistentStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, setOf("beta", "gamma")) } }
+        assertEquals(setOf("alpha", "beta", "gamma"), readYsqlEdgeTags(edge.fromId, edge.toId))
+    }
+
+    @Test fun `repeated saveNode adds ycql tags instead of replacing them`() {
+        val node = YbTestNode(id = Uuid.random(), name = "tagged-ycql-node-2")
+        runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds, setOf("alpha", "beta")) } }
+        runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 3600.seconds, setOf("beta", "gamma")) } }
+        assertEquals(setOf("alpha", "beta", "gamma"), readYcqlNodeTags(node.id))
+    }
+
+    @Test fun `repeated saveEdge adds ycql tags instead of replacing them`() {
+        val edge = YbTestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "tagged-ycql-edge-2")
+        runBlocking { ybEphemeralStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, 3600.seconds, setOf("alpha", "beta")) } }
+        runBlocking { ybEphemeralStore.transaction { saveEdge(nid(edge.fromId), nid(edge.toId), edge, 3600.seconds, setOf("beta", "gamma")) } }
+        assertEquals(setOf("alpha", "beta", "gamma"), readYcqlEdgeTags(edge.fromId, edge.toId))
+    }
+
     @Test fun `ephemeral node with ttl is readable before expiry and gone after`() {
         val node = YbTestNode(id = Uuid.random(), name = "ephemeral")
         assertIs<Either.Right<Unit>>(runBlocking { ybEphemeralStore.transaction { saveNode(nid(node.id), node, 5.seconds, emptySet()) } })
@@ -424,7 +452,7 @@ private fun readYcqlNodeTags(id: Uuid): Set<String> =
                     "SELECT tags FROM abyss_test_graph.ephemeral_nodes WHERE id = ?",
                     ByteBuffer.wrap(UuidKeyAdapter.toNodeId(id).bytes)
                 )
-            ).one()!!.getList("tags", String::class.java)!!.toSet()
+            ).one()!!.getSet("tags", String::class.java)!!
         }
 
 private fun readYcqlEdgeTags(fromId: Uuid, toId: Uuid): Set<String> =
@@ -438,7 +466,7 @@ private fun readYcqlEdgeTags(fromId: Uuid, toId: Uuid): Set<String> =
                     "SELECT tags FROM abyss_test_graph.ephemeral_edges WHERE from_id = ? AND to_id = ?",
                     ByteBuffer.wrap(UuidKeyAdapter.toNodeId(fromId).bytes), ByteBuffer.wrap(UuidKeyAdapter.toNodeId(toId).bytes)
                 )
-            ).one()!!.getList("tags", String::class.java)!!.toSet()
+            ).one()!!.getSet("tags", String::class.java)!!
         }
 
 private fun rawYsqlDataSource(): DataSource = HikariDataSource(HikariConfig().apply {

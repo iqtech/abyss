@@ -150,8 +150,9 @@ class YugabyteEphemeralStore(
                 val now = java.time.Instant.now()
                 val expiresAt = now.plusSeconds(ttl)
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO $ycqlKeyspace.ephemeral_nodes (id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    idBuf(op.id), type, data, op.tags.toList(), now, now, expiresAt
+                    "UPDATE $ycqlKeyspace.ephemeral_nodes USING TTL $ttl SET type = ?, data = ?, tags = tags + ?, " +
+                    "created_at = ?, updated_at = ?, ttl_expiration = ? WHERE id = ?",
+                    type, data, op.tags, now, now, expiresAt, idBuf(op.id)
                 ))
             }
             // Outgoing-only (TODO 1.13): a single-row INSERT is atomic in YCQL, so no reverse
@@ -162,9 +163,9 @@ class YugabyteEphemeralStore(
                 val now = java.time.Instant.now()
                 val expiresAt = now.plusSeconds(ttl.toLong())
                 ycql.execute(SimpleStatement.newInstance(
-                    "INSERT INTO $ycqlKeyspace.ephemeral_edges (from_id, to_id, type, data, tags, created_at, updated_at, ttl_expiration) VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL $ttl",
-                    idBuf(op.fromId), idBuf(op.toId), type, data,
-                    op.tags.toList(), now, now, expiresAt
+                    "UPDATE $ycqlKeyspace.ephemeral_edges USING TTL $ttl SET data = ?, tags = tags + ?, " +
+                    "created_at = ?, updated_at = ?, ttl_expiration = ? WHERE from_id = ? AND to_id = ? AND type = ?",
+                    data, op.tags, now, now, expiresAt, idBuf(op.fromId), idBuf(op.toId), type
                 ))
             }
             is EphemeralOp.DeleteNode -> ycql.execute(deleteNodeYcql.bind(idBuf(op.id)))

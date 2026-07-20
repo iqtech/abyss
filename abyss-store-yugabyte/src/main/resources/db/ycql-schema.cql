@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS ephemeral_nodes (
     id              BLOB      PRIMARY KEY,
     type            TEXT,
     data            TEXT,
-    tags            LIST<TEXT>,
+    tags            SET<TEXT>,
     created_at      TIMESTAMP,
     updated_at      TIMESTAMP,
     ttl_expiration  TIMESTAMP
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS ephemeral_edges (
     to_id           BLOB,
     type            TEXT,
     data            TEXT,
-    tags            LIST<TEXT>,
+    tags            SET<TEXT>,
     created_at      TIMESTAMP,
     updated_at      TIMESTAMP,
     ttl_expiration  TIMESTAMP,
