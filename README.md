@@ -605,6 +605,12 @@ graph.transaction {
 Both transforms receive `null` when the target doesn't exist, letting the lambda decide whether
 to create, throw, or no-op. The same operations are available inside `ephemeral { }`.
 
+> **Concurrency: last-write-wins.** The current value is read when the `modify*` call runs and the
+> commit is an unconditional upsert — nothing detects a writer that committed in between. Two
+> concurrent `modify*` on the *same* key can silently lose one update (e.g. racing counter
+> increments). There is no optimistic lock: `updatedAt` is a caller-set domain field, not a version.
+> If you have concurrent read-modify-write on the same node/edge, serialize those writers yourself.
+
 #### Ephemeral mutations (TTL-bound)
 
 ```kotlin
