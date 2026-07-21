@@ -177,13 +177,14 @@ internal class AbyssSchemaWorker(
         val filtered = if (edgeTag != null) entries.filter { it.edgeTypeTag == edgeTag } else entries
         val hops = filtered.map { entry ->
             val (fromId, toId) = if (direction == AdjacencyDirection.OUT) nid to entry.neighborId else entry.neighborId to nid
-            Hop(fromId, toId, tagRegistry.edgeNameOf(entry.edgeTypeTag), null)
+            // nodeTypeTag is the neighbor's (== target's) type — carried so typed filters skip a fetch.
+            Hop(fromId, toId, tagRegistry.edgeNameOf(entry.edgeTypeTag), null, entry.nodeTypeTag)
         }
         if (!needValue || hops.isEmpty()) return hops
         val keys = hops.associateWith { edgeKey(it.fromId, it.toId, it.type) }
         val map = edgesMap as IMap<EdgeKey, Any>
         val values = withContext(Dispatchers.IO) { map.getAll(keys.values.toSet()) }
-        return hops.mapNotNull { hop -> (values[keys.getValue(hop)] as EdgeLike<*, *>?)?.let { Hop(hop.fromId, hop.toId, hop.type, it) } }
+        return hops.mapNotNull { hop -> (values[keys.getValue(hop)] as EdgeLike<*, *>?)?.let { Hop(hop.fromId, hop.toId, hop.type, it, hop.nodeTypeTag) } }
     }
 
     @Suppress("UNCHECKED_CAST")

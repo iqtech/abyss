@@ -30,11 +30,28 @@ class TraversalBuilder<ID>(
     private val homeAdapter: KeyAdapter<ID>,
 ) : TraversalBuilderLike<ID> {
 
-    var frontier: Set<NodeId> = startFrontier
-        private set
+    // Frontier and visited set are backed by NodeId -> @TypeTag maps (tag carried from the producing
+    // hop, null when unresolved/origin) so typed filters compare a Short in memory instead of fetching
+    // the node. `frontier` stays a Set<NodeId> keys-view — every id-only consumer (paths, cycle,
+    // reachability, count, flush) is unchanged; only the tag-producing/consuming sites touch the maps.
+    private var frontierTags: Map<NodeId, Short?> = startFrontier.associateWith { null }
+    val frontier: Set<NodeId> get() = frontierTags.keys
 
-    private val allVisitedIds: MutableSet<NodeId> = startFrontier.toMutableSet()
+    private val allVisitedTags: MutableMap<NodeId, Short?> = startFrontier.associateWithTo(mutableMapOf()) { null }
     private val allTraversedHops: MutableList<Hop> = mutableListOf()
+
+    // Record a node as visited, upgrading a previously-unknown (null) tag if this hop resolved it, but
+    // never overwriting a known tag with null (a node reached via both a fast-path and an index hop).
+    private fun mergeVisited(tags: Map<NodeId, Short?>) {
+        for ((k, v) in tags) if (allVisitedTags[k] == null) allVisitedTags[k] = v
+    }
+
+    // Narrow the frontier to `keep`, dropping the removed ids from the visited set too (mirrors the old
+    // `allVisitedIds -= (frontier - matching)`), preserving each survivor's carried tag.
+    private fun retainFrontier(keep: Set<NodeId>) {
+        (frontierTags.keys - keep).forEach { allVisitedTags.remove(it) }
+        frontierTags = frontierTags.filterKeys { it in keep }
+    }
     internal val traversedHops: List<Hop> get() = allTraversedHops
 
     // Most recent addHop/addNodeHop's own hops (not accumulated like allTraversedHops) — backs
@@ -69,15 +86,21 @@ class TraversalBuilder<ID>(
         }
         allTraversedHops += hopEdges
         lastHopEdges = hopEdges; lastHopDirection = direction
-        frontier = hopEdges.map { it.target(direction) }.toSet()
-        allVisitedIds += frontier
+        frontierTags = hopEdges.associate { it.target(direction) to it.nodeTypeTag }
+        mergeVisited(frontierTags)
     }
 
-    override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<*>) -> Boolean)?) {
+    override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodeTag: Short?, nodePredicate: ((NodeLike<*>) -> Boolean)?) {
         val hopEdges = coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
                     hops(nid, direction, edgeType, needValue = false).filter { hop ->
+                        val tag = hop.nodeTypeTag
+                        // Tag known and wanted -> decide by tag; keep fetch-free unless a predicate needs the value.
+                        if (tag != null && nodeTag != null) {
+                            if (tag != nodeTag) return@filter false
+                            if (nodePredicate == null) return@filter true
+                        }
                         val node = engine.nodeAt(hop.target(direction)) ?: return@filter false
                         if (node.typeName() != nodeType) return@filter false
                         nodePredicate == null || nodePredicate(node)
@@ -87,23 +110,33 @@ class TraversalBuilder<ID>(
         }
         allTraversedHops += hopEdges
         lastHopEdges = hopEdges; lastHopDirection = direction
-        frontier = hopEdges.map { it.target(direction) }.toSet()
-        allVisitedIds += frontier
+        frontierTags = hopEdges.associate { it.target(direction) to it.nodeTypeTag }
+        mergeVisited(frontierTags)
     }
 
-    override suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<*>) -> Boolean)?) {
-        val matchingIds = coroutineScope {
-            frontier.map { nid ->
-                async(engine.hopDispatcher) {
-                    val node = engine.nodeAt(nid) ?: return@async null
-                    if (node.typeName() != nodeType) return@async null
-                    if (predicate != null && !predicate(node)) return@async null
-                    nid
-                }
-            }.awaitAll()
-        }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matchingIds)
-        frontier = matchingIds
+    override suspend fun filterFrontierByNode(nodeType: String, nodeTag: Short?, predicate: ((NodeLike<*>) -> Boolean)?) {
+        val matched = mutableSetOf<NodeId>()
+        val toFetch = mutableListOf<NodeId>()
+        for ((nid, tag) in frontierTags) {
+            if (tag != null && nodeTag != null) {
+                if (tag != nodeTag) continue                          // wrong type, no fetch
+                if (predicate == null) { matched += nid; continue }   // right type, no predicate -> keep, no fetch
+            }
+            toFetch += nid                                            // null tag (fallback), or predicate to run
+        }
+        if (toFetch.isNotEmpty()) {
+            matched += coroutineScope {
+                toFetch.map { nid ->
+                    async(engine.hopDispatcher) {
+                        val node = engine.nodeAt(nid) ?: return@async null
+                        if (node.typeName() != nodeType) return@async null
+                        if (predicate != null && !predicate(node)) return@async null
+                        nid
+                    }
+                }.awaitAll()
+            }.filterNotNull()
+        }
+        retainFrontier(matched)
     }
 
     private suspend fun filterFrontierByEdge(direction: HopDirection, edgeType: String, endpoint: NodeId) {
@@ -112,34 +145,37 @@ class TraversalBuilder<ID>(
                 async(engine.hopDispatcher) { if (hops(nid, direction, edgeType, needValue = false).any { it.target(direction) == endpoint }) nid else null }
             }.awaitAll()
         }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matching)
-        frontier = matching
+        retainFrontier(matching)
     }
 
-    private suspend fun filterFrontierByEdgeType(direction: HopDirection, edgeType: String, nodeType: String) {
+    private suspend fun filterFrontierByEdgeType(direction: HopDirection, edgeType: String, nodeType: String, nodeTag: Short?) {
         val matching = coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
-                    val has = hops(nid, direction, edgeType, needValue = false).any { engine.nodeAt(it.target(direction))?.typeName() == nodeType }
+                    val has = hops(nid, direction, edgeType, needValue = false).any { hop ->
+                        val tag = hop.nodeTypeTag
+                        // Tag known and wanted -> compare in memory; else fall back to a neighbor fetch.
+                        if (tag != null && nodeTag != null) tag == nodeTag
+                        else engine.nodeAt(hop.target(direction))?.typeName() == nodeType
+                    }
                     if (has) nid else null
                 }
             }.awaitAll()
         }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matching)
-        frontier = matching
+        retainFrontier(matching)
     }
 
     override suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID) =
         filterFrontierByEdge(HopDirection.OUTGOING, edgeType, homeAdapter.toNodeId(toId))
 
-    override suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String) =
-        filterFrontierByEdgeType(HopDirection.OUTGOING, edgeType, nodeType)
+    override suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String, nodeTag: Short?) =
+        filterFrontierByEdgeType(HopDirection.OUTGOING, edgeType, nodeType, nodeTag)
 
     override suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: ID) =
         filterFrontierByEdge(HopDirection.INCOMING, edgeType, homeAdapter.toNodeId(fromId))
 
-    override suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String) =
-        filterFrontierByEdgeType(HopDirection.INCOMING, edgeType, nodeType)
+    override suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String, nodeTag: Short?) =
+        filterFrontierByEdgeType(HopDirection.INCOMING, edgeType, nodeType, nodeTag)
 
     override suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit) {
         val matching = coroutineScope {
@@ -151,8 +187,7 @@ class TraversalBuilder<ID>(
                 }
             }.awaitAll()
         }.filterNotNull().toSet()
-        allVisitedIds -= (frontier - matching)
-        frontier = matching
+        retainFrontier(matching)
     }
 
     override suspend fun flushFrontierNodes(): Flow<NodeLike<*>> = flow {
@@ -172,9 +207,13 @@ class TraversalBuilder<ID>(
         frontier.map { nid -> async(engine.hopDispatcher) { hops(nid, direction, edgeType, needValue = false).size } }.awaitAll()
     }.sum()
 
-    override suspend fun collectSubgraph(nodeType: String?): Subgraph {
+    override suspend fun collectSubgraph(nodeType: String?, nodeTag: Short?): Subgraph {
+        // With a type filter, skip fetching visited nodes whose known tag rules them out; only null-tag
+        // (or all, when unfiltered) nodes are fetched, then filtered by @SerialName as a fallback.
+        val candidates = if (nodeType == null || nodeTag == null) allVisitedTags.keys
+            else allVisitedTags.filter { (_, tag) -> tag == null || tag == nodeTag }.keys
         val nodes = coroutineScope {
-            allVisitedIds.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
+            candidates.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
         }.filterNotNull().let { all ->
             if (nodeType == null) all else all.filter { it.typeName() == nodeType }
         }

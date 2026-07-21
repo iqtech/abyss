@@ -9,7 +9,11 @@ import pl.iqtech.abyss.store.api.EdgeLike
 // A traversed edge with both endpoints and type resolved from the EdgeKey (uniform across intra- and
 // cross-schema edges regardless of the edge value's domain ID type). `edge` is null when the hop was
 // fetched key-only (predicate-free hops skip the value fetch); resolveEdges() fills it in on demand.
-data class Hop(val fromId: NodeId, val toId: NodeId, val type: String, val edge: EdgeLike<*, *>?)
+// `nodeTypeTag` is the @TypeTag of the node at target(direction) (== neighborId), carried straight
+// from the adjacency index so typed traversal can filter by node type without a node fetch. Null when
+// unresolved (dangling edge, cold-preloaded entry) or when the hop came from the edgesMap fast path
+// (no adjacency entry) — every consumer degrades to a nodeAt fetch on null.
+data class Hop(val fromId: NodeId, val toId: NodeId, val type: String, val edge: EdgeLike<*, *>?, val nodeTypeTag: Short? = null)
 
 // NodeId-level view a traversal drives against. Backed either by a single AbyssGraphSchema
 // (standalone / single-schema) or by a HomogeneousSchemaGraph/HeterogeneousSchemaGraph container

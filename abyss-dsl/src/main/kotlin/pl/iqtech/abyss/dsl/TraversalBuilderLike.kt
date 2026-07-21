@@ -42,12 +42,14 @@ data class Subgraph(val nodes: List<NodeLike<*>>, val edges: List<EdgeLike<*, *>
 // walk can leave the home schema across a cross-edge.
 interface TraversalBuilderLike<ID> {
     suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)? = null)
-    suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodePredicate: ((NodeLike<*>) -> Boolean)? = null)
-    suspend fun filterFrontierByNode(nodeType: String, predicate: ((NodeLike<*>) -> Boolean)? = null)
+    // nodeTag is the wanted node type's @TypeTag — lets the impl match against the tag carried on the
+    // adjacency index / frontier without fetching each node; null falls back to a @SerialName fetch.
+    suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodeTag: Short? = null, nodePredicate: ((NodeLike<*>) -> Boolean)? = null)
+    suspend fun filterFrontierByNode(nodeType: String, nodeTag: Short? = null, predicate: ((NodeLike<*>) -> Boolean)? = null)
     suspend fun filterFrontierByOutEdgeTo(edgeType: String, toId: ID)
-    suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String)
+    suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String, nodeTag: Short? = null)
     suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: ID)
-    suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String)
+    suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String, nodeTag: Short? = null)
     suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit)
     suspend fun flushFrontierNodes(): Flow<NodeLike<*>>
     /** Terminal: edges of the most recent hop whose target survived any later frontier filter. */
@@ -56,7 +58,7 @@ interface TraversalBuilderLike<ID> {
     suspend fun count(): Int
     /** Terminal: number of [edgeType] edges from the frontier in [direction] (no edge value or node materialization). */
     suspend fun countEdges(direction: HopDirection, edgeType: String): Int
-    suspend fun collectSubgraph(nodeType: String? = null): Subgraph
+    suspend fun collectSubgraph(nodeType: String? = null, nodeTag: Short? = null): Subgraph
     suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
     /**
      * BFS to [targetId] following [block]'s hops, returning the first (fewest-hops, not
