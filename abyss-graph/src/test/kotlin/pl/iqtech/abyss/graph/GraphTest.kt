@@ -40,8 +40,10 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
@@ -467,6 +469,16 @@ class GraphTest {
             val node = TestNode(id = Uuid.random(), name = "eph-node")
             graphTest.ephemeral(60.seconds) { addNode(node) }
             assertIs<Either.Right<NodeLike<*>>>(graphTest.node(node.id))
+        }
+    }
+
+    // fable.md 1.2: sub-second TTL floors to USING TTL 0 (YCQL) / setAsync ttl=0 (Hazelcast), both of
+    // which mean "never expire" — so anything <1s must be rejected rather than silently made immortal.
+    @Test fun `ephemeral rejects sub-second TTL`() {
+        runBlocking {
+            assertFailsWith<IllegalArgumentException> {
+                graphTest.ephemeral(500.milliseconds) { addNode(TestNode(id = Uuid.random(), name = "x")) }
+            }
         }
     }
 

@@ -37,7 +37,7 @@ class AdjacencyMutationProcessorSerializer : CompactSerializer<AdjacencyMutation
         val neighborId = reader.readCompact<NodeId>("neighborId")!!
         val edgeTypeTag = reader.readInt16("edgeTypeTag")
         val mutation = when (reader.readInt8("kind")) {
-            KIND_ADD -> AdjacencyMutation.Add(AdjacencyEntry(neighborId, reader.readNullableInt16("nodeTypeTag")!!, edgeTypeTag))
+            KIND_ADD -> AdjacencyMutation.Add(AdjacencyEntry(neighborId, reader.readNullableInt16("nodeTypeTag"), edgeTypeTag))
             else -> AdjacencyMutation.Remove(neighborId, edgeTypeTag)
         }
         return AdjacencyMutationProcessor(mutation)

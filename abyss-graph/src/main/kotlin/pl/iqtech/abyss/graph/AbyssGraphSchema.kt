@@ -43,6 +43,7 @@ import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.KClass
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A typed, single-schema view (`AbyssEngineLike<ID>`) over an untyped [AbyssSchemaWorker]. It converts
@@ -166,6 +167,9 @@ class AbyssGraphSchema<ID> internal constructor(
     }
 
     override suspend fun ephemeral(ttl: Duration, checkIntegrity: Boolean, block: suspend AbyssEphemeralTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
+        // Sub-second TTL floors to 0 in both YCQL (USING TTL 0) and Hazelcast (setAsync ttl=0), where
+        // 0 means "never expire" — so <1s would make ephemeral data immortal. Reject it at the door.
+        require(ttl >= 1.seconds) { "ephemeral TTL must be >= 1s (got $ttl); sub-second TTLs never expire" }
         val buffer = BufferedEphemeralTransaction<ID>(
             ttl = ttl,
             readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
