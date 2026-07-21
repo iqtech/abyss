@@ -20,9 +20,15 @@ import kotlin.reflect.KClass
 class TypeTagRegistry private constructor(
     private val edgeTagByName: Map<String, Short>,
     private val edgeNameByTag: Map<Short, String>,
+    private val nodeTagByName: Map<String, Short>,
 ) {
     fun edgeTagOf(type: String): Short = edgeTagByName[type] ?: error("Edge type '$type' has no registered @TypeTag")
     fun edgeNameOf(tag: Short): String = edgeNameByTag[tag] ?: error("Unknown edge TypeTag $tag")
+
+    // Node @SerialName -> @TypeTag. Nullable (not error()) so an unknown type name — a class in the
+    // store but not in this process's module, e.g. mid rolling deploy — degrades to a null tag and the
+    // caller's fetch fallback, rather than failing the preload that resolves it.
+    fun nodeTagOf(type: String): Short? = nodeTagByName[type]
 
     companion object {
         fun of(module: SerializersModule): TypeTagRegistry {
@@ -35,12 +41,14 @@ class TypeTagRegistry private constructor(
             val edgeTags = mutableSetOf<Short>()
             val edgeTagByName = mutableMapOf<String, Short>()
             val edgeNameByTag = mutableMapOf<Short, String>()
+            val nodeTagByName = mutableMapOf<String, Short>()
 
             for ((base, actual) in collector.found) {
                 when (base) {
                     NodeLike::class -> {
                         val tag = actual.typeTag()
                         require(nodeTags.add(tag)) { "Node TypeTag $tag already registered (class=$actual)" }
+                        nodeTagByName[actual.serialName()] = tag
                     }
                     EdgeLike::class -> {
                         val tag = actual.typeTag()
@@ -51,7 +59,7 @@ class TypeTagRegistry private constructor(
                     }
                 }
             }
-            return TypeTagRegistry(edgeTagByName, edgeNameByTag)
+            return TypeTagRegistry(edgeTagByName, edgeNameByTag, nodeTagByName)
         }
     }
 }

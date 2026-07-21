@@ -221,7 +221,9 @@ internal class AbyssSchemaWorker(
         persistentStore?.loadEdges(nid)?.getOrNull()?.forEach { e ->
             val type = edgeType(e.edge)
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
-            val toTag = readNode(e.toId)?.let { it::class.typeTag() }
+            // Neighbor tag rides the edge scan (StoredEdge.neighborType) — no per-neighbor node read.
+            // Null (dangling / store can't resolve) leaves the tag null; typed traversal fetch-falls-back.
+            val toTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
             adjacencyMap.executeOnKey(outKeyFor(e.fromId, e.toId), AdjacencyMutationProcessor(AdjacencyMutation.Add(AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag()))))
         }
         ephemeralStore?.loadEdges(nid)?.getOrNull()?.forEach { e ->
@@ -241,7 +243,8 @@ internal class AbyssSchemaWorker(
         persistentStore?.loadInEdges(nid)?.getOrNull()?.forEach { e ->
             val type = edgeType(e.edge)
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
-            val fromTag = readNode(e.fromId)?.let { it::class.typeTag() }
+            // Neighbor (the from-node) tag rides the loadInEdges scan; see preloadOut.
+            val fromTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
             adjacencyMap.executeOnKey(inKeyFor(e.toId, e.fromId), AdjacencyMutationProcessor(AdjacencyMutation.Add(AdjacencyEntry(e.fromId, fromTag, e.edge::class.typeTag()))))
         }
     }

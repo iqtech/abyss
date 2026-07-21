@@ -64,6 +64,21 @@ class TypeTagRegistryTest {
     @Test fun `edgeNameOf fails loudly for an unknown tag`() {
         assertFails { registry.edgeNameOf(Short.MAX_VALUE) }
     }
+
+    @Test fun `nodeTagOf resolves a registered node name to its @TypeTag`() {
+        assertEquals(RtNode::class.typeTag(), registry.nodeTagOf("rt_node"))
+    }
+
+    // Unknown node name -> null (not an error): a class present in the store but absent from this
+    // process's module (rolling deploy) must degrade to the fetch fallback, not fail the preload.
+    @Test fun `nodeTagOf returns null for an unregistered node name`() {
+        assertEquals(null, registry.nodeTagOf("not_a_real_node"))
+    }
+
+    // Node and edge tag namespaces are independent: "rt_edge_a" is an edge name, never a node name.
+    @Test fun `nodeTagOf does not resolve an edge type name`() {
+        assertEquals(null, registry.nodeTagOf("rt_edge_a"))
+    }
 }
 
 @Serializable @SerialName("rt_node") @TypeTag(1)

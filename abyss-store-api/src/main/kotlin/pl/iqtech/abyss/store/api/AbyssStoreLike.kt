@@ -6,7 +6,11 @@ import kotlin.time.Duration
 // An edge as the store returns it from a scan: the value plus BOTH endpoint NodeIds read straight from
 // the PK columns, so a caller can rebuild the cache key without a per-schema adapter (the domain
 // endpoint ids inside the value can't be turned back into tagged NodeIds untyped).
-data class StoredEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val remaining: Duration?)
+// `neighborType` is the @SerialName of the node at the *scanned-toward* endpoint (the toId for a
+// loadEdges/out scan, the fromId for a loadInEdges/in scan), returned alongside the edge so a cold
+// adjacency warm can resolve the neighbor's @TypeTag without a per-neighbor node read. Null when the
+// store can't/doesn't resolve it (dangling edge, non-relational store); the caller falls back to a fetch.
+data class StoredEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val remaining: Duration?, val neighborType: String? = null)
 
 // Stores are keyed by the self-describing NodeId (its bytes are the PK) and hold polymorphic
 // NodeLike<*>/EdgeLike<*, *> values — one shared store backs every schema in a container, so there

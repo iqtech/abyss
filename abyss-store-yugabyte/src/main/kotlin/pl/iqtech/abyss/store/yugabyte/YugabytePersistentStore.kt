@@ -69,12 +69,12 @@ class YugabytePersistentStore(
 
     override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.catch {
-            withContext(Dispatchers.IO) { queryEdgesYsql("from_id", fromId, "to_id").map { (to, edge) -> StoredEdge(fromId, to, edge, null) } }
+            withContext(Dispatchers.IO) { queryEdgesYsql("from_id", fromId, "to_id").map { (to, edge, toType) -> StoredEdge(fromId, to, edge, null, toType) } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.catch {
-            withContext(Dispatchers.IO) { queryEdgesYsql("to_id", toId, "from_id").map { (from, edge) -> StoredEdge(from, toId, edge, null) } }
+            withContext(Dispatchers.IO) { queryEdgesYsql("to_id", toId, "from_id").map { (from, edge, fromType) -> StoredEdge(from, toId, edge, null, fromType) } }
         }.mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> =
@@ -126,13 +126,19 @@ class YugabytePersistentStore(
             }
         }
 
-    // whereCol/selectCol are internal constants ("from_id"/"to_id"), never user input.
-    private fun queryEdgesYsql(whereCol: String, id: NodeId, selectCol: String): List<Pair<NodeId, EdgeLike<*, *>>> =
+    // whereCol/selectCol are internal constants ("from_id"/"to_id"), never user input. The LEFT JOIN
+    // returns the scanned-toward neighbor's node type in the same round trip (null for a dangling edge
+    // whose endpoint node doesn't exist) so a cold adjacency warm resolves neighbor @TypeTags without a
+    // point-read per neighbor. Join is on the neighbor's PK (indexed), so it adds probes, not round trips.
+    private fun queryEdgesYsql(whereCol: String, id: NodeId, selectCol: String): List<Triple<NodeId, EdgeLike<*, *>, String?>> =
         ysql.connection.use { conn ->
-            conn.prepareStatement("SELECT $selectCol, data FROM $ysqlSchema.edges WHERE $whereCol = ?").use { stmt ->
+            conn.prepareStatement(
+                "SELECT e.$selectCol, e.data, n.type AS neighbor_type FROM $ysqlSchema.edges e " +
+                "LEFT JOIN $ysqlSchema.nodes n ON n.id = e.$selectCol WHERE e.$whereCol = ?"
+            ).use { stmt ->
                 stmt.setBytes(1, id.bytes)
                 val rs = stmt.executeQuery()
-                buildList { while (rs.next()) add(NodeId(rs.getBytes(selectCol)) to json.decodeFromString(edgeSer, rs.getString("data"))) }
+                buildList { while (rs.next()) add(Triple(NodeId(rs.getBytes(selectCol)), json.decodeFromString(edgeSer, rs.getString("data")), rs.getString("neighbor_type"))) }
             }
         }
 

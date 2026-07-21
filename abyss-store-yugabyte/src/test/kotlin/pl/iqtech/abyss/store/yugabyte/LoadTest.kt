@@ -270,6 +270,31 @@ class LoadTest {
         assertEquals(2, result.value.size)
     }
 
+    // Solution 1 (neighbor tag rides the edge scan): the LEFT JOIN returns the to-node's type, null
+    // when the endpoint node doesn't exist (dangling checkIntegrity=false edge).
+    @Test fun `loadEdges returns to-node type as neighborType, null for a dangling edge`() {
+        val fromId = Uuid.random()
+        val liveTo = Uuid.random()
+        val danglingTo = Uuid.random()
+        insertYsqlNode(liveTo, nodeJson(liveTo, "neighbor"))
+        insertYsqlEdge(fromId, liveTo, edgeJson(fromId, liveTo, "live"))
+        insertYsqlEdge(fromId, danglingTo, edgeJson(fromId, danglingTo, "dangling"))
+
+        val edges = (runBlocking { ybPersistentStore.loadEdges(nid(fromId)) } as Either.Right).value
+        assertEquals("yb_test_node", edges.first { it.toId == nid(liveTo) }.neighborType)
+        assertEquals(null, edges.first { it.toId == nid(danglingTo) }.neighborType, "dangling edge -> null neighborType")
+    }
+
+    @Test fun `loadInEdges returns from-node type as neighborType from ysql`() {
+        val toId = Uuid.random()
+        val fromLive = Uuid.random()
+        insertYsqlNode(fromLive, nodeJson(fromLive, "src"))
+        insertYsqlEdge(fromLive, toId, edgeJson(fromLive, toId, "in-live"))
+
+        val edges = (runBlocking { ybPersistentStore.loadInEdges(nid(toId)) } as Either.Right).value
+        assertEquals("yb_test_node", edges.first { it.fromId == nid(fromLive) }.neighborType)
+    }
+
     // TODO 1.13: ephemeral edges are outgoing-only — loadInEdges has no reverse index to read.
     @Test fun `loadInEdges is always empty for ycql (outgoing-only)`() {
         val result = runBlocking { ybEphemeralStore.loadInEdges(nid(Uuid.random())) }

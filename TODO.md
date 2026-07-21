@@ -272,6 +272,22 @@
   Tag removal is intentionally not implemented — an operational task done directly via
   `cqlsh`/`ysqlsh` when needed, not a code path.
 
+- **✅ 1.25 Cold-hub preload resolves neighbor tags from the edge scan, not per-neighbor reads**
+  `preloadOut`/`preloadIn` called `readNode(neighbor)` per edge purely to fill `AdjacencyEntry.nodeTypeTag`
+  (the neighbor's `@TypeTag`, consumed by typed-traversal fetch avoidance — see `nodeTypeTag` intent).
+  On a cold hub that was O(E) sequential YSQL point-reads inside the first `outEdges`/`inEdges` call.
+  Fixed via "the tag rides the edge scan" (Solution 1, chosen over batching/denormalizing/deferring):
+  `StoredEdge` gained `neighborType: String?`; YSQL `loadEdges`/`loadInEdges` add one
+  `LEFT JOIN nodes ON n.id = <neighbor_col>` returning the neighbor's `@SerialName` in the same round
+  trip (indexed PK join → probes not round trips; dangling edge → null); `TypeTagRegistry.nodeTagOf`
+  maps that name → `@TypeTag`; preload resolves the tag from it with zero neighbor reads (null → typed
+  traversal's existing fetch fallback). Not the reverted null-the-tag approach — the tag stays correct
+  and present, so typed traversal stays fast on preloaded hubs. Measured (`AdjacencyPreloadPerformanceTest`,
+  300-edge cold hub): **300 neighbor reads / ~900ms → 0 reads / 107ms**; typed-traversal-after-warm
+  fetches 0 (was 300), dangling variant fetches only its null-tag neighbors. Covered by that perf/
+  integration test (count==N proves tag correct, loadNode==0 proves it came from the scan), a
+  `nodeTagOf` unit test, and live-Yugabyte `LoadTest` cases for the JOIN incl. dangling→null.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
