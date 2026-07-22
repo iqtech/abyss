@@ -288,6 +288,18 @@
   integration test (count==N proves tag correct, loadNode==0 proves it came from the scan), a
   `nodeTagOf` unit test, and live-Yugabyte `LoadTest` cases for the JOIN incl. dangling→null.
 
+- **➡️ 1.26 `adjacencyRead` has no pagination; public `pageSize` is silently dropped**
+  `adjacencyRead` (`AbyssSchemaWorker.kt:164`) is fully unbounded: it `getAll`s every shard, flattens
+  all neighbors into one `List<Hop>`, and for `needValue=true` does a single `getAll` over every edge
+  key. No limit/offset/cursor exists. Worse, the public API advertises paging and discards it —
+  `AbyssEngineLike.outEdges/inEdges(nodeId, pageSize=100)` is implemented by `AbyssGraphSchema` (`:115`)
+  as `worker.outEdges(nid)` with `pageSize` never passed on, and the returned `Flow` is lazy in name
+  only: `outEdgeFlow` emits from a fully-materialized Hazelcast `values(predicate)` and `inEdgeFlow`
+  from the whole `adjacencyRead` list. A caller paging a supernode still drags every edge (plus an
+  N-key `getAll`) into one member's heap before the first emit. Wire `pageSize` through: `PagingPredicate`
+  for the `values` path, chunked `getAll` for the adjacency path; `outAt`/`inAt` traversal hot path
+  returns unbounded `List<Hop>` by design and would need a separate per-hop fanout cap decision.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
