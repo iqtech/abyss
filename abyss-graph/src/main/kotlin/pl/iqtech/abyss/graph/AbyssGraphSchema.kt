@@ -113,13 +113,13 @@ class AbyssGraphSchema<ID> internal constructor(
         Either.catch { worker.edgeExists(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }.mapLeft { AbyssError.Unexpected(it) }
 
     override fun outEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID, ID>> =
-        worker.outEdges(adapter.toNodeId(nodeId)).typed()
+        worker.outEdges(adapter.toNodeId(nodeId), pageSize = pageSize).typed()
     override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID, ID>> =
-        worker.outEdges(adapter.toNodeId(nodeId), type).typed()
+        worker.outEdges(adapter.toNodeId(nodeId), type, pageSize).typed()
     override fun inEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID, ID>> =
-        worker.inEdges(adapter.toNodeId(nodeId)).typed()
+        worker.inEdges(adapter.toNodeId(nodeId), pageSize = pageSize).typed()
     override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID, ID>> =
-        worker.inEdges(adapter.toNodeId(nodeId), type).typed()
+        worker.inEdges(adapter.toNodeId(nodeId), type, pageSize).typed()
 
     @Suppress("UNCHECKED_CAST")
     private fun Flow<EdgeLike<*, *>>.typed(): Flow<EdgeLike<ID, ID>> = this as Flow<EdgeLike<ID, ID>>

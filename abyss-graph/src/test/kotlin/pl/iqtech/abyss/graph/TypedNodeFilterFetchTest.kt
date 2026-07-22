@@ -2,6 +2,7 @@ package pl.iqtech.abyss.graph
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -29,9 +30,9 @@ private class CountingEngine(
     val nodeAtCalls = AtomicInteger(0)
 
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? { nodeAtCalls.incrementAndGet(); return nodes[nid] }
-    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> =
-        outHops[nid].orEmpty().filter { type == null || it.type == type }
-    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> = emptyList()
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
+        outHops[nid].orEmpty().filter { type == null || it.type == type }.asFlow()
+    override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = emptyFlow()
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = emptyMap()
     override fun allNodeIdsRaw(): Flow<NodeId> = emptyFlow()
     override val hopDispatcher = Dispatchers.IO

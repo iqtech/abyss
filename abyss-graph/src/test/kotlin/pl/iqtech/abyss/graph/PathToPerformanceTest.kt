@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
@@ -31,15 +32,12 @@ private class DelayedFakeEngine(
         return TestNode(id = Uuid.random(), name = "n")
     }
 
-    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = flow {
         delay(latencyMs)
-        return children[nid].orEmpty().map { Hop(nid, it, "test_edge", null) }
+        children[nid].orEmpty().forEach { emit(Hop(nid, it, "test_edge", null)) }
     }
 
-    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
-        delay(latencyMs)
-        return emptyList()
-    }
+    override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = emptyFlow()
 
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> {
         delay(latencyMs)

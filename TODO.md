@@ -288,7 +288,7 @@
   integration test (count==N proves tag correct, loadNode==0 proves it came from the scan), a
   `nodeTagOf` unit test, and live-Yugabyte `LoadTest` cases for the JOIN incl. dangling→null.
 
-- **➡️ 1.26 `adjacencyRead` has no pagination; public `pageSize` is silently dropped**
+- **✅ 1.26 `adjacencyRead` has no pagination; public `pageSize` is silently dropped**
   `adjacencyRead` (`AbyssSchemaWorker.kt:164`) is fully unbounded: it `getAll`s every shard, flattens
   all neighbors into one `List<Hop>`, and for `needValue=true` does a single `getAll` over every edge
   key. No limit/offset/cursor exists. Worse, the public API advertises paging and discards it —
@@ -296,9 +296,30 @@
   as `worker.outEdges(nid)` with `pageSize` never passed on, and the returned `Flow` is lazy in name
   only: `outEdgeFlow` emits from a fully-materialized Hazelcast `values(predicate)` and `inEdgeFlow`
   from the whole `adjacencyRead` list. A caller paging a supernode still drags every edge (plus an
-  N-key `getAll`) into one member's heap before the first emit. Wire `pageSize` through: `PagingPredicate`
-  for the `values` path, chunked `getAll` for the adjacency path; `outAt`/`inAt` traversal hot path
-  returns unbounded `List<Hop>` by design and would need a separate per-hop fanout cap decision.
+  N-key `getAll`) into one member's heap before the first emit.
+  **Milestone 1 (done):** introduced the pluggable `AdjacencyIndex` seam (`AdjacencyIndex.kt`) with
+  `ShardedAdjacencyIndex` — the existing Set-per-shard structure, but reads walk shards in bounded
+  **windows** instead of one `getAll` over all shards (the fallback strategy; see
+  `ai-scripts/AdjacencyIndexInterfaceRFC.md`). `inEdges` is now bounded/streamed and honors `pageSize`
+  (batched value fetch); `isEmpty` warm-check is first-window-bounded. Per-edge and edgesMap-index
+  shapes rejected on memory/scatter-gather math.
+  **Follow-up (a) — done:** `outEdges` is bounded/paged via `adjacencyEdgeFlow(OUT)` and honors
+  `pageSize`. Ephemeral (TTL) out-edges now carry an **OUT adjacency entry** (IN still absent —
+  outgoing-only) so they ride the same paged index — cache-native, works with or without an ephemeral
+  store (the plan's "read ephemeral from the store" idea was dropped: ephemeral can be cache-only). An
+  expired edge leaves a stale entry that reads back null and is skipped. Measured
+  (`OutEdgePagingPerformanceTest`, 2000-edge hub, pageSize=100): peak single edges-map materialization
+  **2000 → 100**; `.take(1)` materializes **2000 → 100**.
+  **Follow-up (b) — done:** `outAt`/`inAt` return `Flow<Hop>` (`NodeIdEngine`); `TraversalBuilder`
+  consumes them streamed — `filterFrontierByEdge`/`ByEdgeType` short-circuit via `firstOrNull`,
+  `addHop`/`addNodeHop` fold each node's hops into the accumulator instead of holding every node's list
+  then flattening, `countEdges` → `Flow.count`, and `paths` DFS/BFS `collect` the hop flow (`BOTH` =
+  out-then-in concat). Fast-path typed-OUT+needValue stays materialized (can't page an `entrySet`).
+  Measured (`HopStreamingPerformanceTest`, `hasOutgoing` over a 2000-edge hub, match in shard 0):
+  reads past the match's window **1 → 0** getAll calls. Non-goal (documented): `allTraversedHops` still
+  accumulates every hop for `subgraph` (TODO 1.2), O(total edges) by design.
+  **Follow-up (c):** Milestone 2 — paging-native `PagedAdjacencyIndex` (ordered K-page) behind the same
+  seam — is TODO 3.11, gated on measuring supernode write-hotness + delete rate.
 
 ## 2. Medium
 
@@ -675,6 +696,19 @@
   `TypeTagRegistry`'s existing `SubclassCollector` walk. Edge types with no `@EdgeConstraint`, or
   with either `fromTypes`/`toTypes` side empty, are dropped from the strict edge list and reported
   separately by name. Full design: `ai-scripts/SchemaGraphVisualizationPlan.md`.
+
+- **➡️ 3.11 Milestone 2: paging-native `PagedAdjacencyIndex` behind the `AdjacencyIndex` seam**
+  The "different engine" from TODO 1.26's M1 (which shipped the seam + `ShardedAdjacencyIndex`
+  fallback). Replaces hash-shards with ordered, degree-adaptive K-pages (`key = (owner, direction,
+  pageNo)` pinned to the owner, value = up to K entries): a read is a bounded page-walk with a real
+  keyset cursor, and it uses *less* memory than the Set at large degree (bigger chunks amortize
+  Hazelcast's ~100 B/entry overhead better). Opt-in per graph; drops in behind the existing interface
+  with no worker change. **Gated on two measurements before building:** how write-hot a single
+  supernode's tail is, and how delete-heavy the graph is — those decide ordered-split pages (keyset,
+  in-place delete, harder writes) vs. append-log (trivial writes, positional cursor, tombstone +
+  compaction). Warm bounding of the cold path uses an injected page-loader + value-sink, not a store
+  handle in the engine (keeps the 1.25 single-scan co-warm). Design:
+  `ai-scripts/AdjacencyIndexInterfaceRFC.md`.
 
 ## 4. Uncategorized
 

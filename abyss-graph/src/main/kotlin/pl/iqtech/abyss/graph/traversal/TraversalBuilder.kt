@@ -5,7 +5,13 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.count
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.HopDirection
@@ -59,7 +65,7 @@ class TraversalBuilder<ID>(
     private var lastHopEdges: List<Hop> = emptyList()
     private var lastHopDirection: HopDirection? = null
 
-    private suspend fun hops(nid: NodeId, direction: HopDirection, type: String?, needValue: Boolean): List<Hop> =
+    private fun hops(nid: NodeId, direction: HopDirection, type: String?, needValue: Boolean): Flow<Hop> =
         if (direction == HopDirection.OUTGOING) engine.outAt(nid, type, needValue) else engine.inAt(nid, type, needValue)
 
     // Fills in edge values for key-only hops (predicate-free hops skip the fetch) in one batched call
@@ -79,11 +85,19 @@ class TraversalBuilder<ID>(
 
     override suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)?) {
         val needValue = edgePredicate != null
-        val hopEdges = coroutineScope {
+        // Fold each frontier node's hop stream straight into a shared collector instead of holding every
+        // node's full list simultaneously and then flattening — a supernode's hops don't pile up per node.
+        val collector = ConcurrentLinkedQueue<Hop>()
+        coroutineScope {
             frontier.map { nid ->
-                async(engine.hopDispatcher) { hops(nid, direction, edgeType, needValue).filter { edgePredicate == null || edgePredicate(it.edge!!) } }
-            }.awaitAll().flatten()
+                async(engine.hopDispatcher) {
+                    hops(nid, direction, edgeType, needValue)
+                        .filter { edgePredicate == null || edgePredicate(it.edge!!) }
+                        .collect { collector += it }
+                }
+            }.awaitAll()
         }
+        val hopEdges = collector.toList()
         allTraversedHops += hopEdges
         lastHopEdges = hopEdges; lastHopDirection = direction
         frontierTags = hopEdges.associate { it.target(direction) to it.nodeTypeTag }
@@ -91,7 +105,8 @@ class TraversalBuilder<ID>(
     }
 
     override suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodeTag: Short?, nodePredicate: ((NodeLike<*>) -> Boolean)?) {
-        val hopEdges = coroutineScope {
+        val collector = ConcurrentLinkedQueue<Hop>()
+        coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
                     hops(nid, direction, edgeType, needValue = false).filter { hop ->
@@ -104,10 +119,11 @@ class TraversalBuilder<ID>(
                         val node = engine.nodeAt(hop.target(direction)) ?: return@filter false
                         if (node.typeName() != nodeType) return@filter false
                         nodePredicate == null || nodePredicate(node)
-                    }
+                    }.collect { collector += it }
                 }
-            }.awaitAll().flatten()
+            }.awaitAll()
         }
+        val hopEdges = collector.toList()
         allTraversedHops += hopEdges
         lastHopEdges = hopEdges; lastHopDirection = direction
         frontierTags = hopEdges.associate { it.target(direction) to it.nodeTypeTag }
@@ -142,7 +158,7 @@ class TraversalBuilder<ID>(
     private suspend fun filterFrontierByEdge(direction: HopDirection, edgeType: String, endpoint: NodeId) {
         val matching = coroutineScope {
             frontier.map { nid ->
-                async(engine.hopDispatcher) { if (hops(nid, direction, edgeType, needValue = false).any { it.target(direction) == endpoint }) nid else null }
+                async(engine.hopDispatcher) { if (hops(nid, direction, edgeType, needValue = false).firstOrNull { it.target(direction) == endpoint } != null) nid else null }
             }.awaitAll()
         }.filterNotNull().toSet()
         retainFrontier(matching)
@@ -152,12 +168,12 @@ class TraversalBuilder<ID>(
         val matching = coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
-                    val has = hops(nid, direction, edgeType, needValue = false).any { hop ->
+                    val has = hops(nid, direction, edgeType, needValue = false).firstOrNull { hop ->
                         val tag = hop.nodeTypeTag
                         // Tag known and wanted -> compare in memory; else fall back to a neighbor fetch.
                         if (tag != null && nodeTag != null) tag == nodeTag
                         else engine.nodeAt(hop.target(direction))?.typeName() == nodeType
-                    }
+                    } != null
                     if (has) nid else null
                 }
             }.awaitAll()
@@ -204,7 +220,7 @@ class TraversalBuilder<ID>(
     override suspend fun count(): Int = frontier.size
 
     override suspend fun countEdges(direction: HopDirection, edgeType: String): Int = coroutineScope {
-        frontier.map { nid -> async(engine.hopDispatcher) { hops(nid, direction, edgeType, needValue = false).size } }.awaitAll()
+        frontier.map { nid -> async(engine.hopDispatcher) { hops(nid, direction, edgeType, needValue = false).count() } }.awaitAll()
     }.sum()
 
     override suspend fun collectSubgraph(nodeType: String?, nodeTag: Short?): Subgraph {
@@ -278,10 +294,12 @@ class TraversalBuilder<ID>(
         }
     }
 
-    private suspend fun edgesFrom(fromNid: NodeId, direction: EdgeTraversalDirection): List<Hop> = when (direction) {
+    private fun edgesFrom(fromNid: NodeId, direction: EdgeTraversalDirection): Flow<Hop> = when (direction) {
         EdgeTraversalDirection.OUT  -> engine.outAt(fromNid, null)
         EdgeTraversalDirection.IN   -> engine.inAt(fromNid, null)
-        EdgeTraversalDirection.BOTH -> engine.outAt(fromNid, null) + engine.inAt(fromNid, null)
+        // Concat (not merge) — out-then-in, preserving the order the List path produced so path
+        // enumeration stays identical.
+        EdgeTraversalDirection.BOTH -> flow { emitAll(engine.outAt(fromNid, null)); emitAll(engine.inAt(fromNid, null)) }
     }
 
     // headNid: NodeId of the last accepted node (currentPath.head); fromNid: physical position (may
@@ -300,15 +318,14 @@ class TraversalBuilder<ID>(
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ): Boolean {
         if (depth >= maxDepth) return false
-        val edges = edgesFrom(fromNid, direction)
         val seen = visited.toMutableSet()
         var emitted = false
-        for (hop in edges) {
-            if (!edgeVisitor(currentPath, hop.edge!!)) continue
+        edgesFrom(fromNid, direction).collect { hop ->
+            if (!edgeVisitor(currentPath, hop.edge!!)) return@collect
             val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
-            if (nextNid in seen) continue
+            if (nextNid in seen) return@collect
             seen += nextNid
-            val nextNode = engine.nodeAt(nextNid) ?: continue
+            val nextNode = engine.nodeAt(nextNid) ?: return@collect
             val eval = nodeEvaluator(currentPath, nextNode)
             val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
             val extendedPath = if (included) {
@@ -346,13 +363,12 @@ class TraversalBuilder<ID>(
         while (queue.isNotEmpty()) {
             val (currentPath, headNid, fromNid, visited, depth) = queue.removeFirst()
             if (depth >= maxDepth) continue // safety guard; with the enqueue guard below only fires for maxDepth == 0
-            val edges = edgesFrom(fromNid, direction)
             var produced = false // this entry emitted a path or enqueued a continuation
-            for (hop in edges) {
-                if (!edgeVisitor(currentPath, hop.edge!!)) continue
+            edgesFrom(fromNid, direction).collect { hop ->
+                if (!edgeVisitor(currentPath, hop.edge!!)) return@collect
                 val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
-                if (nextNid in visited) continue
-                val nextNode = engine.nodeAt(nextNid) ?: continue
+                if (nextNid in visited) return@collect
+                val nextNode = engine.nodeAt(nextNid) ?: return@collect
                 val eval = nodeEvaluator(currentPath, nextNode)
                 val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
                 val extendedPath = if (included) {

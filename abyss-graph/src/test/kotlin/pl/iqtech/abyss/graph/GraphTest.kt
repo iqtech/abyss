@@ -220,7 +220,7 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..3).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            graphTest.transaction(checkIntegrity = false) { edges.forEach { addEdge(it) } }
 
             val result = graphTest.outEdges(from).toList()
             assertEquals(3, result.size)
@@ -231,10 +231,9 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..3).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
-            // decoy with a different key type
-            graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(from, Uuid.random(), "other_type")] =
-                edges[0].copy(toId = Uuid.random())
+            graphTest.transaction(checkIntegrity = false) { edges.forEach { addEdge(it) } }
+            // decoy with a different edge type
+            graphTest.transaction(checkIntegrity = false) { addEdge(TypedEdge(fromId = from, toId = Uuid.random())) }
 
             val result = graphTest.outEdges(from, "test_edge").toList()
             assertEquals(3, result.size)
@@ -245,7 +244,7 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..2).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            graphTest.transaction(checkIntegrity = false) { edges.forEach { addEdge(it) } }
 
             val result = graphTest.outEdges<TestEdge>(from).toList()
             assertEquals(2, result.size)
@@ -257,7 +256,7 @@ class GraphTest {
         runBlocking {
             val from = Uuid.random()
             val edges = (1..5).map { TestEdge(fromId = from, toId = Uuid.random(), label = "e$it") }
-            edges.forEach { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("g-edges")[edgeKey(it.fromId, it.toId, "test_edge")] = it }
+            graphTest.transaction(checkIntegrity = false) { edges.forEach { addEdge(it) } }
 
             val result = graphTest.outEdges(from, pageSize = 2).toList()
             assertEquals(5, result.size)

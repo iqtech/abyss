@@ -5,6 +5,7 @@ import arrow.core.left
 import arrow.core.right
 import com.hazelcast.config.Config
 import com.hazelcast.core.Hazelcast
+import kotlinx.coroutines.flow.count
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerialName
@@ -330,11 +331,11 @@ class MultiSchemaTest {
         c.longS.transaction { addNode(LongTestNode(1L)) }
         c.uuidS.transaction { addNode(TestNode(u, name = "m")); addCrossEdge(LivesIn(u, 1L)) }
 
-        assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+        assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())
 
         c.uuidS.transaction { removeNode(u) }
 
-        assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+        assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())
     }
 
     @Test fun removeNodeCascadesCrossSchemaEdgeWhenToNodeDeleted() = runBlocking {
@@ -344,12 +345,12 @@ class MultiSchemaTest {
         c.longS.transaction { addNode(LongTestNode(1L)) }
         c.uuidS.transaction { addCrossEdge(LivesIn(u, 1L)) }
 
-        assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+        assertEquals(1, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())
 
         // Delete the TARGET this time — exercises the adjacency-index-driven (incoming) cascade branch.
         c.longS.transaction { removeNode(1L) }
 
-        assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).size)
+        assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())
     }
 
     @Test fun containerLevelTransactionAddsCrossEdgeAtomically() = runBlocking {
@@ -517,11 +518,11 @@ class MultiSchemaTest {
             a.transaction { addCrossEdge(TenantLink(1L, 2L)) }
 
             val fromNid = HeaderlessSchemaKeyAdapter(SchemaTag(501L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(1L)
-            assertEquals(1, g.outAt(fromNid, "tenant_link", needValue = false).size)
+            assertEquals(1, g.outAt(fromNid, "tenant_link", needValue = false).count())
 
             b.transaction { removeNode(2L) }
 
-            assertEquals(0, g.outAt(fromNid, "tenant_link", needValue = false).size)
+            assertEquals(0, g.outAt(fromNid, "tenant_link", needValue = false).count())
         } finally {
             listOf("hg4-nodes", "hg4-edges", "hg4-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }

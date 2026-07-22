@@ -15,7 +15,11 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
@@ -76,20 +80,19 @@ internal class AbyssSchemaWorker(
 
     private val nodesMap: IMap<NodeId, NodeLike<*>> = hazelcast.getMap(nodesMapName)
     private val edgesMap: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(edgesMapName)
-    private val adjacencyMap: IMap<AdjacencyKey, AdjacencyValue> = hazelcast.getMap(edgesAdjacencyMapName)
+    private val adjacency: AdjacencyIndex =
+        ShardedAdjacencyIndex(hazelcast.getMap(edgesAdjacencyMapName), adjacencyShardCount, partitionKeyOf = { partitionKey(it) })
     private val tagRegistry = TypeTagRegistry.of(module)
     override val hopDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(hopFanoutParallelism)
+
+    // Value-carrying hop/edge flows fetch edge values from edgesMap in batches of this many neighbors,
+    // so peak in-flight stays bounded regardless of degree.
+    private val valueFetchBatch = 128
 
     private fun edgeAdapterOf(nid: NodeId) = resolution.edgeAdapterOf(nid)
 
     private fun edgeKey(fromNid: NodeId, toNid: NodeId, type: String) =
         EdgeKey(fromNid, toNid, type, edgeAdapterOf(fromNid).partitionKey(fromNid))
-
-    private fun outKeyFor(owner: NodeId, neighbor: NodeId) =
-        AdjacencyKey(owner, packShard(AdjacencyDirection.OUT, shardIndexOf(neighbor, adjacencyShardCount)), edgeAdapterOf(owner).partitionKey(owner))
-
-    private fun inKeyFor(owner: NodeId, neighbor: NodeId) =
-        AdjacencyKey(owner, packShard(AdjacencyDirection.IN, shardIndexOf(neighbor, adjacencyShardCount)), edgeAdapterOf(owner).partitionKey(owner))
 
     private fun partitionKey(nid: NodeId): Any = edgeAdapterOf(nid).partitionKey(nid)
 
@@ -112,13 +115,15 @@ internal class AbyssSchemaWorker(
 
     fun allNodeIds(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
 
-    fun outEdges(nid: NodeId): Flow<EdgeLike<*, *>> =
-        outEdgeFlow(nid, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid))
+    // Bounded/streamed outgoing edges — both persistent and ephemeral ride the OUT adjacency index
+    // (shard-window paged, honors pageSize). Ephemeral (TTL) edges carry an OUT entry but no IN entry
+    // (outgoing-only, TODO 1.13); an expired edge leaves a stale entry that reads back null and is
+    // skipped. Cache-native, so it works whether or not an ephemeral store is configured.
+    fun outEdges(nid: NodeId, type: String? = null, pageSize: Int = 100): Flow<EdgeLike<*, *>> =
+        adjacencyEdgeFlow(nid, AdjacencyDirection.OUT, type, batch = pageSize)
 
-    fun outEdges(nid: NodeId, type: String): Flow<EdgeLike<*, *>> =
-        outEdgeFlow(nid, Predicates.and(keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid), Predicates.equal<EdgeKey, EdgeLike<*, *>>("__key.type", type)))
-
-    fun inEdges(nid: NodeId, type: String? = null): Flow<EdgeLike<*, *>> = inEdgeFlow(nid, type)
+    fun inEdges(nid: NodeId, type: String? = null, pageSize: Int = 100): Flow<EdgeLike<*, *>> =
+        adjacencyEdgeFlow(nid, AdjacencyDirection.IN, type, batch = pageSize)
 
     private fun edgeType(edge: EdgeLike<*, *>): String =
         edge::class.serialName()
@@ -128,64 +133,72 @@ internal class AbyssSchemaWorker(
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = readNode(nid)
 
     @Suppress("UNCHECKED_CAST")
-    override suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> {
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
         // Already-optimal hottest path (edgesMap is partitioned by fromId) — don't route it through
         // the adjacency index, which would cost 2 round trips (adjacency read, then edgesMap.getAll)
-        // for no gain.
-        if (type != null && needValue) {
+        // for no gain. Materialized-then-emitted: a partition entrySet can't be paged (PagingPredicate
+        // doesn't compose with PartitionPredicate), and this path's consumers collect-all anyway.
+        if (type != null && needValue) flow {
             ensureOutWarm(nid)
             val pred = Predicates.and<EdgeKey, Any>(keyEq<EdgeKey, Any>("fromId", nid), Predicates.equal<EdgeKey, Any>("__key.type", type))
             val part = Predicates.partitionPredicate<EdgeKey, Any>(partitionKey(nid), pred)
             val map = edgesMap as IMap<EdgeKey, Any>
-            return withContext(Dispatchers.IO) { map.entrySet(part) }.map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as EdgeLike<*, *>) }
+            withContext(Dispatchers.IO) { map.entrySet(part) }.forEach { emit(Hop(it.key.fromId, it.key.toId, it.key.type, it.value as EdgeLike<*, *>)) }
         }
-        return adjacencyRead(nid, AdjacencyDirection.OUT, type, needValue)
-    }
+        else adjacencyHopFlow(nid, AdjacencyDirection.OUT, type, needValue, valueFetchBatch)
 
-    override suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean): List<Hop> =
-        adjacencyRead(nid, AdjacencyDirection.IN, type, needValue)
+    override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
+        adjacencyHopFlow(nid, AdjacencyDirection.IN, type, needValue, valueFetchBatch)
 
-    private fun shardKeysFor(nid: NodeId, direction: AdjacencyDirection): Set<AdjacencyKey> {
-        val pk = partitionKey(nid)
-        return (0 until adjacencyShardCount).map { AdjacencyKey(nid, packShard(direction, it), pk) }.toSet()
-    }
-
-    // preloadOut warms both edgesMap and adjacencyMap together, so an empty adjacency read for a
-    // node's OUT side is also the signal that edgesMap's fast-path scan below needs warming — used by
-    // callers that bypass adjacencyRead (outAt's fast path, outEdgeFlow, cascadeEdgeRemovals).
+    // preloadOut warms both edgesMap and the adjacency index together, so an empty adjacency OUT side is
+    // also the signal that edgesMap's fast-path scan needs warming — used by callers that bypass
+    // adjacencyRead (outAt's fast path, outEdgeFlow, cascadeEdgeRemovals).
     private suspend fun ensureOutWarm(nid: NodeId) {
-        if (withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeysFor(nid, AdjacencyDirection.OUT)) }.isEmpty()) preloadOut(nid)
+        if (adjacency.isEmpty(nid, AdjacencyDirection.OUT)) preloadOut(nid)
     }
 
-    // One batched getAll across every shard key for nid — Hazelcast groups getAll by owning partition
-    // and every shard key for one node shares that node's partition, so this is always exactly 1 round
-    // trip regardless of adjacencyShardCount, never a per-shard coroutine fan-out.
+    // Bounded, streamed hop flow off the adjacency index (self-healing from the store on a cold miss).
+    // The index emits in bounded windows (see ShardedAdjacencyIndex); needValue batches the edge-value
+    // getAll every [batch] hops (peak heap ~[batch] edges regardless of degree). needValue=false emits
+    // key-only hops straight through, so short-circuiting consumers (.any/.firstOrNull) stop early.
     @Suppress("UNCHECKED_CAST")
-    private suspend fun adjacencyRead(nid: NodeId, direction: AdjacencyDirection, type: String?, needValue: Boolean): List<Hop> {
-        val shardKeys = shardKeysFor(nid, direction)
-        var raw = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys) }
-        if (raw.isEmpty()) {
+    private fun adjacencyHopFlow(nid: NodeId, direction: AdjacencyDirection, type: String?, needValue: Boolean, batch: Int): Flow<Hop> = flow {
+        if (adjacency.isEmpty(nid, direction)) {
             // ponytail: a node with genuinely zero edges in this direction is indistinguishable from
             // "never preloaded" (no shard entry to tell them apart) — it retries the store on every
             // call instead of caching "confirmed empty". Upgrade to a dedicated warm-marker key if a
             // hot zero-degree node's repeated store hits ever show up in profiling.
             if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
-            raw = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys) }
         }
-        val entries = raw.values.flatMap { it.entries }
         val edgeTag = type?.let { tagRegistry.edgeTagOf(it) }
-        val filtered = if (edgeTag != null) entries.filter { it.edgeTypeTag == edgeTag } else entries
-        val hops = filtered.map { entry ->
+        // nodeTypeTag is the neighbor's (== target's) type — carried so typed filters skip a fetch.
+        fun hopOf(entry: AdjacencyEntry): Hop {
             val (fromId, toId) = if (direction == AdjacencyDirection.OUT) nid to entry.neighborId else entry.neighborId to nid
-            // nodeTypeTag is the neighbor's (== target's) type — carried so typed filters skip a fetch.
-            Hop(fromId, toId, tagRegistry.edgeNameOf(entry.edgeTypeTag), null, entry.nodeTypeTag)
+            return Hop(fromId, toId, tagRegistry.edgeNameOf(entry.edgeTypeTag), null, entry.nodeTypeTag)
         }
-        if (!needValue || hops.isEmpty()) return hops
-        val keys = hops.associateWith { edgeKey(it.fromId, it.toId, it.type) }
+        if (!needValue) {
+            adjacency.read(nid, direction, edgeTag).collect { emit(hopOf(it)) }
+            return@flow
+        }
         val map = edgesMap as IMap<EdgeKey, Any>
-        val values = withContext(Dispatchers.IO) { map.getAll(keys.values.toSet()) }
-        return hops.mapNotNull { hop -> (values[keys.getValue(hop)] as EdgeLike<*, *>?)?.let { Hop(hop.fromId, hop.toId, hop.type, it, hop.nodeTypeTag) } }
+        val buffer = ArrayList<Hop>(batch)
+        suspend fun FlowCollector<Hop>.flush() {
+            if (buffer.isEmpty()) return
+            val keys = buffer.associateWith { edgeKey(it.fromId, it.toId, it.type) }
+            val values = withContext(Dispatchers.IO) { map.getAll(keys.values.toSet()) }
+            for (hop in buffer) (values[keys.getValue(hop)] as EdgeLike<*, *>?)?.let { emit(Hop(hop.fromId, hop.toId, hop.type, it, hop.nodeTypeTag)) }
+            buffer.clear()
+        }
+        adjacency.read(nid, direction, edgeTag).collect { entry ->
+            buffer += hopOf(entry)
+            if (buffer.size >= batch) flush()
+        }
+        flush()
     }
+
+    // Public edge flows are the value-carrying hop flow with the key stripped back to the edge.
+    private fun adjacencyEdgeFlow(nid: NodeId, direction: AdjacencyDirection, type: String?, batch: Int): Flow<EdgeLike<*, *>> =
+        adjacencyHopFlow(nid, direction, type, needValue = true, batch = batch).mapNotNull { it.edge }
 
     @Suppress("UNCHECKED_CAST")
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> {
@@ -203,16 +216,6 @@ internal class AbyssSchemaWorker(
     // transaction()/ephemeral() below as an ordinary NodeOp.AddEdge/RemoveEdge — atomic, and
     // endpoint-existence/@EdgeConstraint-checked for free, instead of an independent store commit.
 
-    private fun outEdgeFlow(nid: NodeId, predicate: Predicate<EdgeKey, EdgeLike<*, *>>): Flow<EdgeLike<*, *>> = flow {
-        ensureOutWarm(nid)
-        val partitioned = Predicates.partitionPredicate<EdgeKey, EdgeLike<*, *>>(partitionKey(nid), predicate)
-        withContext(Dispatchers.IO) { edgesMap.values(partitioned) }.forEach { emit(it) }
-    }
-
-    private fun inEdgeFlow(nid: NodeId, typeFilter: String? = null): Flow<EdgeLike<*, *>> = flow {
-        adjacencyRead(nid, AdjacencyDirection.IN, typeFilter, needValue = true).forEach { hop -> hop.edge?.let { emit(it) } }
-    }
-
     // Store -> cache preload for a node's outgoing edges (self-healing on cache miss). The store
     // returns both endpoint NodeIds (from its PK columns), so the cache key rebuilds untyped. Also
     // warms the OUT-direction adjacency entry — an adjacency self-heal preloadOut never needed before
@@ -224,17 +227,19 @@ internal class AbyssSchemaWorker(
             // Neighbor tag rides the edge scan (StoredEdge.neighborType) — no per-neighbor node read.
             // Null (dangling / store can't resolve) leaves the tag null; typed traversal fetch-falls-back.
             val toTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
-            adjacencyMap.executeOnKey(outKeyFor(e.fromId, e.toId), AdjacencyMutationProcessor(AdjacencyMutation.Add(AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag()))))
+            adjacency.addAsync(e.fromId, AdjacencyDirection.OUT, AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag())).asDeferred().await()
         }
         ephemeralStore?.loadEdges(nid)?.getOrNull()?.forEach { e ->
             val key = edgeKey(e.fromId, e.toId, edgeType(e.edge))
-            val remaining = e.remaining
             when {
-                remaining == null -> edgesMap.putIfAbsent(key, e.edge)
-                remaining.inWholeSeconds > 0 -> edgesMap.putIfAbsent(key, e.edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
-                // remaining <= 0: expired — skip
+                e.remaining == null -> edgesMap.putIfAbsent(key, e.edge)
+                e.remaining!!.inWholeSeconds > 0 -> edgesMap.putIfAbsent(key, e.edge, e.remaining!!.inWholeSeconds, TimeUnit.SECONDS)
+                else -> return@forEach // expired — no cache entry, no adjacency entry
             }
-            // Ephemeral (TTL) edges stay outgoing-only (TODO 1.13) — no adjacency index for them either.
+            // Ephemeral edges are outgoing-only (TODO 1.13): OUT adjacency entry only (no IN), so a warm
+            // from the ephemeral store makes them findable via the paged index — mirrors the write path.
+            val toTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
+            adjacency.addAsync(e.fromId, AdjacencyDirection.OUT, AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag())).asDeferred().await()
         }
     }
 
@@ -245,7 +250,7 @@ internal class AbyssSchemaWorker(
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
             // Neighbor (the from-node) tag rides the loadInEdges scan; see preloadOut.
             val fromTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
-            adjacencyMap.executeOnKey(inKeyFor(e.toId, e.fromId), AdjacencyMutationProcessor(AdjacencyMutation.Add(AdjacencyEntry(e.fromId, fromTag, e.edge::class.typeTag()))))
+            adjacency.addAsync(e.toId, AdjacencyDirection.IN, AdjacencyEntry(e.fromId, fromTag, e.edge::class.typeTag())).asDeferred().await()
         }
     }
 
@@ -365,7 +370,7 @@ internal class AbyssSchemaWorker(
         }.map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
         // ponytail: ephemeral edges are outgoing-only (TODO 1.13) — no adjacency IN entry, so deleting
         // the TO-node can't cascade them; they expire via TTL. Deleting the FROM-node still cascades (out).
-        val inc = adjacencyRead(nid, AdjacencyDirection.IN, type = null, needValue = false)
+        val inc = inAt(nid, type = null, needValue = false).toList()
             .map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
     }
@@ -412,16 +417,21 @@ internal class AbyssSchemaWorker(
         is NodeOp.AddEdge -> {
             val type = edgeType(op.edge)
             val key  = edgeKey(op.fromId, op.toId, type)
-            // Ephemeral (TTL) edges are outgoing-only (TODO 1.13): no adjacency index, matching the store.
-            if (op.ttl != null) listOf(edgesMap.setAsync(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS))
+            val edgeTag = op.edge::class.typeTag()
+            val toTag = resolveNodeTag(op.toId, addedInTx)
+            // Ephemeral (TTL) edges are outgoing-only (TODO 1.13): OUT adjacency entry so outEdges finds
+            // them via the paged index, but no IN entry. The entry carries no TTL — once the edge expires
+            // the stale entry reads back null and is skipped.
+            if (op.ttl != null) listOf(
+                edgesMap.setAsync(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS),
+                adjacency.addAsync(op.fromId, AdjacencyDirection.OUT, AdjacencyEntry(op.toId, toTag, edgeTag)),
+            )
             else {
-                val edgeTag = op.edge::class.typeTag()
-                val toTag = resolveNodeTag(op.toId, addedInTx)
                 val fromTag = resolveNodeTag(op.fromId, addedInTx)
                 listOf(
                     edgesMap.setAsync(key, op.edge),
-                    adjacencyMap.submitToKey(outKeyFor(op.fromId, op.toId), AdjacencyMutationProcessor(AdjacencyMutation.Add(AdjacencyEntry(op.toId, toTag, edgeTag)))),
-                    adjacencyMap.submitToKey(inKeyFor(op.toId, op.fromId), AdjacencyMutationProcessor(AdjacencyMutation.Add(AdjacencyEntry(op.fromId, fromTag, edgeTag)))),
+                    adjacency.addAsync(op.fromId, AdjacencyDirection.OUT, AdjacencyEntry(op.toId, toTag, edgeTag)),
+                    adjacency.addAsync(op.toId, AdjacencyDirection.IN, AdjacencyEntry(op.fromId, fromTag, edgeTag)),
                 )
             }
         }
@@ -431,8 +441,8 @@ internal class AbyssSchemaWorker(
             val edgeTag = tagRegistry.edgeTagOf(op.type)
             listOf(
                 edgesMap.removeAsync(edgeKey(op.fromId, op.toId, op.type)),
-                adjacencyMap.submitToKey(outKeyFor(op.fromId, op.toId), AdjacencyMutationProcessor(AdjacencyMutation.Remove(op.toId, edgeTag))),
-                adjacencyMap.submitToKey(inKeyFor(op.toId, op.fromId), AdjacencyMutationProcessor(AdjacencyMutation.Remove(op.fromId, edgeTag))),
+                adjacency.removeAsync(op.fromId, AdjacencyDirection.OUT, op.toId, edgeTag),
+                adjacency.removeAsync(op.toId, AdjacencyDirection.IN, op.fromId, edgeTag),
             )
         }
     }

@@ -21,8 +21,10 @@ data class Hop(val fromId: NodeId, val toId: NodeId, val type: String, val edge:
 // ordinary hops over the shared edge map.
 interface NodeIdEngine {
     suspend fun nodeAt(nid: NodeId): NodeLike<*>?
-    suspend fun outAt(nid: NodeId, type: String?, needValue: Boolean = true): List<Hop>   // edges where fromId == nid
-    suspend fun inAt(nid: NodeId, type: String?, needValue: Boolean = true): List<Hop>    // edges where toId == nid
+    // Cold, lazy hop streams — a supernode's neighbors arrive in bounded batches, so short-circuiting
+    // consumers (reachability, hasOutgoing) stop early instead of materializing the whole set.
+    fun outAt(nid: NodeId, type: String?, needValue: Boolean = true): Flow<Hop>   // edges where fromId == nid
+    fun inAt(nid: NodeId, type: String?, needValue: Boolean = true): Flow<Hop>    // edges where toId == nid
     suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>>   // batched value fetch for key-only hops
     fun allNodeIdsRaw(): Flow<NodeId>
 
