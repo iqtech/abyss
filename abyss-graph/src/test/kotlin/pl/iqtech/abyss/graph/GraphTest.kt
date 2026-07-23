@@ -482,7 +482,9 @@ class GraphTest {
     }
 
     // TODO 1.27: ephemeral edges are store-only — retrievable via the ephemeral store (readEdge
-    // self-heals from it), not the cache. Requires an ephemeral store (cache-only is unsupported).
+    // self-heals from it), not the cache. Leaving ephemeralStore unset (see
+    // `ephemeral addEdge with no explicit store defaults to HazelcastEphemeralStore` below) works
+    // too now — a store always exists, this test just uses an explicit fake to also assert on it.
     @Test fun `ephemeral addEdge makes edge retrievable from the store`() {
         runBlocking {
             val fake = FakeEphemeralStore()
@@ -507,6 +509,24 @@ class GraphTest {
             assertEquals(1, g.outEdges(edge.fromId, includeEphemeral = true).toList().size, "includeEphemeral reads it from the store")
             assertEquals(0, g.inEdges(edge.toId).toList().size, "ephemeral is outgoing-only")
             listOf("eph-o-nodes", "eph-o-edges", "eph-o-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    // No ephemeralStore configured: AbyssSchemaWorker defaults it to a HazelcastEphemeralStore
+    // instead of silently dropping ephemeral writes, so this works with zero store configuration.
+    @Test fun `ephemeral addEdge with no explicit store defaults to HazelcastEphemeralStore`() {
+        runBlocking {
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "eph-def-nodes", "eph-def-edges", module = graphTestModule)
+            val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-default")
+            g.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
+
+            assertEquals(0, g.outEdges(edge.fromId).toList().size, "default read excludes ephemeral")
+            assertEquals(1, g.outEdges(edge.fromId, includeEphemeral = true).toList().size, "found via the default in-memory store")
+            assertEquals(0, graphTestHz.getMap<Any, Any>("eph-def-edges").size, "never lands in the persistent-path edgesMap")
+            assertEquals(0, graphTestHz.getMap<Any, Any>("eph-def-edges-adjacency").size, "never indexed in adjacency")
+
+            listOf("eph-def-nodes", "eph-def-edges", "eph-def-edges-adjacency", "eph-def-edges-ephemeral", "eph-def-nodes-ephemeral")
+                .forEach { graphTestHz.getMap<Any, Any>(it).clear() }
         }
     }
 
