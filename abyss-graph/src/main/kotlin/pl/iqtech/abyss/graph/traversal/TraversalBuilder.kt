@@ -257,25 +257,49 @@ class TraversalBuilder<ID>(
     override suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean {
         val visited = mutableSetOf<NodeId>()
         for (start in frontier) {
-            if (start !in visited && dfsCycle(start, visited, mutableSetOf(), block)) return true
+            if (start !in visited && dfsCycle(start, visited, block)) return true
         }
         return false
     }
 
+    // Explicit-stack iterative DFS (TODO 3.12 / fable.md 2.5): the original recursed one call per
+    // node, and every recursive step routed through sub.block()'s async(engine.hopDispatcher)
+    // .awaitAll() — a genuine suspension point, so it wasn't a native StackOverflowError but an
+    // unbounded chain of heap-allocated Continuations (one per depth), risking OutOfMemoryError on
+    // a long chain. Same white/gray/black coloring as before (visited/inStack), same frontier-loop
+    // shape exhaustReachable/checkReaches already use — just no recursion. A node's neighbor list
+    // still needs one suspend call (sub.block()), computed once at push time and driven by a plain
+    // synchronous while loop from then on.
     private suspend fun dfsCycle(
-        nodeId: NodeId,
+        start: NodeId,
         visited: MutableSet<NodeId>,
-        inStack: MutableSet<NodeId>,
         block: suspend TraversalBuilderLike<ID>.() -> Unit
     ): Boolean {
-        visited += nodeId; inStack += nodeId
-        val sub = TraversalBuilder(engine, setOf(nodeId), homeAdapter)
-        sub.block()
-        for (neighbor in sub.frontier) {
-            if (neighbor in inStack) return true
-            if (neighbor !in visited && dfsCycle(neighbor, visited, inStack, block)) return true
+        suspend fun neighborsOf(nodeId: NodeId): Iterator<NodeId> {
+            val sub = TraversalBuilder(engine, setOf(nodeId), homeAdapter)
+            sub.block()
+            return sub.frontier.iterator()
         }
-        inStack -= nodeId
+
+        val inStack = mutableSetOf<NodeId>()
+        val stack = ArrayDeque<Pair<NodeId, Iterator<NodeId>>>()
+        visited += start; inStack += start
+        stack.addLast(start to neighborsOf(start))
+
+        while (stack.isNotEmpty()) {
+            val (nodeId, neighbors) = stack.last()
+            if (neighbors.hasNext()) {
+                val neighbor = neighbors.next()
+                if (neighbor in inStack) return true
+                if (neighbor !in visited) {
+                    visited += neighbor; inStack += neighbor
+                    stack.addLast(neighbor to neighborsOf(neighbor))
+                }
+            } else {
+                stack.removeLast()
+                inStack -= nodeId
+            }
+        }
         return false
     }
 

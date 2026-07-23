@@ -729,6 +729,30 @@
   handle in the engine (keeps the 1.25 single-scan co-warm). Design:
   `ai-scripts/AdjacencyIndexInterfaceRFC.md`.
 
+- **✅ 3.12 `dfsCycle` unbounded recursion depth (fable.md 2.5)**
+  `TraversalBuilder.detectCycle`'s private `dfsCycle` helper (`TraversalBuilder.kt:265`) recurses
+  one call per node with no depth cap. Each recursive call routes through `sub.block()` ->
+  `addHop`'s `coroutineScope { async(engine.hopDispatcher) }.awaitAll()`, a genuine suspension
+  point — so this does *not* overflow the native JVM stack (Kotlin's CPS transform unwinds it);
+  instead it chains one heap-allocated `Continuation` object per recursion depth (holding `nodeId`,
+  `visited`, `inStack`, `block`, `sub`). A long chain (e.g. 50k+ linearly-connected nodes) means
+  50k live chained continuations for the traversal's duration — unbounded, unmonitored heap growth
+  that could surface as `OutOfMemoryError`, not a classic `StackOverflowError` despite the naive
+  recursive-function mental model suggesting one. Distinct from 2.4.2's parallelization note
+  above (line ~866) — that one is throughput (fan out DFS siblings across `hopDispatcher`) and is
+  arguably in tension with this one, since parallelizing siblings adds concurrent branches on top
+  of the existing recursive depth rather than reducing it.
+  Fix: rewrite as an explicit-stack iterative DFS (white/gray/black coloring via `visited`/
+  `inStack`), same frontier-loop shape `exhaustReachable`/`checkReaches` already use elsewhere in
+  this file. Neighbor-list computation still needs one suspend call (`sub.block()`) per
+  newly-discovered node — compute it once at push time and store `neighbors.iterator()` in the
+  explicit stack frame, so the driving `while` loop's `hasNext()`/`next()`/backtrack is plain
+  synchronous code with zero recursion. Memory becomes a resizable `ArrayList`-backed stack instead
+  of a continuation chain.
+  Verify with a synthetic linear chain of ~50k-100k nodes (fake in-memory `NodeIdEngine`, no real
+  Hazelcast/store needed) through `detectCycle` — demonstrate the unbounded continuation-chain
+  growth pre-fix, clean bounded pass post-fix.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
