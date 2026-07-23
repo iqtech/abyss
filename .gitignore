@@ -1,5 +1,6 @@
 .claude/
 .codegraph/
+.retro/
 .gradle/
 build/
 .idea/
