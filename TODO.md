@@ -257,7 +257,7 @@
   on `AbyssStoreLike`, which doesn't exist today (point-gets and writes only). YSQL is cheap to fix
   (existing GIN-indexed `tags` column covers tag lookup, no schema change); YCQL is structurally
   harder (secondary indexes conflict with per-row TTL). Full writeup:
-  `ai-scripts/StoreScanCapabilityRFC.md`. No design plan yet.
+  `ai-scripts/StoreScanCapabilityRFC.md`. Design plan: `ai-scripts/StoreScanCapabilityPlan.md`.
   Both of the RFC's open feasibility questions are now answered empirically against the live
   YugabyteDB container, not just assumed:
   - `abyss-store-yugabyte/src/test/kotlin/pl/iqtech/abyss/store/yugabyte/TokenRangeScanFeasibilityTest.kt` —
@@ -288,7 +288,7 @@
   tag-filtered result set is ever large enough to need client-side parallel consumption, the right
   chunking key would be something over that result set itself (e.g. keyset pagination on `id`), not
   the whole table's hash space.
-  De-risks the design; still no design/plan written yet.
+  De-risks the design; design plan now written (`ai-scripts/StoreScanCapabilityPlan.md`), ready for build.
 
 - **✅ 1.24 Move tags off domain objects and into the table; add `tags` param to `transaction{}`**
   Remove tags from domain objects, keep them inside the table (backing store column, not a
