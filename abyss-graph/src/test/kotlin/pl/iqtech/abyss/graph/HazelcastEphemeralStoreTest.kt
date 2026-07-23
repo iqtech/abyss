@@ -6,6 +6,7 @@ import com.hazelcast.config.MapStoreConfig
 import com.hazelcast.core.Hazelcast
 import com.hazelcast.map.MapStore
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.store.api.NodeId
 import kotlin.test.Test
@@ -106,6 +107,24 @@ class HazelcastEphemeralStoreTest {
             assertNull(store.loadEdge(from, to, "test_edge").shouldBeRight().first)
 
             listOf("hes-edges-del", "hes-nodes-del").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    // TODO 1.23: plain ephNodes.keys enumeration, no server-side tag support — NodeLike<ID> carries
+    // no tags field (TODO 1.24 moved tags into the DB table only), so a tag filter can't be honored
+    // from this cache and must return empty rather than silently ignoring the filter.
+    @Test fun `scanNodeIds enumerates cached node ids untagged, and returns empty when a tag is requested`() {
+        runBlocking {
+            val store = HazelcastEphemeralStore(graphTestHz, "hes-edges-scan2", "hes-nodes-scan2")
+            val ids = List(3) { huid.toNodeId(Uuid.random()) }
+            store.transaction {
+                ids.forEachIndexed { i, id -> saveNode(id, TestNode(id = huid.fromNodeId(id), name = "hes-scan-$i"), 60.seconds, emptySet()) }
+            }
+
+            assertEquals(ids.toSet(), store.scanNodeIds().toList().toSet())
+            assertEquals(emptyList(), store.scanNodeIds(tag = "anything").toList())
+
+            graphTestHz.getMap<Any, Any>("hes-nodes-scan2").clear()
         }
     }
 

@@ -4,6 +4,9 @@ import arrow.core.Either
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
@@ -100,6 +103,64 @@ class YugabytePersistentStore(
 
     override fun close() {
         runCatching { (ysql as? Closeable)?.close() }.onFailure { log.warn("Failed to close YSQL DataSource", it) }
+    }
+
+    // Admin/orphan-sweep scan (TODO 1.23). Two genuinely different paths, proven in
+    // YsqlPartitionScanFeasibilityTest: tag == null fans out over yb_hash_code(id) ranges (0..65535);
+    // tag != null is one plain GIN `tags @>` query with NO hash-range fan-out — combining the two
+    // doesn't parallelize (the GIN scan fetches every tag match globally regardless, proven via
+    // EXPLAIN ANALYZE), so pretending otherwise would just re-scan the same match N times.
+    override fun scanNodeIds(tag: String?, parallelism: Int): Flow<NodeId> = channelFlow {
+        if (tag != null) {
+            launch(Dispatchers.IO) {
+                ysql.connection.use { conn ->
+                    conn.prepareStatement("SELECT id FROM $ysqlSchema.nodes WHERE tags @> ?").use { stmt ->
+                        stmt.setArray(1, conn.createArrayOf("text", arrayOf(tag)))
+                        val rs = stmt.executeQuery()
+                        while (rs.next()) send(NodeId(rs.getBytes("id")))
+                    }
+                }
+            }
+            return@channelFlow
+        }
+        hashCodeRanges(parallelism).forEach { (lo, hi) ->
+            launch(Dispatchers.IO) {
+                ysql.connection.use { conn ->
+                    conn.prepareStatement(
+                        "SELECT id FROM $ysqlSchema.nodes WHERE yb_hash_code(id) BETWEEN ? AND ?"
+                    ).apply { fetchSize = 500 }.use { stmt ->
+                        stmt.setInt(1, lo)
+                        stmt.setInt(2, hi)
+                        val rs = stmt.executeQuery()
+                        while (rs.next()) send(NodeId(rs.getBytes("id")))
+                    }
+                }
+            }
+        }
+    }
+
+    override fun scanEdgeIds(parallelism: Int): Flow<Pair<NodeId, NodeId>> = channelFlow {
+        hashCodeRanges(parallelism).forEach { (lo, hi) ->
+            launch(Dispatchers.IO) {
+                ysql.connection.use { conn ->
+                    conn.prepareStatement(
+                        "SELECT from_id, to_id FROM $ysqlSchema.edges WHERE yb_hash_code(from_id) BETWEEN ? AND ?"
+                    ).apply { fetchSize = 500 }.use { stmt ->
+                        stmt.setInt(1, lo)
+                        stmt.setInt(2, hi)
+                        val rs = stmt.executeQuery()
+                        while (rs.next()) send(NodeId(rs.getBytes("from_id")) to NodeId(rs.getBytes("to_id")))
+                    }
+                }
+            }
+        }
+    }
+
+    // yb_hash_code() is bounded 0..65535 (proven in YsqlPartitionScanFeasibilityTest); splits it into
+    // `parallelism` disjoint inclusive ranges for a channelFlow fan-out.
+    private fun hashCodeRanges(parallelism: Int): List<Pair<Int, Int>> {
+        val chunkSize = (65536 + parallelism - 1) / parallelism
+        return (0 until parallelism).map { i -> (i * chunkSize) to minOf((i + 1) * chunkSize - 1, 65535) }
     }
 
     private fun queryNodeYsql(id: NodeId): NodeLike<*>? =

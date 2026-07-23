@@ -85,6 +85,12 @@ class HomogeneousSchemaGraph<ID>(
     override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()
     override val hopDispatcher: CoroutineDispatcher get() = worker.hopDispatcher
 
+    // Admin/orphan-sweep scan (TODO 1.23) — container-level, raw NodeId, unscoped by schema tag
+    // (deliberately different from allNodeIdsRaw()'s per-schema scoping — this is a cross-tenant
+    // admin sweep over every schema registered on this container).
+    fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<NodeId> = worker.scanNodeIds(tag, parallelism)
+    fun scanEdgeIds(parallelism: Int = 4): Flow<Pair<NodeId, NodeId>> = worker.scanEdgeIds(parallelism)
+
     // --- Cross-schema edges. NodeId-level, in the shared edge/adjacency maps, routed through the SAME
     // worker.transaction/worker.ephemeral pipeline as ordinary node/edge ops — atomic, persisted
     // through the same stores, endpoint-existence + @EdgeConstraint checked for free. -------------

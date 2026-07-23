@@ -96,6 +96,17 @@ class AbyssGraphSchema<ID> internal constructor(
     // ownsNodeId filters out every other schema's keys before they reach adapter.fromNodeId.
     override fun allNodeIds(): Flow<ID> = worker.allNodeIds().filter { adapter.ownsNodeId(it) }.map { adapter.fromNodeId(it) }
 
+    // TODO 1.23: DB-backed scan — unlike allNodeIds() above (Hazelcast-cache-only, misses cold/evicted
+    // nodes), this reaches the store and won't drop rows just because they aren't warm in the cache.
+    // Same ownership-filter + typed-conversion shape as allNodeIds(), sourced from worker.scanNodeIds()
+    // instead of worker.allNodeIds(). Deliberately not part of AbyssEngineLike<ID> (plain method on the
+    // concrete class only, same as the container-level scanNodeIds/scanEdgeIds) — exportGraphLines is
+    // its first caller. worker.scanNodeIds() also scans the ephemeral store; an ephemeral-only id that
+    // slips through the ownership filter has no persistent row, so node(id) below reads it as
+    // NodeNotFound and it's silently skipped — a wasted round trip, not a correctness issue.
+    fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<ID> =
+        worker.scanNodeIds(tag, parallelism).filter { adapter.ownsNodeId(it) }.map { adapter.fromNodeId(it) }
+
     override suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>> =
         Either.catch { worker.readNode(adapter.toNodeId(id)) }
             .mapLeft { AbyssError.Unexpected(it) }

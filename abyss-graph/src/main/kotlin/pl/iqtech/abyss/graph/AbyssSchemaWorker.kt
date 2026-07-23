@@ -17,11 +17,14 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
@@ -145,6 +148,22 @@ internal class AbyssSchemaWorker(
     // withContext below only keeps the blocking Hazelcast fetch off the caller's dispatcher — same
     // pattern as outAtPersistent/resolveEdges — it does not reduce the memory footprint.
     fun allNodeIds(): Flow<NodeId> = flow { withContext(Dispatchers.IO) { nodesMap.keys }.forEach { emit(it) } }
+
+    // Admin/orphan-sweep scan (TODO 1.23) — deliberately NOT part of NodeIdEngine (that seam is
+    // traversal plumbing); this is a distinct, admin-facing, unscoped-by-schema capability. Spans
+    // both stores, merged into one Flow so callers don't combine two flows themselves. A tag filter
+    // with no persistentStore configured fails loudly (tags aren't cached anywhere to answer from).
+    fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<NodeId> = channelFlow {
+        if (persistentStore != null) {
+            launch { persistentStore.scanNodeIds(tag, parallelism).collect { send(it) } }
+        } else if (tag != null) {
+            error("scanNodeIds(tag = ...) requires a configured persistentStore")
+        }
+        launch { ephemeralStore.scanNodeIds(tag, parallelism).collect { send(it) } }
+    }
+
+    fun scanEdgeIds(parallelism: Int = 4): Flow<Pair<NodeId, NodeId>> =
+        persistentStore?.scanEdgeIds(parallelism) ?: emptyFlow()
 
     // Bounded/streamed outgoing edges. Persistent edges ride the OUT adjacency index (shard-window
     // paged, honors pageSize). Ephemeral (TTL) edges are store-only (TODO 1.27) — included only when

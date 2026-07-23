@@ -5,6 +5,9 @@ import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.hazelcast.query.Predicates
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.serialName
@@ -90,6 +93,13 @@ internal class HazelcastEphemeralStore(
 
     // Ephemeral is outgoing-only (TODO 1.13) — same contract as YugabyteEphemeralStore.
     override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
+
+    // Admin/orphan-sweep scan (TODO 1.23). NodeLike<ID> carries no tags field (TODO 1.24 moved tags
+    // off domain objects into the DB table only) — a tag is structurally unfilterable from this
+    // cache, so tag != null returns empty rather than pretending to honor it.
+    override fun scanNodeIds(tag: String?, parallelism: Int): Flow<NodeId> =
+        if (tag != null) emptyFlow()
+        else flow { withContext(Dispatchers.IO) { ephNodes.keys }.forEach { emit(it) } }
 
     // No buffer-then-commit here (unlike YugabyteEphemeralStore, which batches into one CQL round
     // trip): each IMap.set/remove is already a single fast local operation, so the transaction

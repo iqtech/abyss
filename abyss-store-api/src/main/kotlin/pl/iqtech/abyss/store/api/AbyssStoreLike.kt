@@ -1,6 +1,8 @@
 package pl.iqtech.abyss.store.api
 
 import arrow.core.Either
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlin.time.Duration
 
 // An edge as the store returns it from a scan: the value plus BOTH endpoint NodeIds read straight from
@@ -30,6 +32,11 @@ interface AbyssStoreLike {
         batchSize: Int = 1000,
         block: suspend AbyssStoreTransactionLike.() -> Unit
     ): Either<AbyssError, Unit> = transaction(block)
+
+    // Admin/orphan-sweep scan capability (TODO 1.23) — safe defaults, only YugabytePersistentStore
+    // overrides these with real DB scans. `parallelism` is a per-call fan-out knob, not config.
+    fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<NodeId> = emptyFlow()
+    fun scanEdgeIds(parallelism: Int = 4): Flow<Pair<NodeId, NodeId>> = emptyFlow()
 }
 
 interface AbyssStoreTransactionLike {
@@ -45,6 +52,8 @@ interface AbyssEphemeralStoreLike {
     suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
+
+    fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<NodeId> = emptyFlow()
 }
 
 interface AbyssEphemeralStoreTransactionLike {

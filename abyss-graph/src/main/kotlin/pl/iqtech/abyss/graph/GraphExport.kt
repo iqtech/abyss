@@ -4,6 +4,7 @@ import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.merge
 import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.graph.serialization.GraphJsonCodec
@@ -23,14 +24,22 @@ import pl.iqtech.abyss.store.api.NodeLike
 // data via its own addCrossEdge API if needed.
 
 // Walks every node once (its payload + its own outgoing edges only, so each directed edge is
-// emitted exactly once) — same allNodeIds()-then-per-node access pattern as connectedComponents
-// (abyss-dsl/Extensions.kt), minus the inEdges half (undirected walk isn't needed for a directed
-// edge dump). Streaming here doesn't avoid allNodeIds()'s own full key-set materialization
-// (fable.md 3.2 / TODO 3.13) — see connectedComponents's doc comment for the memory profile.
-suspend fun <ID> AbyssEngineLike<ID>.exportGraphLines(codec: GraphJsonCodec): Flow<String> = flow {
-    allNodeIds().collect { id ->
-        node(id).getOrNull()?.let { emit(codec.encodeNode(it)) }
-        outEdges(id).collect { edge -> emit(codec.encodeEdge(edge)) }
+// emitted exactly once). Id source is merge(allNodeIds(), scanNodeIds()) (TODO 1.23), not either
+// alone: scanNodeIds() is DB-only, so a graph with no persistentStore configured (common in
+// tests/pure-cache setups) would export nothing from it; allNodeIds() alone is Hazelcast-cache-only
+// and silently misses cold/evicted nodes on a real persisted graph. The union covers both — a `seen`
+// set dedupes ids the two sources agree on (the common case for a warm, persisted graph) without
+// double-emitting. Receiver is the concrete AbyssGraphSchema<ID>, not AbyssEngineLike<ID>, since
+// scanNodeIds() lives there, not on the general interface. outEdges(id) per node was already
+// store-backed/self-healing before this change (TODO 1.20/1.22/1.26), so reliability only needed
+// fixing at the node-enumeration step.
+suspend fun <ID> AbyssGraphSchema<ID>.exportGraphLines(codec: GraphJsonCodec): Flow<String> = flow {
+    val seen = mutableSetOf<ID>()
+    merge(allNodeIds(), scanNodeIds()).collect { id ->
+        if (seen.add(id)) {
+            node(id).getOrNull()?.let { emit(codec.encodeNode(it)) }
+            outEdges(id).collect { edge -> emit(codec.encodeEdge(edge)) }
+        }
     }
 }
 

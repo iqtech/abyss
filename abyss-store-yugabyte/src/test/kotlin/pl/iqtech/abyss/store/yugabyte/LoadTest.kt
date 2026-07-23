@@ -5,6 +5,7 @@ import com.datastax.oss.driver.api.core.CqlSession
 import com.datastax.oss.driver.api.core.cql.SimpleStatement
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Instant
 import kotlinx.serialization.SerialName
@@ -148,8 +149,8 @@ class LoadTest {
         assertEquals("tx-ysql-edge", assertIs<YbTestEdge>((loaded as Either.Right).value.first).label)
     }
 
-    // ── tags (TODO 1.24): write-only column, round-tripped via a raw read since AbyssStoreLike
-    // itself has no read path for tags yet (TODO 1.23). ─────────────────────────────────────────
+    // ── tags (TODO 1.24): round-tripped via a raw read below for write assertions; scanNodeIds(tag)
+    // (TODO 1.23, tested in its own section further down) is the real read path. ──────────────────
 
     @Test fun `transaction saveNode persists tags to the ysql tags column`() {
         val node = YbTestNode(id = Uuid.random(), name = "tagged-ysql-node")
@@ -381,6 +382,59 @@ class LoadTest {
             val loaded = runBlocking { ybPersistentStore.loadNode(nid(id)) }
             assertEquals(null, (loaded as Either.Right).value.first)
         }
+    }
+
+    // ── scan (TODO 1.23): admin/orphan-sweep. Untagged scans hit the whole table (shared across this
+    // suite), so assertions check the planted set is fully recovered (containsAll), not exact
+    // equality; the tagged scan uses a random per-test tag, so it CAN assert an exact match. ────────
+
+    @Test fun `scanNodeIds with no tag recovers a planted set from ysql via yb_hash_code fan-out`() {
+        val planted = List(40) { Uuid.random() }
+        runBlocking { planted.forEach { id -> ybPersistentStore.transaction { saveNode(nid(id), YbTestNode(id = id, name = "scan-ysql"), emptySet()) } } }
+
+        val found = runBlocking { ybPersistentStore.scanNodeIds().toList() }.toSet()
+        assertTrue(found.containsAll(planted.map { nid(it) }), "expected every planted id to be recovered by the unfiltered scan")
+    }
+
+    @Test fun `scanNodeIds with a tag recovers exactly the tagged subset from ysql via GIN lookup`() {
+        val tag = "scan-tag-${Uuid.random()}"
+        val tagged = List(15) { Uuid.random() }
+        val untagged = List(15) { Uuid.random() }
+        runBlocking {
+            tagged.forEach { id -> ybPersistentStore.transaction { saveNode(nid(id), YbTestNode(id = id, name = "scan-ysql-tagged"), setOf(tag)) } }
+            untagged.forEach { id -> ybPersistentStore.transaction { saveNode(nid(id), YbTestNode(id = id, name = "scan-ysql-untagged"), emptySet()) } }
+        }
+
+        val found = runBlocking { ybPersistentStore.scanNodeIds(tag = tag).toList() }.toSet()
+        assertEquals(tagged.map { nid(it) }.toSet(), found, "expected exactly the tagged subset, no untagged rows leaking in")
+    }
+
+    @Test fun `scanEdgeIds recovers planted (from, to) pairs from ysql`() {
+        val planted = List(20) { Uuid.random() to Uuid.random() }
+        runBlocking {
+            planted.forEach { (from, to) ->
+                ybPersistentStore.transaction { saveEdge(nid(from), nid(to), YbTestEdge(fromId = from, toId = to, label = "scan-edge"), emptySet()) }
+            }
+        }
+
+        val found = runBlocking { ybPersistentStore.scanEdgeIds().toList() }.toSet()
+        assertTrue(found.containsAll(planted.map { (from, to) -> nid(from) to nid(to) }), "expected every planted edge pair to be recovered")
+    }
+
+    @Test fun `scanNodeIds over ycql recovers a planted set, tagged and untagged`() {
+        val tag = "scan-ycql-tag-${Uuid.random()}"
+        val tagged = List(10) { Uuid.random() }
+        val untagged = List(10) { Uuid.random() }
+        runBlocking {
+            tagged.forEach { id -> ybEphemeralStore.transaction { saveNode(nid(id), YbTestNode(id = id, name = "scan-ycql-tagged"), 3600.seconds, setOf(tag)) } }
+            untagged.forEach { id -> ybEphemeralStore.transaction { saveNode(nid(id), YbTestNode(id = id, name = "scan-ycql-untagged"), 3600.seconds, emptySet()) } }
+        }
+
+        val foundUntagged = runBlocking { ybEphemeralStore.scanNodeIds().toList() }.toSet()
+        assertTrue(foundUntagged.containsAll((tagged + untagged).map { nid(it) }), "expected every planted id back from the untagged token-range scan")
+
+        val foundTagged = runBlocking { ybEphemeralStore.scanNodeIds(tag = tag).toList() }.toSet()
+        assertEquals(tagged.map { nid(it) }.toSet(), foundTagged, "expected exactly the tagged subset via client-side filtering")
     }
 }
 

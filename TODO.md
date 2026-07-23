@@ -251,7 +251,7 @@
   went from 500 store hits / 6.18ms avg / 3091ms total before the fix to 1 store hit / 1.91ms avg /
   953ms total after. Design plan: `ai-scripts/AdjacencyPreloadWarmCheckPlan.md`.
 
-- **➡️ 1.23 `AbyssStoreLike` has no DB scan/query capability**
+- **✅ 1.23 `AbyssStoreLike` has no DB scan/query capability**
   `allNodeIds()` is Hazelcast-cache-only (misses cold/evicted nodes — disqualifying for admin/orphan
   sweeps) and there's no tag-based lookup either; both need the same missing piece: a scan capability
   on `AbyssStoreLike`, which doesn't exist today (point-gets and writes only). YSQL is cheap to fix
@@ -289,6 +289,27 @@
   chunking key would be something over that result set itself (e.g. keyset pagination on `id`), not
   the whole table's hash space.
   De-risks the design; design plan now written (`ai-scripts/StoreScanCapabilityPlan.md`), ready for build.
+  Shipped per that plan: `scanNodeIds(tag?, parallelism)`/`scanEdgeIds(parallelism)` safe defaults
+  (`= emptyFlow()`) added to `AbyssStoreLike`/`AbyssEphemeralStoreLike`. `YugabytePersistentStore`
+  implements both — `tag == null` fans out over `yb_hash_code(id)` ranges via `channelFlow`;
+  `tag != null` is the single plain GIN `tags @>` query, no fan-out (per the proven non-composition
+  finding above). `YugabyteEphemeralStore.scanNodeIds` does the proven token-range `channelFlow`
+  fan-out over `ephemeral_nodes`, filtering `tag` **client-side** against the row's `tags` column
+  (not a CQL `WHERE tags CONTAINS ?`, which would need `ALLOW FILTERING` — the column has no
+  secondary index). `HazelcastEphemeralStore.scanNodeIds` is a plain `ephNodes.keys` enumeration;
+  `tag != null` returns `emptyFlow()` since `NodeLike<ID>` carries no tags field post-1.24 (tags live
+  in the DB table only, not cache-resident — structurally unfilterable here, not a judgment call).
+  `AbyssSchemaWorker.scanNodeIds` merges `persistentStore`+`ephemeralStore` via `channelFlow`; a tag
+  filter with no `persistentStore` configured fails loudly (`error(...)`, this codebase's existing
+  fail-fast convention) rather than silently dropping the filter. `scanEdgeIds` delegates to
+  `persistentStore` only (`emptyFlow()` if absent) — ephemeral edges are TTL'd/outgoing-only, not an
+  orphan concept. Exposed as plain (non-`NodeIdEngine`) methods on `HomogeneousSchemaGraph`/
+  `HeterogeneousSchemaGraph`, unscoped by schema tag, deliberately not added to
+  `AbyssGraphSchema`/`AbyssEngineLike<ID>`/`SingleSchemaGraph`. Covered by new `LoadTest` cases
+  (live YugabyteDB: untagged YSQL scan, GIN-tagged YSQL scan, `scanEdgeIds`, tagged/untagged YCQL
+  scan), a new `HazelcastEphemeralStoreTest` case, and a new `ScanCapabilityTest` (worker merge with
+  no dupes/drops, ephemeral-only fallback, tag-without-store fail-loudly, `scanEdgeIds`
+  persistent-only delegation, unscoped-by-tag contract across 2 registered schemas).
 
 - **✅ 1.24 Move tags off domain objects and into the table; add `tags` param to `transaction{}`**
   Remove tags from domain objects, keep them inside the table (backing store column, not a
@@ -412,6 +433,22 @@
   container's `addCrossEdge`) remain outside `exportGraphLines`/`importGraphLines`'s reach — a
   pre-existing, still-open limitation, not addressed by this fix. Covered by
   `GraphExportMultiSchemaTest`.
+  Fixed (follow-up, TODO 1.23): `exportGraphLines` still walked only `allNodeIds()`
+  (Hazelcast-cache-only), so a cold/evicted node silently dropped out of every export — the exact
+  reliability gap 1.23's `scanNodeIds` was built to close, but export wasn't wired to it yet. Fixed
+  by sourcing ids from `merge(allNodeIds(), scanNodeIds())` (deduped via a `seen` set), not either
+  alone: `scanNodeIds()` alone would export nothing for a graph with no `persistentStore` configured
+  (common in pure-cache/test setups, since it never reads the cache); `allNodeIds()` alone still
+  misses cold/evicted nodes on a real persisted graph. Receiver narrowed from `AbyssEngineLike<ID>`
+  to the concrete `AbyssGraphSchema<ID>` (its sole production implementer — `SingleSchemaGraph` and
+  both containers' `register()` all return it) since the new per-schema `scanNodeIds()` (mirrors
+  `allNodeIds()`'s `ownsNodeId` filter + `fromNodeId` conversion, sourced from
+  `worker.scanNodeIds()`) is a plain method there, not on the general interface — same boundary
+  `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`'s own `scanNodeIds`/`scanEdgeIds` already draw.
+  `outEdges(id)` per node needed no change — already store-backed/self-healing (TODO
+  1.20/1.22/1.26). Covered by a new `ScanCapabilityTest` case planting a node directly into a fake
+  store (never added via `transaction`, so genuinely never cache-warm) and confirming
+  `exportGraphLines` recovers it alongside a normally-committed node.
 
 - **✅ 2.4 Graph algorithms**
   BFS/DFS traversal, cycle detection, connected components — see `ai-scripts/AbyssGraphConcept.md`

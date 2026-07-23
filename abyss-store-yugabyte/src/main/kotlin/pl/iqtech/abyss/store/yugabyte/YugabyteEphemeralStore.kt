@@ -5,6 +5,9 @@ import com.datastax.oss.driver.api.core.CqlSession
 import com.datastax.oss.driver.api.core.cql.PreparedStatement
 import com.datastax.oss.driver.api.core.cql.SimpleStatement
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
@@ -89,6 +92,32 @@ class YugabyteEphemeralStore(
     // opposite outgoing edge. Persistent in-edges are unaffected (YSQL scans the edges table).
     override suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> =
         Either.Right(emptyList())
+
+    // Admin/orphan-sweep scan (TODO 1.23), token-range fan-out proven in
+    // TokenRangeScanFeasibilityTest. ephemeral_nodes has a `tags` column but no secondary index and
+    // no `transactions=true` (can't coexist with per-row TTL) — a CQL `tags CONTAINS ?` predicate
+    // would need ALLOW FILTERING, so the tag is matched client-side against each row instead, same
+    // as the proven test.
+    override fun scanNodeIds(tag: String?, parallelism: Int): Flow<NodeId> = channelFlow {
+        val tokenMap = ycql.metadata.tokenMap.orElseThrow { IllegalStateException("no TokenMap for this session") }
+        val ranges = tokenMap.tokenRanges.flatMap { it.unwrap() }.flatMap { it.splitEvenly(parallelism) }
+        val quarters = ranges.withIndex().groupBy { (i, _) -> i % parallelism }.values.map { chunk -> chunk.map { it.value } }
+        quarters.forEach { quarter ->
+            launch(Dispatchers.IO) {
+                quarter.forEach { range ->
+                    val startTok = tokenMap.format(range.start)
+                    val endTok = tokenMap.format(range.end)
+                    val rs = ycql.execute(SimpleStatement.newInstance(
+                        "SELECT id, tags FROM $ycqlKeyspace.ephemeral_nodes WHERE token(id) > $startTok AND token(id) <= $endTok"
+                    ))
+                    for (row in rs) {
+                        val tags = row.getSet("tags", String::class.java) ?: emptySet()
+                        if (tag == null || tags.contains(tag)) send(row.getByteBuffer("id")!!.toNodeId())
+                    }
+                }
+            }
+        }
+    }
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> =
         Either.catch {
