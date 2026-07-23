@@ -112,10 +112,10 @@ class AbyssGraphSchema<ID> internal constructor(
     override suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean> =
         Either.catch { worker.edgeExists(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }.mapLeft { AbyssError.Unexpected(it) }
 
-    override fun outEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID, ID>> =
-        worker.outEdges(adapter.toNodeId(nodeId), pageSize = pageSize).typed()
-    override fun outEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID, ID>> =
-        worker.outEdges(adapter.toNodeId(nodeId), type, pageSize).typed()
+    override fun outEdges(nodeId: ID, pageSize: Int, includeEphemeral: Boolean): Flow<EdgeLike<ID, ID>> =
+        worker.outEdges(adapter.toNodeId(nodeId), pageSize = pageSize, includeEphemeral = includeEphemeral).typed()
+    override fun outEdges(nodeId: ID, type: String, pageSize: Int, includeEphemeral: Boolean): Flow<EdgeLike<ID, ID>> =
+        worker.outEdges(adapter.toNodeId(nodeId), type, pageSize, includeEphemeral).typed()
     override fun inEdges(nodeId: ID, pageSize: Int): Flow<EdgeLike<ID, ID>> =
         worker.inEdges(adapter.toNodeId(nodeId), pageSize = pageSize).typed()
     override fun inEdges(nodeId: ID, type: String, pageSize: Int): Flow<EdgeLike<ID, ID>> =

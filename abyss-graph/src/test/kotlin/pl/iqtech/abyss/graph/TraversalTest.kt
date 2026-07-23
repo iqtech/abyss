@@ -207,7 +207,7 @@ class TraversalTest {
             }
 
             val result = graphTest.from(a.id) {
-                outgoing<TestEdge>({ it.label == "keep" })
+                outgoing<TestEdge> { it.label == "keep" }
                 nodes<TestNode>()
                 collectNodes<TestNode>().toList()
             }

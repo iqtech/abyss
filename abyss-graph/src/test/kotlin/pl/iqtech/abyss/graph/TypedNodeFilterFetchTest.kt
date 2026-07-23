@@ -30,7 +30,7 @@ private class CountingEngine(
     val nodeAtCalls = AtomicInteger(0)
 
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? { nodeAtCalls.incrementAndGet(); return nodes[nid] }
-    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean, includeEphemeral: Boolean): Flow<Hop> =
         outHops[nid].orEmpty().filter { type == null || it.type == type }.asFlow()
     override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = emptyFlow()
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = emptyMap()

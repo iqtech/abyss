@@ -321,6 +321,25 @@
   **Follow-up (c):** Milestone 2 — paging-native `PagedAdjacencyIndex` (ordered K-page) behind the same
   seam — is TODO 3.11, gated on measuring supernode write-hotness + delete rate.
 
+- **✅ 1.27 Index-always-alive + reliable ephemeral traversal (ship as ONE commit)**
+  Implement two dependency-ordered RFCs together in a single commit — Phase 1 is the precondition for
+  Phase 2, so they land atomically.
+  **Phase 1 — ephemeral store-only** (`ai-scripts/EphemeralTraversalReliabilityPlan.md`): revert the
+  1.26a adjacency hack; ephemeral (TTL) edges leave the adjacency index **and** `edgesMap` → store-only
+  (durable YCQL); `loadAndCacheEdge` stops re-caching ephemeral; traversal reaches them only via an
+  explicit `includeEphemeral` flag (OUT-only, default false) that reads the ephemeral store (survives
+  eviction). Persistent fast path kept. Cache-only ephemeral (no store) unsupported. Postcondition:
+  `adjacency` and `edgesMap` are both persistent-only.
+  **Phase 2 — index always alive** (`ai-scripts/IndexAlwaysAliveRFC.md`): the adjacency index is the
+  authoritative in-memory topology, **never evicted (this is the DEFAULT)**; `nodesMap`/`edgesMap` are
+  evictable caches over the store. Shared read-path edit: `adjacencyHopFlow`'s value fetch flips
+  skip-null → **batched self-heal-null** from `persistentStore` (a null with a present adjacency entry =
+  evicted, not removed — reload). `needValue=false` traversal becomes pure-index (no value/store reads).
+  **Startup fail-fast guard**: refuse to boot if eviction/TTL is configured on the adjacency map (partial
+  eviction is invisible to the per-node warm-check → silently incomplete topology). Cache-mode
+  (evictable adjacency) stays available behind the `AdjacencyIndex` seam for topology-exceeds-memory, but
+  is NOT the default.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

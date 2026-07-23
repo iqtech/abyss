@@ -65,8 +65,8 @@ class TraversalBuilder<ID>(
     private var lastHopEdges: List<Hop> = emptyList()
     private var lastHopDirection: HopDirection? = null
 
-    private fun hops(nid: NodeId, direction: HopDirection, type: String?, needValue: Boolean): Flow<Hop> =
-        if (direction == HopDirection.OUTGOING) engine.outAt(nid, type, needValue) else engine.inAt(nid, type, needValue)
+    private fun hops(nid: NodeId, direction: HopDirection, type: String?, needValue: Boolean, includeEphemeral: Boolean = false): Flow<Hop> =
+        if (direction == HopDirection.OUTGOING) engine.outAt(nid, type, needValue, includeEphemeral) else engine.inAt(nid, type, needValue)
 
     // Fills in edge values for key-only hops (predicate-free hops skip the fetch) in one batched call
     // — the single point where Subgraph.edges is materialized. Returns a Map (not a List) so callers
@@ -83,7 +83,7 @@ class TraversalBuilder<ID>(
 
     private fun NodeLike<*>.typeName(): String? = this::class.cachedAnnotation<SerialName>()?.value
 
-    override suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)?) {
+    override suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)?, includeEphemeral: Boolean) {
         val needValue = edgePredicate != null
         // Fold each frontier node's hop stream straight into a shared collector instead of holding every
         // node's full list simultaneously and then flattening — a supernode's hops don't pile up per node.
@@ -91,7 +91,7 @@ class TraversalBuilder<ID>(
         coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
-                    hops(nid, direction, edgeType, needValue)
+                    hops(nid, direction, edgeType, needValue, includeEphemeral)
                         .filter { edgePredicate == null || edgePredicate(it.edge!!) }
                         .collect { collector += it }
                 }

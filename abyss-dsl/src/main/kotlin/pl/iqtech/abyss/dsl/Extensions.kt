@@ -32,8 +32,8 @@ suspend inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.edgeExists(fr
     (this as AbyssEngineLike<Any?>).edgeExists(fromId as Any?, toId as Any?, E::class.serialName())
 
 @Suppress("UNCHECKED_CAST")
-inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.outEdges(nodeId: Any?, pageSize: Int = 100): Flow<E> =
-    (this as AbyssEngineLike<Any?>).outEdges(nodeId as Any?, E::class.serialName(), pageSize).filterIsInstance<E>()
+inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.outEdges(nodeId: Any?, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<E> =
+    (this as AbyssEngineLike<Any?>).outEdges(nodeId as Any?, E::class.serialName(), pageSize, includeEphemeral).filterIsInstance<E>()
 
 @Suppress("UNCHECKED_CAST")
 inline fun <reified E : EdgeLike<*, *>> AbyssEngineLike<*>.inEdges(nodeId: Any?, pageSize: Int = 100): Flow<E> =
@@ -71,21 +71,21 @@ inline fun <reified E : EdgeLike<*, *>> AbyssEphemeralTransactionLike<*>.removeC
 // block of a non-inline exhaustReachable/detectCycle call).  TraversalBuilderLike<ConcreteID>
 // is always a subtype of TraversalBuilderLike<*>, so the extension resolves correctly.
 
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing() =
-    addHop(HopDirection.OUTGOING, E::class.serialName())
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(includeEphemeral: Boolean = false) =
+    addHop(HopDirection.OUTGOING, E::class.serialName(), includeEphemeral = includeEphemeral)
 
 suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.incoming() =
     addHop(HopDirection.INCOMING, E::class.serialName())
 
 // Untyped/mixed hop — union of neighbors across every edge type (TODO 2.21's adjacency index gives
 // outAt/inAt a real path for this; previously there was no index at all for a type == null hop).
-suspend fun TraversalBuilderLike<*>.outgoingAny() = addHop(HopDirection.OUTGOING, null)
+suspend fun TraversalBuilderLike<*>.outgoingAny(includeEphemeral: Boolean = false) = addHop(HopDirection.OUTGOING, null, includeEphemeral = includeEphemeral)
 suspend fun TraversalBuilderLike<*>.incomingAny() = addHop(HopDirection.INCOMING, null)
 
 @JvmName("outgoingEdgePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(noinline predicate: (E) -> Boolean) =
-    addHop(HopDirection.OUTGOING, E::class.serialName(), { predicate(it as E) })
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(includeEphemeral: Boolean = false, noinline predicate: (E) -> Boolean) =
+    addHop(HopDirection.OUTGOING, E::class.serialName(), { predicate(it as E) }, includeEphemeral)
 
 @JvmName("incomingEdgePredicate")
 @Suppress("UNCHECKED_CAST")

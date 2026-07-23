@@ -15,8 +15,10 @@ interface AbyssEngineLike<ID> {
     suspend fun nodeExists(id: ID): Either<AbyssError, Boolean>
     suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean>
 
-    fun outEdges(nodeId: ID, pageSize: Int = 100): Flow<EdgeLike<ID, ID>>
-    fun outEdges(nodeId: ID, type: String, pageSize: Int = 100): Flow<EdgeLike<ID, ID>>
+    // includeEphemeral: also include ephemeral (TTL) out-edges, read reliably from the ephemeral store
+    // (TODO 1.27). Default false keeps the fast persistent-only path.
+    fun outEdges(nodeId: ID, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<EdgeLike<ID, ID>>
+    fun outEdges(nodeId: ID, type: String, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<EdgeLike<ID, ID>>
     fun inEdges(nodeId: ID, pageSize: Int = 100): Flow<EdgeLike<ID, ID>>
     fun inEdges(nodeId: ID, type: String, pageSize: Int = 100): Flow<EdgeLike<ID, ID>>
 

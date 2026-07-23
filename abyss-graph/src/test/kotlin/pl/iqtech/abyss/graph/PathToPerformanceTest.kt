@@ -32,7 +32,7 @@ private class DelayedFakeEngine(
         return TestNode(id = Uuid.random(), name = "n")
     }
 
-    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = flow {
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean, includeEphemeral: Boolean): Flow<Hop> = flow {
         delay(latencyMs)
         children[nid].orEmpty().forEach { emit(Hop(nid, it, "test_edge", null)) }
     }

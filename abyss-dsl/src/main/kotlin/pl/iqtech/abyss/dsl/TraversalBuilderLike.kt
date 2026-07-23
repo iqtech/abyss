@@ -41,7 +41,9 @@ data class Subgraph(val nodes: List<NodeLike<*>>, val edges: List<EdgeLike<*, *>
 // filterFrontierByOutEdgeTo, …). The traversal frontier itself is NodeId-based internally, so a
 // walk can leave the home schema across a cross-edge.
 interface TraversalBuilderLike<ID> {
-    suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)? = null)
+    // includeEphemeral applies to OUTGOING hops only (ephemeral edges are outgoing-only, store-only —
+    // TODO 1.27); when set, the hop also includes ephemeral out-edges read from the ephemeral store.
+    suspend fun addHop(direction: HopDirection, edgeType: String?, edgePredicate: ((EdgeLike<*, *>) -> Boolean)? = null, includeEphemeral: Boolean = false)
     // nodeTag is the wanted node type's @TypeTag — lets the impl match against the tag carried on the
     // adjacency index / frontier without fetching each node; null falls back to a @SerialName fetch.
     suspend fun addNodeHop(direction: HopDirection, edgeType: String, nodeType: String, nodeTag: Short? = null, nodePredicate: ((NodeLike<*>) -> Boolean)? = null)

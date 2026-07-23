@@ -3,6 +3,7 @@ package pl.iqtech.abyss.graph
 import arrow.core.Either
 import arrow.core.left
 import arrow.core.right
+import com.hazelcast.config.EvictionPolicy
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.hazelcast.query.Predicate
@@ -17,6 +18,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
@@ -89,6 +91,24 @@ internal class AbyssSchemaWorker(
     // so peak in-flight stays bounded regardless of degree.
     private val valueFetchBatch = 128
 
+    init {
+        // Index-always-alive (TODO 1.27): the adjacency index is the authoritative in-memory topology and
+        // MUST NOT be evicted — never-evict is the default. Eviction/TTL on it silently corrupts traversal:
+        // Hazelcast evicts individual shard entries, and the per-node warm-check only inspects the first
+        // window, so partial eviction reads as "warm" and returns an incomplete neighbor set with no error.
+        // Value maps (nodes/edges) may evict — they self-heal from the store. Fail fast rather than lie.
+        // (findMapConfig resolves wildcard/default configs; skipped on a client instance with no local config.)
+        runCatching { hazelcast.config.findMapConfig(edgesAdjacencyMapName) }.getOrNull()?.let { cfg ->
+            require(cfg.evictionConfig.evictionPolicy == EvictionPolicy.NONE && cfg.timeToLiveSeconds == 0 && cfg.maxIdleSeconds == 0) {
+                "Eviction/TTL is configured on the adjacency map '$edgesAdjacencyMapName' " +
+                "(evictionPolicy=${cfg.evictionConfig.evictionPolicy}, ttl=${cfg.timeToLiveSeconds}s, maxIdle=${cfg.maxIdleSeconds}s). " +
+                "This silently corrupts traversal — partial eviction is invisible to the per-node warm-check, so reads " +
+                "return an incomplete neighbor set with no error. Remove all eviction from this map; evict " +
+                "'$edgesMapName'/'$nodesMapName' instead (those self-heal from the store)."
+            }
+        }
+    }
+
     private fun edgeAdapterOf(nid: NodeId) = resolution.edgeAdapterOf(nid)
 
     private fun edgeKey(fromNid: NodeId, toNid: NodeId, type: String) =
@@ -115,12 +135,27 @@ internal class AbyssSchemaWorker(
 
     fun allNodeIds(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
 
-    // Bounded/streamed outgoing edges — both persistent and ephemeral ride the OUT adjacency index
-    // (shard-window paged, honors pageSize). Ephemeral (TTL) edges carry an OUT entry but no IN entry
-    // (outgoing-only, TODO 1.13); an expired edge leaves a stale entry that reads back null and is
-    // skipped. Cache-native, so it works whether or not an ephemeral store is configured.
-    fun outEdges(nid: NodeId, type: String? = null, pageSize: Int = 100): Flow<EdgeLike<*, *>> =
-        adjacencyEdgeFlow(nid, AdjacencyDirection.OUT, type, batch = pageSize)
+    // Bounded/streamed outgoing edges. Persistent edges ride the OUT adjacency index (shard-window
+    // paged, honors pageSize). Ephemeral (TTL) edges are store-only (TODO 1.27) — included only when
+    // includeEphemeral is set, read from ephemeralStore (reliable across cache eviction), concatenated
+    // after the persistent page. Default false keeps the fast persistent-only path.
+    fun outEdges(nid: NodeId, type: String? = null, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<EdgeLike<*, *>> = flow {
+        emitAll(adjacencyEdgeFlow(nid, AdjacencyDirection.OUT, type, batch = pageSize))
+        if (includeEphemeral) emitAll(ephemeralStoreHops(nid, type).mapNotNull { it.edge })
+    }
+
+    // Ephemeral (TTL) out-edges are store-only (TODO 1.27): reliable only from ephemeralStore, since the
+    // cache holds none. Empty when no ephemeral store is configured. nodeTypeTag is null (YCQL loadEdges
+    // carries no neighbor-type JOIN) so typed filters fetch-fall-back. Expired entries are skipped.
+    private fun ephemeralStoreHops(nid: NodeId, type: String?): Flow<Hop> = flow {
+        val loaded = withContext(Dispatchers.IO) { ephemeralStore?.loadEdges(nid)?.getOrNull() } ?: return@flow
+        for (e in loaded) {
+            if (type != null && edgeType(e.edge) != type) continue
+            val remaining = e.remaining
+            if (remaining != null && remaining.inWholeSeconds <= 0) continue
+            emit(Hop(e.fromId, e.toId, edgeType(e.edge), e.edge, null))
+        }
+    }
 
     fun inEdges(nid: NodeId, type: String? = null, pageSize: Int = 100): Flow<EdgeLike<*, *>> =
         adjacencyEdgeFlow(nid, AdjacencyDirection.IN, type, batch = pageSize)
@@ -132,12 +167,18 @@ internal class AbyssSchemaWorker(
 
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = readNode(nid)
 
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean, includeEphemeral: Boolean): Flow<Hop> {
+        val persistent = outAtPersistent(nid, type, needValue)
+        // Ephemeral edges are store-only (TODO 1.27): included only on explicit opt-in, from the store.
+        return if (includeEphemeral) flow { emitAll(persistent); emitAll(ephemeralStoreHops(nid, type)) } else persistent
+    }
+
     @Suppress("UNCHECKED_CAST")
-    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
-        // Already-optimal hottest path (edgesMap is partitioned by fromId) — don't route it through
-        // the adjacency index, which would cost 2 round trips (adjacency read, then edgesMap.getAll)
-        // for no gain. Materialized-then-emitted: a partition entrySet can't be paged (PagingPredicate
-        // doesn't compose with PartitionPredicate), and this path's consumers collect-all anyway.
+    private fun outAtPersistent(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
+        // Already-optimal hottest path (edgesMap is partitioned by fromId, and now holds persistent edges
+        // only) — don't route it through the adjacency index, which would cost 2 round trips for no gain.
+        // Materialized-then-emitted: a partition entrySet can't be paged (PagingPredicate doesn't compose
+        // with PartitionPredicate), and this path's consumers collect-all anyway.
         if (type != null && needValue) flow {
             ensureOutWarm(nid)
             val pred = Predicates.and<EdgeKey, Any>(keyEq<EdgeKey, Any>("fromId", nid), Predicates.equal<EdgeKey, Any>("__key.type", type))
@@ -186,7 +227,18 @@ internal class AbyssSchemaWorker(
             if (buffer.isEmpty()) return
             val keys = buffer.associateWith { edgeKey(it.fromId, it.toId, it.type) }
             val values = withContext(Dispatchers.IO) { map.getAll(keys.values.toSet()) }
-            for (hop in buffer) (values[keys.getValue(hop)] as EdgeLike<*, *>?)?.let { emit(Hop(hop.fromId, hop.toId, hop.type, it, hop.nodeTypeTag)) }
+            // Index-always-alive (TODO 1.27): the adjacency index is authoritative, so a null value is an
+            // EVICTED persistent edge, not a removed one — self-heal it from the persistent store (per
+            // missing edge, in parallel; loadAndCacheEdge re-warms edgesMap). A store-null means the edge
+            // was genuinely removed → skip. In steady state (nothing evicted) `missing` is empty, no store hit.
+            val missing = buffer.filter { values[keys.getValue(it)] == null }
+            val healed: Map<Hop, EdgeLike<*, *>> = if (missing.isEmpty()) emptyMap() else coroutineScope {
+                missing.map { hop -> async(Dispatchers.IO) { loadAndCacheEdge(hop.fromId, hop.toId, hop.type)?.let { hop to it } } }.awaitAll()
+            }.filterNotNull().toMap()
+            for (hop in buffer) {
+                val edge = (values[keys.getValue(hop)] as EdgeLike<*, *>?) ?: healed[hop]
+                if (edge != null) emit(Hop(hop.fromId, hop.toId, hop.type, edge, hop.nodeTypeTag))
+            }
             buffer.clear()
         }
         adjacency.read(nid, direction, edgeTag).collect { entry ->
@@ -229,18 +281,8 @@ internal class AbyssSchemaWorker(
             val toTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
             adjacency.addAsync(e.fromId, AdjacencyDirection.OUT, AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag())).asDeferred().await()
         }
-        ephemeralStore?.loadEdges(nid)?.getOrNull()?.forEach { e ->
-            val key = edgeKey(e.fromId, e.toId, edgeType(e.edge))
-            when {
-                e.remaining == null -> edgesMap.putIfAbsent(key, e.edge)
-                e.remaining!!.inWholeSeconds > 0 -> edgesMap.putIfAbsent(key, e.edge, e.remaining!!.inWholeSeconds, TimeUnit.SECONDS)
-                else -> return@forEach // expired — no cache entry, no adjacency entry
-            }
-            // Ephemeral edges are outgoing-only (TODO 1.13): OUT adjacency entry only (no IN), so a warm
-            // from the ephemeral store makes them findable via the paged index — mirrors the write path.
-            val toTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
-            adjacency.addAsync(e.fromId, AdjacencyDirection.OUT, AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag())).asDeferred().await()
-        }
+        // Ephemeral edges are store-only (TODO 1.27): not cached, not indexed — traversal reaches them
+        // via includeEphemeral, which reads ephemeralStore directly. Nothing to warm here.
     }
 
     // Only persistent edges have an adjacency index to warm (ephemeral edges are outgoing-only, TODO 1.13).
@@ -415,18 +457,16 @@ internal class AbyssSchemaWorker(
             else listOf(nodesMap.setAsync(op.id, op.node))
         is NodeOp.RemoveNode -> listOf(nodesMap.removeAsync(op.id))
         is NodeOp.AddEdge -> {
-            val type = edgeType(op.edge)
-            val key  = edgeKey(op.fromId, op.toId, type)
-            val edgeTag = op.edge::class.typeTag()
-            val toTag = resolveNodeTag(op.toId, addedInTx)
-            // Ephemeral (TTL) edges are outgoing-only (TODO 1.13): OUT adjacency entry so outEdges finds
-            // them via the paged index, but no IN entry. The entry carries no TTL — once the edge expires
-            // the stale entry reads back null and is skipped.
-            if (op.ttl != null) listOf(
-                edgesMap.setAsync(key, op.edge, op.ttl.inWholeSeconds, TimeUnit.SECONDS),
-                adjacency.addAsync(op.fromId, AdjacencyDirection.OUT, AdjacencyEntry(op.toId, toTag, edgeTag)),
-            )
+            // Ephemeral (TTL) edges are store-only (TODO 1.27): the ephemeral() commit persists them to
+            // ephemeralStore; they are NOT cached in edgesMap nor indexed. This keeps the persistent
+            // read path (adjacency index + edgesMap) clean and fast; traversal reaches ephemeral edges
+            // only via includeEphemeral, which reads the store (reliable across cache eviction).
+            if (op.ttl != null) emptyList()
             else {
+                val type = edgeType(op.edge)
+                val key  = edgeKey(op.fromId, op.toId, type)
+                val edgeTag = op.edge::class.typeTag()
+                val toTag = resolveNodeTag(op.toId, addedInTx)
                 val fromTag = resolveNodeTag(op.fromId, addedInTx)
                 listOf(
                     edgesMap.setAsync(key, op.edge),
@@ -470,11 +510,11 @@ internal class AbyssSchemaWorker(
         } ?: return null
         edge ?: return null
         if (remaining != null && remaining.inWholeSeconds <= 0) return null
-        val key = edgeKey(fromNid, toNid, type)
-        withContext(Dispatchers.IO) {
-            if (remaining == null) edgesMap.set(key, edge)
-            else edgesMap.set(key, edge, remaining.inWholeSeconds, TimeUnit.SECONDS)
-        }
+        // Ephemeral edges (remaining != null) are store-only (TODO 1.27): return without caching, so a
+        // point-read never re-populates edgesMap with an ephemeral edge and re-pollutes the persistent
+        // fast path. Only persistent edges (remaining == null) are cached.
+        if (remaining != null) return edge
+        withContext(Dispatchers.IO) { edgesMap.set(edgeKey(fromNid, toNid, type), edge) }
         return edge
     }
 

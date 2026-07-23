@@ -73,7 +73,7 @@ class HeterogeneousSchemaGraph(
     // --- NodeIdEngine: the shared worker self-resolves each NodeId (cross-schema edges share the maps) -
 
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = worker.nodeAt(nid)
-    override fun outAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = worker.outAt(nid, type, needValue)
+    override fun outAt(nid: NodeId, type: String?, needValue: Boolean, includeEphemeral: Boolean): Flow<Hop> = worker.outAt(nid, type, needValue, includeEphemeral)
     override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = worker.inAt(nid, type, needValue)
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> = worker.resolveEdges(hops)
     override fun allNodeIdsRaw(): Flow<NodeId> = worker.allNodeIdsRaw()

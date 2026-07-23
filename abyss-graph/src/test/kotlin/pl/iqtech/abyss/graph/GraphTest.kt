@@ -481,22 +481,32 @@ class GraphTest {
         }
     }
 
-    @Test fun `ephemeral addEdge makes edge retrievable`() {
+    // TODO 1.27: ephemeral edges are store-only — retrievable via the ephemeral store (readEdge
+    // self-heals from it), not the cache. Requires an ephemeral store (cache-only is unsupported).
+    @Test fun `ephemeral addEdge makes edge retrievable from the store`() {
         runBlocking {
+            val fake = FakeEphemeralStore()
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "eph-e-nodes", "eph-e-edges", ephemeralStore = fake, module = graphTestModule)
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-edge")
-            graphTest.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
-            assertIs<Either.Right<EdgeLike<*, *>>>(graphTest.edge(edge.fromId, edge.toId, "test_edge"))
+            g.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
+            assertIs<Either.Right<EdgeLike<*, *>>>(g.edge(edge.fromId, edge.toId, "test_edge"))
+            listOf("eph-e-nodes", "eph-e-edges", "eph-e-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
         }
     }
 
-    // TODO 1.13: ephemeral edges are outgoing-only — found via outEdges, invisible to inEdges.
-    @Test fun `ephemeral addEdge is outgoing-only - visible outgoing, empty incoming`() {
+    // TODO 1.13/1.27: ephemeral edges are outgoing-only and store-only — reached via includeEphemeral
+    // (reads the store, survives cache eviction), invisible to the default read and to inEdges.
+    @Test fun `ephemeral addEdge is outgoing-only and store-sourced via includeEphemeral`() {
         runBlocking {
+            val fake = FakeEphemeralStore()
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "eph-o-nodes", "eph-o-edges", ephemeralStore = fake, module = graphTestModule)
             val edge = TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "eph-out-only")
-            graphTest.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
+            g.ephemeral(60.seconds, checkIntegrity = false) { addEdge(edge) }
 
-            assertEquals(1, graphTest.outEdges(edge.fromId).toList().size)
-            assertEquals(0, graphTest.inEdges(edge.toId).toList().size)
+            assertEquals(0, g.outEdges(edge.fromId).toList().size, "default excludes ephemeral")
+            assertEquals(1, g.outEdges(edge.fromId, includeEphemeral = true).toList().size, "includeEphemeral reads it from the store")
+            assertEquals(0, g.inEdges(edge.toId).toList().size, "ephemeral is outgoing-only")
+            listOf("eph-o-nodes", "eph-o-edges", "eph-o-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
         }
     }
 
@@ -917,16 +927,20 @@ private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
 
 private class FakeEphemeralStore : AbyssEphemeralStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
+    private val edges = mutableListOf<StoredEdge>()   // durable ephemeral out-edges (TODO 1.27: store is their only home)
 
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
-    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> =
+        Either.Right(edges.find { it.fromId == fromId && it.toId == toId }?.let { it.edge to it.remaining } ?: (null to null))
+    override suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> =
+        Either.Right(edges.filter { it.fromId == fromId })
 
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val tx = object : AbyssEphemeralStoreTransactionLike {
             override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) { saveNodeCalls += huid.fromNodeId(id) }
-            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) { edges += StoredEdge(fromId, toId, edge, ttl) }
             override fun deleteNode(id: NodeId) { saveNodeCalls -= huid.fromNodeId(id) }
-            override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
+            override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { edges.removeAll { it.fromId == fromId && it.toId == toId } }
         }
         tx.block()
         return Unit.right()

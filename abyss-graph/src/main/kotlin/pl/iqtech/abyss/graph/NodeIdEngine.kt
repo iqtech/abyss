@@ -23,7 +23,9 @@ interface NodeIdEngine {
     suspend fun nodeAt(nid: NodeId): NodeLike<*>?
     // Cold, lazy hop streams — a supernode's neighbors arrive in bounded batches, so short-circuiting
     // consumers (reachability, hasOutgoing) stop early instead of materializing the whole set.
-    fun outAt(nid: NodeId, type: String?, needValue: Boolean = true): Flow<Hop>   // edges where fromId == nid
+    // includeEphemeral (OUT-only): also stream ephemeral (TTL) out-edges, read from the ephemeral store
+    // (reliable across cache eviction — TODO 1.27). Default false keeps the fast persistent-only path.
+    fun outAt(nid: NodeId, type: String?, needValue: Boolean = true, includeEphemeral: Boolean = false): Flow<Hop>   // edges where fromId == nid
     fun inAt(nid: NodeId, type: String?, needValue: Boolean = true): Flow<Hop>    // edges where toId == nid
     suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>>   // batched value fetch for key-only hops
     fun allNodeIdsRaw(): Flow<NodeId>
