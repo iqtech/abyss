@@ -258,6 +258,37 @@
   (existing GIN-indexed `tags` column covers tag lookup, no schema change); YCQL is structurally
   harder (secondary indexes conflict with per-row TTL). Full writeup:
   `ai-scripts/StoreScanCapabilityRFC.md`. No design plan yet.
+  Both of the RFC's open feasibility questions are now answered empirically against the live
+  YugabyteDB container, not just assumed:
+  - `abyss-store-yugabyte/src/test/kotlin/pl/iqtech/abyss/store/yugabyte/TokenRangeScanFeasibilityTest.kt` —
+    confirms YCQL's `TokenMap`/`TokenRange` API (`com.yugabyte:java-driver-core`) correctly enumerates
+    every row via token-range scanning, no `ALLOW FILTERING`; covers blocking `execute()`, async
+    `executeAsync()` consumed as a `Flow`, and a 4-coroutine `channelFlow` fan-out over disjoint range
+    quarters.
+  - `abyss-store-yugabyte/src/test/kotlin/pl/iqtech/abyss/store/yugabyte/YsqlPartitionScanFeasibilityTest.kt` —
+    confirms YugabyteDB's `yb_hash_code()` (the YSQL-side analog of YCQL's `token()`) exists, is
+    deterministic, and is bounded to 0..65535; covers an N-coroutine fan-out over disjoint
+    `yb_hash_code` ranges, each coroutine on its own JDBC connection from a pool (`java.sql.Connection`
+    isn't thread-safe, unlike YCQL's shared `CqlSession`), merged via `channelFlow`.
+  Negative-but-valuable result from the same file: combining `yb_hash_code(id) BETWEEN ? AND ?`
+  with the GIN tag lookup (`tags @> ARRAY[?]`) does **not** parallelize a tag-filtered scan — tested
+  in `combined yb_hash_code range + GIN tag filter recovers exactly the tagged subset`. `EXPLAIN
+  ANALYZE` showed `Index Scan using idx_nodes_tags` with `yb_hash_code(...)` applied as a plain
+  `Filter`, not used to prune the index scan (`Rows Removed by Filter: 224` out of 300 total tagged
+  rows, for a query meant to only touch ~1/4 of them) — every one of N coroutines running this
+  combination independently re-scans the *entire* tag match via the index and discards ~3/4 of it,
+  making N-way fan-out strictly worse than one plain tag query, not better. Root cause is structural,
+  not a missed optimization: YugabyteDB's secondary indexes (including GIN) are independently
+  sharded by the *indexed expression* (the tag value), not by the base table's primary-key hash, so
+  `yb_hash_code(id)` and the GIN index's own partitioning are unrelated dimensions with nothing to
+  prune against — the `Filter` already runs per-row inside the index-scan loop, it just can't skip
+  visiting an entry ahead of time. Whether YugabyteDB could do something smarter here is worth an
+  upstream question, not something to design around today. Conclusion: hash-range fan-out (unfiltered
+  sweep) and GIN tag lookup (already fast alone) solve different problems and don't compose — if a
+  tag-filtered result set is ever large enough to need client-side parallel consumption, the right
+  chunking key would be something over that result set itself (e.g. keyset pagination on `id`), not
+  the whole table's hash space.
+  De-risks the design; still no design/plan written yet.
 
 - **✅ 1.24 Move tags off domain objects and into the table; add `tags` param to `transaction{}`**
   Remove tags from domain objects, keep them inside the table (backing store column, not a
