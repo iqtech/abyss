@@ -25,7 +25,8 @@ import pl.iqtech.abyss.store.api.NodeLike
 // Walks every node once (its payload + its own outgoing edges only, so each directed edge is
 // emitted exactly once) — same allNodeIds()-then-per-node access pattern as connectedComponents
 // (abyss-dsl/Extensions.kt), minus the inEdges half (undirected walk isn't needed for a directed
-// edge dump).
+// edge dump). Streaming here doesn't avoid allNodeIds()'s own full key-set materialization
+// (fable.md 3.2 / TODO 3.13) — see connectedComponents's doc comment for the memory profile.
 suspend fun <ID> AbyssEngineLike<ID>.exportGraphLines(codec: GraphJsonCodec): Flow<String> = flow {
     allNodeIds().collect { id ->
         node(id).getOrNull()?.let { emit(codec.encodeNode(it)) }

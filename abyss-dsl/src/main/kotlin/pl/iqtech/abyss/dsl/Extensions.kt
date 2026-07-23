@@ -189,6 +189,10 @@ suspend fun <ID> AbyssEngineLike<ID>.ensureSubgraph(
     }.bind()
 }
 
+// fable.md 3.2 / TODO 3.13: allNodeIds() eagerly materializes the *entire* key set (not a
+// streaming/paginated scan) — this walk then holds it all again as remaining/visited sets. At
+// README-cited scale (36k users × 500 nodes = 18M keys) that's a multi-GB memory profile. Avoiding
+// the underlying full materialization needs a real store-scan capability (TODO 1.23), not yet built.
 suspend fun <ID> AbyssEngineLike<ID>.connectedComponents(): List<Set<ID>> {
     val remaining = allNodeIds().toList().toMutableSet()
     val components = mutableListOf<Set<ID>>()

@@ -138,7 +138,13 @@ internal class AbyssSchemaWorker(
     suspend fun edgeExists(fromNid: NodeId, toNid: NodeId, type: String): Boolean =
         edgesMap.getAsync(edgeKey(fromNid, toNid, type)).asDeferred().await() != null || loadAndCacheEdge(fromNid, toNid, type) != null
 
-    fun allNodeIds(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
+    // fable.md 3.2 / TODO 3.13: nodesMap.keys eagerly materializes the *entire* key set into memory
+    // before this flow starts emitting — not a streaming/paginated scan. At README-cited scale
+    // (36k users × 500 nodes = 18M keys) that's a multi-GB in-memory Set; avoiding that
+    // materialization needs a real store-scan capability (TODO 1.23), out of scope here. The
+    // withContext below only keeps the blocking Hazelcast fetch off the caller's dispatcher — same
+    // pattern as outAtPersistent/resolveEdges — it does not reduce the memory footprint.
+    fun allNodeIds(): Flow<NodeId> = flow { withContext(Dispatchers.IO) { nodesMap.keys }.forEach { emit(it) } }
 
     // Bounded/streamed outgoing edges. Persistent edges ride the OUT adjacency index (shard-window
     // paged, honors pageSize). Ephemeral (TTL) edges are store-only (TODO 1.27) — included only when
@@ -266,7 +272,8 @@ internal class AbyssSchemaWorker(
         return keyByHop.mapNotNull { (hop, key) -> (values[key] as EdgeLike<*, *>?)?.let { hop to it } }.toMap()
     }
 
-    override fun allNodeIdsRaw(): Flow<NodeId> = flow { nodesMap.keys.forEach { emit(it) } }
+    // See allNodeIds() above — same full-materialization caveat and dispatcher fix apply here.
+    override fun allNodeIdsRaw(): Flow<NodeId> = flow { withContext(Dispatchers.IO) { nodesMap.keys }.forEach { emit(it) } }
 
     // Cross-schema edges (NodeId-valued EdgeLike, in the shared maps) no longer have dedicated
     // put/remove methods: HomogeneousSchemaGraph/HeterogeneousSchemaGraph route them through the same

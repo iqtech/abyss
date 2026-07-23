@@ -753,6 +753,24 @@
   Hazelcast/store needed) through `detectCycle` — demonstrate the unbounded continuation-chain
   growth pre-fix, clean bounded pass post-fix.
 
+- **✅ 3.13 `allNodeIds()`/`allNodeIdsRaw()` block off-dispatcher and are undocumented full scans (fable.md 3.2)**
+  `AbyssSchemaWorker.kt:141,269` call `nodesMap.keys` directly inside a `flow { }` builder — that
+  Hazelcast call runs on the caller's coroutine context, unlike every other Hazelcast call in this
+  file, which already wraps in `withContext(Dispatchers.IO)` (e.g. `outAtPersistent`,
+  `resolveEdges`). Two-part fix, per fable.md's own framing:
+  1. Wrap in `withContext(Dispatchers.IO) { nodesMap.keys }.forEach { emit(it) }` — `emit()` must
+     stay *outside* the `withContext` block (Flow's context-preservation rule; the existing
+     precedent in this file already gets this right).
+  2. Document the memory profile: `nodesMap.keys` eagerly materializes the *entire* key set into
+     memory before the flow starts emitting — not a streaming/paginated scan. At README-cited scale
+     (36k users × 500 nodes = 18M keys) that's a multi-GB in-memory `Set`. The dispatcher fix does
+     not reduce this footprint, only keeps the blocking fetch off the caller's thread.
+     `connectedComponents` (`abyss-dsl/Extensions.kt`) has zero doc comment today and needs the
+     caveat; `GraphExport.kt`'s `exportGraphLines` already references `connectedComponents`'s
+     access pattern in its own comment, so a one-line pointer there is enough.
+  Avoiding the full materialization itself is out of scope — already tracked as TODO 1.23
+  (`AbyssStoreLike` has no DB scan/query capability), still open, no design plan yet.
+
 ## 4. Uncategorized
 
 - **❓ 4.1 Delete dead `edgeFlow` and `edgeOrder`**
