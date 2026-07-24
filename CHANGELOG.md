@@ -1,3 +1,7 @@
+## [0.32.2] - 2026-07-24
+
+- Add `from(nodeIds: Set<ID>, block)` traversal DSL entry point (TODO 2.26) alongside the existing single-id `from`, seeding a multi-node frontier directly — wiring over `TraversalBuilder`'s already-multi-node-capable frontier, no new machinery
+
 ## [0.32.1] - 2026-07-20
 
 - Make tag writes additive instead of full-replace (follow-up to TODO 1.24): YSQL upserts now union tags via `ARRAY(SELECT DISTINCT UNNEST(...))` against the existing row instead of overwriting with `EXCLUDED.tags`; YCQL switches from `INSERT` to `UPDATE ... USING TTL ... SET tags = tags + ?` for the same semantics, both within the same single write statement (no extra read, no second op/path)
