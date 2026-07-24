@@ -25,6 +25,7 @@ interface AbyssEngineLike<ID> {
     fun allNodeIds(): Flow<ID>
 
     suspend fun <T> from(nodeId: ID, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T>
+    suspend fun <T> from(nodeIds: Set<ID>, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T>
 
     suspend fun transaction(
         checkIntegrity: Boolean = true,

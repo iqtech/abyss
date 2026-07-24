@@ -139,6 +139,10 @@ class AbyssGraphSchema<ID> internal constructor(
         Either.catch { TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
+    override suspend fun <T> from(nodeIds: Set<ID>, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T> =
+        Either.catch { TraversalBuilder(traversalEngine, nodeIds.map(adapter::toNodeId).toSet(), adapter).block() }
+            .mapLeft { AbyssError.Unexpected(it) }
+
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
         val buffer = newBuffer()
         try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }

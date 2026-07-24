@@ -678,6 +678,14 @@
     `BatchStatement`.
   Do not touch this yet.
 
+- **✅ 2.26 Traversal DSL: `from(<set of nodes>)` entry point**
+  `from(nodeId, block)` (`AbyssGraphSchema.kt`) only seeds a traversal frontier from a single id —
+  `TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter).block()`. `TraversalBuilder`
+  already accepts a multi-node frontier (`Set<NodeId>`) internally, so a `from(nodeIds: Set<ID>, block)`
+  overload is wiring, not new machinery — same shape already scoped for TODO 2.12's index-seeded entry
+  point, but useful standalone (e.g. seeding a frontier from `scanNodeIds`/`scanEdgeIds` results, or any
+  caller-assembled id set) without waiting on 2.12's column-index machinery.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

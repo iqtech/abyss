@@ -61,6 +61,16 @@ class TraversalTest {
         }
     }
 
+    @Test fun `from - set of nodes seeds a multi-node frontier`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val result = graphTest.from(setOf(a.id, b.id)) { nodes<TestNode>(); collectNodes<TestNode>().toList() }
+            assertIs<Either.Right<List<TestNode>>>(result)
+            assertEquals(setOf(a, b), result.value.toSet())
+        }
+    }
+
     // ── one hop outgoing ──────────────────────────────────────────────────────
 
     @Test fun `from - outgoing hop then collect`() {
