@@ -40,6 +40,12 @@ data class Subgraph(val nodes: List<NodeLike<*>>, val edges: List<EdgeLike<*, *>
 // ID is the "home" schema's domain type — used only by the id-valued conveniences (checkReaches,
 // filterFrontierByOutEdgeTo, …). The traversal frontier itself is NodeId-based internally, so a
 // walk can leave the home schema across a cross-edge.
+//
+// This is the raw, impl-facing contract TraversalBuilder implements — it must stay public because
+// the implementer lives in a different Gradle module (abyss-graph). Callers never see this type
+// directly: every nested-block parameter below takes a TraversalScope<ID> receiver instead, which
+// hides the raw addHop/addNodeHop/filterFrontierBy*/flush*/countEdges/collectSubgraph primitives
+// behind the typed sugar in Extensions.kt. See TraversalScope.kt.
 interface TraversalBuilderLike<ID> {
     // includeEphemeral applies to OUTGOING hops only (ephemeral edges are outgoing-only, store-only —
     // TODO 1.27); when set, the hop also includes ephemeral out-edges read from the ephemeral store.
@@ -52,7 +58,7 @@ interface TraversalBuilderLike<ID> {
     suspend fun filterFrontierByOutEdgeToType(edgeType: String, nodeType: String, nodeTag: Short? = null)
     suspend fun filterFrontierByInEdgeFrom(edgeType: String, fromId: ID)
     suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String, nodeTag: Short? = null)
-    suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit)
+    suspend fun filterFrontierByTraversal(block: suspend TraversalScope<ID>.() -> Unit)
     suspend fun flushFrontierNodes(): Flow<NodeLike<*>>
     /** Terminal: edges of the most recent hop whose target survived any later frontier filter. */
     suspend fun flushHopEdges(): Flow<EdgeLike<*, *>>
@@ -61,16 +67,16 @@ interface TraversalBuilderLike<ID> {
     /** Terminal: number of [edgeType] edges from the frontier in [direction] (no edge value or node materialization). */
     suspend fun countEdges(direction: HopDirection, edgeType: String): Int
     suspend fun collectSubgraph(nodeType: String? = null, nodeTag: Short? = null): Subgraph
-    suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
+    suspend fun checkReaches(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Boolean
     /**
      * BFS to [targetId] following [block]'s hops, returning the first (fewest-hops, not
      * weighted-shortest — this model has no edge weights) path found, or `null` if unreachable.
      * Mirrors [checkReaches]'s contract: a [targetId] already in the starting frontier does not
      * count as reached (only a hop-away match does).
      */
-    suspend fun pathTo(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Path?
-    suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph
-    suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean
+    suspend fun pathTo(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Path?
+    suspend fun exhaustReachable(block: suspend TraversalScope<ID>.() -> Unit): Subgraph
+    suspend fun detectCycle(block: suspend TraversalScope<ID>.() -> Unit): Boolean
     /**
      * Walks the graph emitting one [Path] per maximal accepted path — a path whose included head
      * cannot be extended. Emission fires when that head is:

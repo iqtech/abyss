@@ -18,7 +18,7 @@ import pl.iqtech.abyss.dsl.AbyssEngineLike
 import pl.iqtech.abyss.dsl.AbyssEphemeralTransactionLike
 import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.EdgeKey
-import pl.iqtech.abyss.dsl.TraversalBuilderLike
+import pl.iqtech.abyss.dsl.TraversalScope
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
 import pl.iqtech.abyss.graph.serialization.AdjacencyEntrySerializer
 import pl.iqtech.abyss.graph.serialization.AdjacencyKeySerializer
@@ -135,12 +135,12 @@ class AbyssGraphSchema<ID> internal constructor(
     @Suppress("UNCHECKED_CAST")
     private fun Flow<EdgeLike<*, *>>.typed(): Flow<EdgeLike<ID, ID>> = this as Flow<EdgeLike<ID, ID>>
 
-    override suspend fun <T> from(nodeId: ID, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T> =
-        Either.catch { TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter).block() }
+    override suspend fun <T> from(nodeId: ID, block: suspend TraversalScope<ID>.() -> T): Either<AbyssError, T> =
+        Either.catch { TraversalScope(TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter)).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
-    override suspend fun <T> from(nodeIds: Set<ID>, block: suspend TraversalBuilderLike<ID>.() -> T): Either<AbyssError, T> =
-        Either.catch { TraversalBuilder(traversalEngine, nodeIds.map(adapter::toNodeId).toSet(), adapter).block() }
+    override suspend fun <T> from(nodeIds: Set<ID>, block: suspend TraversalScope<ID>.() -> T): Either<AbyssError, T> =
+        Either.catch { TraversalScope(TraversalBuilder(traversalEngine, nodeIds.map(adapter::toNodeId).toSet(), adapter)).block() }
             .mapLeft { AbyssError.Unexpected(it) }
 
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {

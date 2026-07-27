@@ -19,6 +19,7 @@ import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.Subgraph
 import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.TraversalBuilderLike
+import pl.iqtech.abyss.dsl.TraversalScope
 import pl.iqtech.abyss.dsl.TraversalStrategy
 import pl.iqtech.abyss.dsl.cachedAnnotation
 import pl.iqtech.abyss.graph.Hop
@@ -193,12 +194,12 @@ class TraversalBuilder<ID>(
     override suspend fun filterFrontierByInEdgeFromType(edgeType: String, nodeType: String, nodeTag: Short?) =
         filterFrontierByEdgeType(HopDirection.INCOMING, edgeType, nodeType, nodeTag)
 
-    override suspend fun filterFrontierByTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit) {
+    override suspend fun filterFrontierByTraversal(block: suspend TraversalScope<ID>.() -> Unit) {
         val matching = coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
                     val sub = TraversalBuilder(engine, setOf(nid), homeAdapter)
-                    sub.block()
+                    TraversalScope(sub).block()
                     if (sub.frontier.isNotEmpty()) nid else null
                 }
             }.awaitAll()
@@ -236,13 +237,13 @@ class TraversalBuilder<ID>(
         return Subgraph(nodes, resolveHopEdges(allTraversedHops).values.toList())
     }
 
-    override suspend fun exhaustReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph {
+    override suspend fun exhaustReachable(block: suspend TraversalScope<ID>.() -> Unit): Subgraph {
         val visited = mutableSetOf<NodeId>(); visited += frontier
         val allHops = mutableListOf<Hop>()
         var current = frontier.toSet()
         while (current.isNotEmpty()) {
             val sub = TraversalBuilder(engine, current, homeAdapter)
-            sub.block()
+            TraversalScope(sub).block()
             allHops += sub.traversedHops
             val next = sub.frontier - visited
             visited += next
@@ -254,7 +255,7 @@ class TraversalBuilder<ID>(
         return Subgraph(nodes, resolveHopEdges(allHops).values.toList())
     }
 
-    override suspend fun detectCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean {
+    override suspend fun detectCycle(block: suspend TraversalScope<ID>.() -> Unit): Boolean {
         val visited = mutableSetOf<NodeId>()
         for (start in frontier) {
             if (start !in visited && dfsCycle(start, visited, block)) return true
@@ -273,11 +274,11 @@ class TraversalBuilder<ID>(
     private suspend fun dfsCycle(
         start: NodeId,
         visited: MutableSet<NodeId>,
-        block: suspend TraversalBuilderLike<ID>.() -> Unit
+        block: suspend TraversalScope<ID>.() -> Unit
     ): Boolean {
         suspend fun neighborsOf(nodeId: NodeId): Iterator<NodeId> {
             val sub = TraversalBuilder(engine, setOf(nodeId), homeAdapter)
-            sub.block()
+            TraversalScope(sub).block()
             return sub.frontier.iterator()
         }
 
@@ -412,14 +413,14 @@ class TraversalBuilder<ID>(
         }
     }
 
-    override suspend fun checkReaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean {
+    override suspend fun checkReaches(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Boolean {
         val target = homeAdapter.toNodeId(targetId)
         val visited = mutableSetOf<NodeId>()
         visited += frontier
         var current = frontier.toSet()
         while (current.isNotEmpty()) {
             val sub = TraversalBuilder(engine, current, homeAdapter)
-            sub.block()
+            TraversalScope(sub).block()
             val next = sub.frontier - visited
             if (target in next) return true
             visited += next
@@ -442,7 +443,7 @@ class TraversalBuilder<ID>(
     // semantics. Trade-off: like checkReaches, the target is only checked once the whole level's
     // fetches are in, not mid-level — a few extra fetches in exchange for the level no longer costing
     // one round trip per node (or per neighbor of one node).
-    override suspend fun pathTo(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Path? {
+    override suspend fun pathTo(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Path? {
         val target = homeAdapter.toNodeId(targetId)
         data class Entry(val nid: NodeId, val path: Path)
         data class Candidate(val neighborNid: NodeId, val edge: EdgeLike<*, *>, val neighborNode: NodeLike<*>, val fromPath: Path)
@@ -454,7 +455,7 @@ class TraversalBuilder<ID>(
                 current.map { entry ->
                     async(engine.hopDispatcher) {
                         val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
-                        sub.block()
+                        TraversalScope(sub).block()
                         val edgesByHop = resolveHopEdges(sub.traversedHops)
                         val resolvedHops = sub.traversedHops.mapNotNull { hop -> edgesByHop[hop]?.let { hop to it } }
                         coroutineScope {

@@ -65,94 +65,99 @@ inline fun <reified E : EdgeLike<*, *>> AbyssTransactionLike<*>.removeCrossEdge(
 inline fun <reified E : EdgeLike<*, *>> AbyssEphemeralTransactionLike<*>.removeCrossEdge(fromId: Any?, toId: Any?) =
     removeCrossEdge(E::class, fromId, toId)
 
-// TraversalBuilderLike
+// TraversalScope
 //
-// Extensions that don't need ID as a value parameter use TraversalBuilderLike<*> receiver.
+// Extensions that don't need ID as a value parameter use TraversalScope<*> receiver.
 // This avoids a type-inference conflict when the receiver's ID is abstract (e.g., inside the
-// block of a non-inline exhaustReachable/detectCycle call).  TraversalBuilderLike<ConcreteID>
-// is always a subtype of TraversalBuilderLike<*>, so the extension resolves correctly.
+// block of a non-inline exhaustReachable/detectCycle call).  TraversalScope<ConcreteID>
+// is always a subtype of TraversalScope<*>, so the extension resolves correctly.
+//
+// Every function here reaches through `raw` (TraversalScope's @PublishedApi internal property) to
+// call the actual raw primitive on TraversalBuilderLike — `raw` is invisible to ordinary caller
+// source outside abyss-dsl, so this file is the only place that can call addHop/addNodeHop/
+// filterFrontierBy*/flushFrontierNodes/flushHopEdges/countEdges/collectSubgraph directly.
 
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(includeEphemeral: Boolean = false) =
-    addHop(HopDirection.OUTGOING, E::class.serialName(), includeEphemeral = includeEphemeral)
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.outgoing(includeEphemeral: Boolean = false) =
+    raw.addHop(HopDirection.OUTGOING, E::class.serialName(), includeEphemeral = includeEphemeral)
 
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.incoming() =
-    addHop(HopDirection.INCOMING, E::class.serialName())
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.incoming() =
+    raw.addHop(HopDirection.INCOMING, E::class.serialName())
 
 // Untyped/mixed hop — union of neighbors across every edge type (TODO 2.21's adjacency index gives
 // outAt/inAt a real path for this; previously there was no index at all for a type == null hop).
-suspend fun TraversalBuilderLike<*>.outgoingAny(includeEphemeral: Boolean = false) = addHop(HopDirection.OUTGOING, null, includeEphemeral = includeEphemeral)
-suspend fun TraversalBuilderLike<*>.incomingAny() = addHop(HopDirection.INCOMING, null)
+suspend fun TraversalScope<*>.outgoingAny(includeEphemeral: Boolean = false) = raw.addHop(HopDirection.OUTGOING, null, includeEphemeral = includeEphemeral)
+suspend fun TraversalScope<*>.incomingAny() = raw.addHop(HopDirection.INCOMING, null)
 
 @JvmName("outgoingEdgePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.outgoing(includeEphemeral: Boolean = false, noinline predicate: (E) -> Boolean) =
-    addHop(HopDirection.OUTGOING, E::class.serialName(), { predicate(it as E) }, includeEphemeral)
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.outgoing(includeEphemeral: Boolean = false, noinline predicate: (E) -> Boolean) =
+    raw.addHop(HopDirection.OUTGOING, E::class.serialName(), { predicate(it as E) }, includeEphemeral)
 
 @JvmName("incomingEdgePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.incoming(noinline predicate: (E) -> Boolean) =
-    addHop(HopDirection.INCOMING, E::class.serialName(), { predicate(it as E) })
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.incoming(noinline predicate: (E) -> Boolean) =
+    raw.addHop(HopDirection.INCOMING, E::class.serialName(), { predicate(it as E) })
 
 @JvmName("outgoingNodePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.outgoing(noinline predicate: (N) -> Boolean) =
-    addNodeHop(HopDirection.OUTGOING, E::class.serialName(), N::class.serialName(), N::class.typeTag(), { predicate(it as N) })
+suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalScope<ID>.outgoing(noinline predicate: (N) -> Boolean) =
+    raw.addNodeHop(HopDirection.OUTGOING, E::class.serialName(), N::class.serialName(), N::class.typeTag(), { predicate(it as N) })
 
 @JvmName("incomingNodePredicate")
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<ID>.incoming(noinline predicate: (N) -> Boolean) =
-    addNodeHop(HopDirection.INCOMING, E::class.serialName(), N::class.serialName(), N::class.typeTag(), { predicate(it as N) })
+suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalScope<ID>.incoming(noinline predicate: (N) -> Boolean) =
+    raw.addNodeHop(HopDirection.INCOMING, E::class.serialName(), N::class.serialName(), N::class.typeTag(), { predicate(it as N) })
 
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.countEdges(direction: HopDirection = HopDirection.OUTGOING) =
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.countEdges(direction: HopDirection = HopDirection.OUTGOING) =
     countEdges(direction, E::class.serialName())
 
-suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.nodes() =
-    filterFrontierByNode(N::class.serialName(), N::class.typeTag(), null)
+suspend inline fun <reified N : NodeLike<*>> TraversalScope<*>.nodes() =
+    raw.filterFrontierByNode(N::class.serialName(), N::class.typeTag(), null)
 
 @Suppress("UNCHECKED_CAST")
-suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.nodes(noinline filter: (N) -> Boolean) =
-    filterFrontierByNode(N::class.serialName(), N::class.typeTag(), { filter(it as N) })
+suspend inline fun <reified N : NodeLike<*>> TraversalScope<*>.nodes(noinline filter: (N) -> Boolean) =
+    raw.filterFrontierByNode(N::class.serialName(), N::class.typeTag(), { filter(it as N) })
 
-suspend inline fun <reified E : EdgeLike<*, *>, ID> TraversalBuilderLike<ID>.hasOutgoing(toId: ID) =
-    filterFrontierByOutEdgeTo(E::class.serialName(), toId)
+suspend inline fun <reified E : EdgeLike<*, *>, ID> TraversalScope<ID>.hasOutgoing(toId: ID) =
+    raw.filterFrontierByOutEdgeTo(E::class.serialName(), toId)
 
-suspend inline fun <reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<*>.hasOutgoing() =
-    filterFrontierByOutEdgeToType(
+suspend inline fun <reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalScope<*>.hasOutgoing() =
+    raw.filterFrontierByOutEdgeToType(
         E::class.serialName(),
         N::class.serialName(),
         N::class.typeTag()
     )
 
-suspend inline fun <reified E : EdgeLike<*, *>, ID> TraversalBuilderLike<ID>.hasIncoming(fromId: ID) =
-    filterFrontierByInEdgeFrom(E::class.serialName(), fromId)
+suspend inline fun <reified E : EdgeLike<*, *>, ID> TraversalScope<ID>.hasIncoming(fromId: ID) =
+    raw.filterFrontierByInEdgeFrom(E::class.serialName(), fromId)
 
-suspend inline fun <reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalBuilderLike<*>.hasIncoming() =
-    filterFrontierByInEdgeFromType(
+suspend inline fun <reified E : EdgeLike<*, *>, reified N : NodeLike<*>> TraversalScope<*>.hasIncoming() =
+    raw.filterFrontierByInEdgeFromType(
         E::class.serialName(),
         N::class.serialName(),
         N::class.typeTag()
     )
 
-suspend fun <ID> TraversalBuilderLike<ID>.hasTraversal(block: suspend TraversalBuilderLike<ID>.() -> Unit) =
-    filterFrontierByTraversal(block)
+suspend fun <ID> TraversalScope<ID>.hasTraversal(block: suspend TraversalScope<ID>.() -> Unit) =
+    raw.filterFrontierByTraversal(block)
 
-suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.collectNodes(): Flow<N> =
+suspend inline fun <reified N : NodeLike<*>> TraversalScope<*>.collectNodes(): Flow<N> =
     flushFrontierNodes().filterIsInstance<N>()
 
-suspend inline fun <reified E : EdgeLike<*, *>> TraversalBuilderLike<*>.collectEdges(): Flow<E> =
+suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.collectEdges(): Flow<E> =
     flushHopEdges().filterIsInstance<E>()
 
-suspend fun <ID> TraversalBuilderLike<ID>.reaches(targetId: ID, block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean = checkReaches(targetId, block)
+suspend fun <ID> TraversalScope<ID>.reaches(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Boolean = checkReaches(targetId, block)
 
-suspend fun <ID> TraversalBuilderLike<ID>.allReachable(block: suspend TraversalBuilderLike<ID>.() -> Unit): Subgraph = exhaustReachable(block)
+suspend fun <ID> TraversalScope<ID>.allReachable(block: suspend TraversalScope<ID>.() -> Unit): Subgraph = exhaustReachable(block)
 
-suspend fun <ID> TraversalBuilderLike<ID>.hasCycle(block: suspend TraversalBuilderLike<ID>.() -> Unit): Boolean = detectCycle(block)
+suspend fun <ID> TraversalScope<ID>.hasCycle(block: suspend TraversalScope<ID>.() -> Unit): Boolean = detectCycle(block)
 
 // Narrow a raw result's heterogeneous nodes to one concrete type.
 inline fun <reified T : NodeLike<*>> Subgraph.resolve(): List<T> = nodes.filterIsInstance<T>()
 inline fun <reified T : NodeLike<*>> Path.resolve(): List<T> = nodes.filterIsInstance<T>()
 
-suspend fun <ID> TraversalBuilderLike<ID>.subgraph(): Subgraph = collectSubgraph()
+suspend fun <ID> TraversalScope<ID>.subgraph(): Subgraph = collectSubgraph()
 
 // Merges a stream of Paths into one Subgraph, deduping nodes by id and edges by the same
 // (fromId, toId, type) key ensureSubgraph uses — a node/edge revisited across paths is kept once.
@@ -168,7 +173,7 @@ suspend fun Flow<Path>.toSubgraph(): Subgraph {
 
 // Type-filtered subgraph: passes N's @TypeTag so the collector skips fetching visited nodes of other
 // types (falls back to a @SerialName fetch only for tag-unresolved nodes).
-suspend inline fun <reified N : NodeLike<*>> TraversalBuilderLike<*>.subgraphOf(): Subgraph =
+suspend inline fun <reified N : NodeLike<*>> TraversalScope<*>.subgraphOf(): Subgraph =
     collectSubgraph(N::class.serialName(), N::class.typeTag())
 
 // AbyssEngineLike — graph algorithms

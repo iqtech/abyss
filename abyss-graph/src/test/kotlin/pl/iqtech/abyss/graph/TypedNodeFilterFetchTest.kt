@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import pl.iqtech.abyss.dsl.TraversalScope
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.hasOutgoing
 import pl.iqtech.abyss.dsl.nodes
@@ -60,7 +61,7 @@ class TypedNodeFilterFetchTest {
 
     @Test fun `nodes filter reads the tag - zero fetches when all tags present`() = runBlocking {
         val (engine, origin) = scenario(withNullTagTarget = false)
-        val result = TraversalBuilder(engine, setOf(origin), huid).run {
+        val result = TraversalScope(TraversalBuilder(engine, setOf(origin), huid)).run {
             outgoing<TestEdge>(); nodes<TestNode>(); collectNodes<TestNode>().toList()
         }
         assertEquals(3, result.size, "keeps only the 3 TestNode targets")
@@ -70,8 +71,9 @@ class TypedNodeFilterFetchTest {
     @Test fun `nodes filter falls back to fetch only for null-tag targets`() = runBlocking {
         val (engine, origin) = scenario(withNullTagTarget = true)
         val builder = TraversalBuilder(engine, setOf(origin), huid)
-        builder.outgoing<TestEdge>()
-        builder.nodes<TestNode>()
+        val scope = TraversalScope(builder)
+        scope.outgoing<TestEdge>()
+        scope.nodes<TestNode>()
         // 4 TestNode targets survive (3 tagged + 1 null-tag). The type filter fetched exactly the 1
         // null-tag target (tagged ones classified in-memory); tagged OtherNodes were dropped fetch-free.
         assertEquals(1, engine.nodeAtCalls.get(), "only the null-tag target is fetched for the type check")
@@ -83,7 +85,7 @@ class TypedNodeFilterFetchTest {
     @Test fun `typed node hop fetches only matching-type targets for the predicate`() = runBlocking {
         val (engine, origin) = scenario(withNullTagTarget = false)
         val builder = TraversalBuilder(engine, setOf(origin), huid)
-        builder.outgoing<Uuid, TestEdge, TestNode> { true }
+        TraversalScope(builder).outgoing<Uuid, TestEdge, TestNode> { true }
         assertEquals(3, builder.frontier.size, "keeps the 3 TestNode targets")
         assertEquals(3, engine.nodeAtCalls.get(), "2 OtherNode targets skipped fetch-free; 3 TestNodes fetched for the predicate")
     }
@@ -101,7 +103,7 @@ class TypedNodeFilterFetchTest {
             ),
         )
         val builder = TraversalBuilder(engine, setOf(a, b), huid)
-        builder.hasOutgoing<TestEdge, TestNode>()
+        TraversalScope(builder).hasOutgoing<TestEdge, TestNode>()
         assertEquals(setOf(a), builder.frontier, "only A has an outgoing edge to a TestNode")
         assertEquals(0, engine.nodeAtCalls.get(), "type gate decided by hop tag, no node fetched")
     }

@@ -392,6 +392,30 @@
   (evictable adjacency) stays available behind the `AdjacencyIndex` seam for topology-exceeds-memory, but
   is NOT the default.
 
+- **✅ 1.28 Hide raw traversal primitives behind a `TraversalScope` facade**
+  `TraversalBuilderLike<ID>` mixed raw primitives (`addHop`, `addNodeHop`, `filterFrontierByNode`,
+  `filterFrontierByOutEdgeTo(Type)`, `filterFrontierByInEdgeFrom(Type)`, `filterFrontierByTraversal`)
+  with typed/structural members (`count()`, `countEdges`, `collectSubgraph`, `flushFrontierNodes`,
+  `flushHopEdges`, `checkReaches`, `pathTo`, `exhaustReachable`, `detectCycle`, `paths(...)`). Every
+  raw primitive already had a reified, type-safe wrapper in `Extensions.kt`, but the raw methods
+  themselves were public on the interface and autocompleted/compiled identically to the sugar
+  inside any DSL block — `@DslMarker` didn't hide them (verified by compile: it only fixes
+  implicit-receiver leakage across nested same-marked blocks, not direct calls). Added a
+  `TraversalScope<ID>` facade (public constructor, `@PublishedApi internal val raw` — same pattern
+  as `AnnotationCache.kt`) that is now the DSL block receiver everywhere (`from`, `checkReaches`,
+  `pathTo`, `exhaustReachable`, `detectCycle`, `hasTraversal`); `TraversalBuilderLike<ID>` stays
+  unchanged as the public impl contract `TraversalBuilder` implements (required — implementer lives
+  in a different Gradle module). Only `addHop`/`addNodeHop`/`filterFrontierBy*` ended up hidden
+  behind `.raw` — `flushFrontierNodes`/`flushHopEdges`/`countEdges`/`collectSubgraph` were pulled
+  back to plain pass-through members on `TraversalScope` after implementation surfaced
+  `TraversalTest.kt`, which legitimately calls `flushFrontierNodes()` directly as a `from(){}`
+  block's last expression (documented raw-`Flow` behavior collected by the caller after `from`
+  returns) — hiding it wasn't part of what was actually asked, only "filter*, addHop etc." was.
+  Also removed the `@DslMarker`/`TraversalDsl` annotation added earlier — dead weight once
+  `TraversalBuilderLike` was no longer a lambda-receiver type anywhere in the DSL surface. Dedicated
+  regression coverage added in `TraversalScopeTest.kt`. Full design, deviations, and file-by-file
+  changes: `ai-scripts/TraversalScopeFacadePlan.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**

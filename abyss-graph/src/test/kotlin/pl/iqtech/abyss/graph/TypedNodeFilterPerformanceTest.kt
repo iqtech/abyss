@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import pl.iqtech.abyss.dsl.TraversalScope
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
@@ -69,8 +70,11 @@ class TypedNodeFilterPerformanceTest {
         return LatencyEngine(LATENCY_MS, POOL, nodesMap, mapOf(origin to hops)) to origin
     }
 
-    private suspend fun filterOnce(engine: LatencyEngine, origin: NodeId): Int =
-        TraversalBuilder(engine, setOf(origin), huid).run { outgoing<TestEdge>(); nodes<TestNode>(); frontier.size }
+    private suspend fun filterOnce(engine: LatencyEngine, origin: NodeId): Int {
+        val builder = TraversalBuilder(engine, setOf(origin), huid)
+        TraversalScope(builder).run { outgoing<TestEdge>(); nodes<TestNode>() }
+        return builder.frontier.size
+    }
 
     @Test fun `nodes filter- tag compare vs per-node fetch wall-clock`() {
         if (System.getProperty("perf") == null) return
