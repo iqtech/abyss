@@ -204,8 +204,11 @@ suspend fun <ID> AbyssEngineLike<ID>.ensureSubgraph(
 
 // fable.md 3.2 / TODO 3.13: allNodeIds() eagerly materializes the *entire* key set (not a
 // streaming/paginated scan) — this walk then holds it all again as remaining/visited sets. At
-// README-cited scale (36k users × 500 nodes = 18M keys) that's a multi-GB memory profile. Avoiding
-// the underlying full materialization needs a real store-scan capability (TODO 1.23), not yet built.
+// README-cited scale (36k users × 500 nodes = 18M keys) that's a multi-GB memory profile. TODO 1.23's
+// store-scan (scanNodeIds) is built, but deliberately not part of AbyssEngineLike<ID> (see
+// AbyssGraphSchema.scanNodeIds), so this extension can't reach it — and it wouldn't help anyway:
+// remaining/visited still need full-graph membership to know when a walk is done, regardless of
+// where ids are sourced from. Not fixable without changing what connected-components requires in memory.
 suspend fun <ID> AbyssEngineLike<ID>.connectedComponents(): List<Set<ID>> {
     val remaining = allNodeIds().toList().toMutableSet()
     val components = mutableListOf<Set<ID>>()
