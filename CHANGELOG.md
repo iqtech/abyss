@@ -1,3 +1,7 @@
+## [0.33.0] - 2026-07-27
+
+- Hide raw traversal primitives (`addHop`, `addNodeHop`, `filterFrontierBy*`) behind a new `TraversalScope<ID>` facade (TODO 1.28) — every DSL block (`from`, `checkReaches`, `pathTo`, `exhaustReachable`, `detectCycle`, `hasTraversal`) now receives `TraversalScope<ID>` instead of the raw `TraversalBuilderLike<ID>`, so only the typed sugar in `Extensions.kt` can reach the primitives; removes the now-dead `@DslMarker`/`TraversalDsl` annotation
+
 ## [0.32.3] - 2026-07-27
 
 - Add `Flow<Path>.toSubgraph()` extension merging a stream of `Path`s into one `Subgraph`, deduping nodes by `id` and edges by the same `(fromId, toId, type)` key `ensureSubgraph` already uses
