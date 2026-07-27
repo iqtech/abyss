@@ -6,6 +6,7 @@ import arrow.core.left
 import arrow.core.raise.either
 import arrow.core.right
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.toList
 import pl.iqtech.abyss.store.api.AbyssError
@@ -152,6 +153,18 @@ inline fun <reified T : NodeLike<*>> Subgraph.resolve(): List<T> = nodes.filterI
 inline fun <reified T : NodeLike<*>> Path.resolve(): List<T> = nodes.filterIsInstance<T>()
 
 suspend fun <ID> TraversalBuilderLike<ID>.subgraph(): Subgraph = collectSubgraph()
+
+// Merges a stream of Paths into one Subgraph, deduping nodes by id and edges by the same
+// (fromId, toId, type) key ensureSubgraph uses — a node/edge revisited across paths is kept once.
+suspend fun Flow<Path>.toSubgraph(): Subgraph {
+    val nodes = LinkedHashMap<Any?, NodeLike<*>>()
+    val edges = LinkedHashMap<Triple<Any?, Any?, String>, EdgeLike<*, *>>()
+    collect { path ->
+        path.nodes.forEach { nodes[it.id] = it }
+        path.edges.forEach { edges[Triple(it.fromId, it.toId, edgeType(it))] = it }
+    }
+    return Subgraph(nodes.values.toList(), edges.values.toList())
+}
 
 // Type-filtered subgraph: passes N's @TypeTag so the collector skips fetching visited nodes of other
 // types (falls back to a @SerialName fetch only for tag-unresolved nodes).

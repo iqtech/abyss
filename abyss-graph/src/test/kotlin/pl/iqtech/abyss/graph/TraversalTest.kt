@@ -3,6 +3,7 @@ package pl.iqtech.abyss.graph
 import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeKey
@@ -19,6 +20,7 @@ import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.reaches
 import pl.iqtech.abyss.dsl.subgraph
+import pl.iqtech.abyss.dsl.toSubgraph
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -396,6 +398,24 @@ class TraversalTest {
             }).value
             assertEquals(setOf(ab.fromId to ab.toId, bc.fromId to bc.toId),
                 sg.edges.map { it.fromId to it.toId }.toSet())
+        }
+    }
+
+    @Test fun `Flow of Path toSubgraph dedupes nodes and edges shared across paths`() {
+        runBlocking {
+            val a = putNode("a")
+            val b = putNode("b")
+            val c = putNode("c")
+            val ab = putEdge(a.id, b.id)
+            val bc = putEdge(b.id, c.id)
+
+            // Two overlapping paths: a-b-c and a-b (b, ab repeated).
+            val sg = flowOf(Path(listOf(a, b, c), listOf(ab, bc)), Path(listOf(a, b), listOf(ab))).toSubgraph()
+
+            assertEquals(setOf(a, b, c), sg.nodes.toSet())
+            assertEquals(3, sg.nodes.size)
+            assertEquals(setOf(ab.fromId to ab.toId, bc.fromId to bc.toId), sg.edges.map { it.fromId to it.toId }.toSet())
+            assertEquals(2, sg.edges.size)
         }
     }
 
