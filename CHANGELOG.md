@@ -1,3 +1,7 @@
+## [0.32.3] - 2026-07-27
+
+- Add `Flow<Path>.toSubgraph()` extension merging a stream of `Path`s into one `Subgraph`, deduping nodes by `id` and edges by the same `(fromId, toId, type)` key `ensureSubgraph` already uses
+
 ## [0.32.2] - 2026-07-24
 
 - Add `from(nodeIds: Set<ID>, block)` traversal DSL entry point (TODO 2.26) alongside the existing single-id `from`, seeding a multi-node frontier directly — wiring over `TraversalBuilder`'s already-multi-node-capable frontier, no new machinery
