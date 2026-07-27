@@ -14,9 +14,10 @@ subprojects {
     apply(plugin = "org.jetbrains.kotlin.plugin.serialization")
     apply(plugin = "com.vanniktech.maven.publish")
 
+    val hasSigningKey = project.hasProperty("signingInMemoryKey")
     configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
         publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
-        signAllPublications()
+        if (hasSigningKey) signAllPublications()
         pom {
             name.set(project.name)
             description.set("Abyss — distributed graph over Hazelcast with pluggable durable stores")
