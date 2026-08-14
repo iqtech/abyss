@@ -3,49 +3,57 @@
 _Probably the only one human-written note in this project: AI is here, this project tries to
 verify how it works :)_
 
+Named for the ocean: data gets colder and less frequently touched the deeper it sits.
+
+| Zone | Depth | Abyss layer | What lives there |
+|---|---|---|---|
+| **Epipelagic** (sunlight) | 0–200m | Domain/DSL | `NodeLike`/`EdgeLike`, `transaction{}`/`ephemeral{}` — what callers touch |
+| **Mesopelagic** (twilight) | 200–1000m | Codec | `KeyAdapter`, Compact serializers — domain ID ↔ `NodeId` bytes |
+| **Bathypelagic** (midnight) | 1000–4000m | Cache | Hazelcast `IMap` (nodes/edges + adjacency index) |
+| **Abyssopelagic** (abyssal) | 4000–6000m | Store contract | `AbyssStoreLike`/`AbyssEphemeralStoreLike` |
+| **Hadopelagic** (hadal) | 6000m+ | Durable backend | YugabyteDB — YSQL (`YugabytePersistentStore`) / YCQL (`YugabyteEphemeralStore`) |
+
 User-agnostic in-memory graph library backed by Hazelcast with pluggable durable storage
 and ephemeral elements.
 
 
-**This is not a graph database.** There's no server process, no query language, and no storage
-engine of its own — Abyss is a Kotlin library that layers graph semantics (typed nodes/edges,
-traversal, algorithms) on top of two things you bring: a `HazelcastInstance` for the in-memory
-cache/partitioning layer, and an optional store (`AbyssStoreLike`/`AbyssEphemeralStoreLike` — the
-reference implementation is YugabyteDB) for durability. If you need ad-hoc query languages,
-multi-tenant isolation at the infrastructure level, or a standalone graph engine, use a real graph
-database. Reach for Abyss when you want graph structure and traversal inside a JVM service you
-already run, without operating a separate one.
+### A short note on what it is (or isn't)
 
-That shape isn't incidental. An embedded engine that owns its own on-disk storage (ArcadeDB, or
-anything SQLite-shaped) doesn't fit how Kubernetes wants to run a pod — stateless and freely
-rescheduled. Skip a `PersistentVolume` and a reschedule silently loses whatever it wrote; attach one
-and you've pulled in `StatefulSet` semantics (stable identity, one volume per pod) for something you
-wanted to scale like every other pod in the cluster. Hazelcast sidesteps this: `IMap` is a
-distributed in-memory grid that's already Kubernetes-native — partitions rebalance automatically as
-pods come and go, no local disk involved — so durability is delegated entirely to a separate,
-purpose-built stateful service (YugabyteDB, or anything behind `AbyssStoreLike`) that's designed to
-run as its own `StatefulSet`/Operator in the first place. Your application pods stay boring and
-stateless; the two things that actually need to be stateful are each handled by something built for
-exactly that job.
+**Not a graph database.** No server process, no query language, no storage engine of its own —
+Abyss is a Kotlin library that layers graph semantics (typed nodes/edges, traversal, algorithms) on
+a `HazelcastInstance` (cache/partitioning) plus an optional store (`AbyssStoreLike`/
+`AbyssEphemeralStoreLike` — reference implementation YugabyteDB) for durability. Need ad-hoc
+queries or a standalone engine? Use a real graph database. Want graph structure inside a JVM
+service you already run? That's what Abyss is for.
 
-It's a targeted library, not a platform: the entire public surface is `suspend fun`, built for
-Kotlin coroutines from the ground up rather than adapted onto them — reads and writes are
-non-blocking (`IMap.getAsync()`, not a blocking call wrapped in `Dispatchers.IO`), traversal hops
-fan out with `async`/`awaitAll`, and every result is `Either<AbyssError, T>` or a coroutine `Flow`.
-There's no reactor of its own to run and no thread pool to tune beyond the one your application
-(e.g. a Ktor server) already has — Abyss's coroutines run on your dispatcher, inside your existing
-JVM process. The design goal throughout has been throughput on hardware you already have (see
-[Performance](#performance)), not feature breadth: pick this over a full graph database when the
-graph is a data structure inside your service, not a separate system you want to operate.
+The split is deliberate, not incidental: an embedded engine with its own on-disk storage doesn't
+fit how Kubernetes schedules pods (stateless, freely rescheduled). Hazelcast's `IMap` is already
+Kubernetes-native — no local disk, partitions rebalance as pods come and go — so durability is
+delegated entirely to a separate stateful service (YugabyteDB, or anything behind `AbyssStoreLike`)
+built for exactly that job.
+
+It's a targeted library, not a platform: the entire public surface is `suspend fun`, non-blocking
+end to end (`IMap.getAsync()`, `async`/`awaitAll` fan-out, `Either<AbyssError, T>`/`Flow` results),
+running on your app's own dispatcher — no reactor, no thread pool to tune. Optimized for throughput
+on hardware you already have (see [Performance](#performance)), not feature breadth.
 
 One thing you won't find in most graph databases: **first-class ephemeral (TTL) elements.**
-`ephemeral { }` writes nodes/edges that expire on their own — cache entry and durable row alike —
-with no cleanup job, no expiry sweep, no cron. It's a second, parallel write path
-(`ephemeral { }` alongside `transaction { }`, YCQL alongside YSQL) rather than a TTL bolted onto
-the same table, which is also why ephemeral edges are [outgoing-only](#pluggable-storage) — that
-constraint buys atomic, heal-free expiry instead of a denormalized reverse index that could
-outlive (or expire before) the row it mirrors. Useful for session-scoped relationships, presence,
-temporary grants — graph data that should vanish on its own instead of being explicitly deleted.
+`ephemeral { }` writes nodes/edges that expire on their own — no cleanup job, no expiry sweep, no
+cron. It's a second, parallel write path (`ephemeral { }` alongside `transaction { }`) rather than a
+TTL bolted onto the same table — and what you get for durability vs. atomicity depends on what's
+plugged in as `ephemeralStore`:
+
+- **Nothing plugged (default):** falls back to `HazelcastEphemeralStore` — cache-only, no disk row;
+  what survives a node loss is whatever Hazelcast's own backup copies cover, not durable storage. But
+  `ephemeral { }` runs as a real Hazelcast transaction (`TransactionalMap`, commit/rollback) — a
+  failure partway through rolls back every op already applied in that block.
+- **`YugabyteEphemeralStore` (YCQL) plugged:** every write also lands as a durable row, surviving
+  restarts. But `ephemeral { }` is **not** atomic across ops there — each op is a separate CQL
+  statement applied in sequence, with no rollback on partial failure. A single op is still atomic (one
+  row write), which is also why ephemeral edges are [outgoing-only](#pluggable-storage).
+
+Useful for session-scoped relationships, presence, temporary grants — graph data that should vanish
+on its own instead of being explicitly deleted.
 
 ## Modules
 

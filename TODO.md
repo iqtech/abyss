@@ -710,6 +710,12 @@
   point, but useful standalone (e.g. seeding a frontier from `scanNodeIds`/`scanEdgeIds` results, or any
   caller-assembled id set) without waiting on 2.12's column-index machinery.
 
+- **✅ 2.27 `HazelcastEphemeralStore.transaction()` isn't atomic**
+  Applies ops one-by-one via plain `IMap.set`/`remove`, no Hazelcast `TransactionContext`. A
+  partial failure leaves some ops committed, others not. Fix: `newTransactionContext()` +
+  `TransactionalMap` (has `put(k, v, ttl, unit)`), commit/rollback — matching the atomicity the
+  YSQL/YCQL stores already give.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

@@ -87,6 +87,24 @@ class HazelcastEphemeralStoreTest {
         }
     }
 
+    @Test fun `transaction rolls back all ops when the block throws partway through`() {
+        runBlocking {
+            val store = HazelcastEphemeralStore(graphTestHz, "hes-edges-rollback", "hes-nodes-rollback")
+            val id = huid.toNodeId(Uuid.random())
+            val node = TestNode(id = huid.fromNodeId(id), name = "hes-rollback")
+
+            val result = store.transaction {
+                saveNode(id, node, 60.seconds, emptySet())
+                error("boom")
+            }
+
+            assertTrue(result is Either.Left)
+            assertNull(store.loadNode(id).shouldBeRight().first, "partial write must not survive a failed transaction")
+
+            listOf("hes-edges-rollback", "hes-nodes-rollback").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
     @Test fun `deleteEdge and deleteNode remove entries`() {
         runBlocking {
             val store = HazelcastEphemeralStore(graphTestHz, "hes-edges-del", "hes-nodes-del")

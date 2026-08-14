@@ -28,9 +28,9 @@ import kotlin.time.Duration.Companion.milliseconds
 // abyss-graph — not a general-purpose reusable store, only ever built by AbyssSchemaWorker's
 // null-fallback with derived map names.
 internal class HazelcastEphemeralStore(
-    hazelcast: HazelcastInstance,
-    ephEdgesMapName: String,
-    ephNodesMapName: String,
+    private val hazelcast: HazelcastInstance,
+    private val ephEdgesMapName: String,
+    private val ephNodesMapName: String,
 ) : AbyssEphemeralStoreLike {
 
     private val ephEdges: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(ephEdgesMapName)
@@ -101,21 +101,33 @@ internal class HazelcastEphemeralStore(
         if (tag != null) emptyFlow()
         else flow { withContext(Dispatchers.IO) { ephNodes.keys }.forEach { emit(it) } }
 
-    // No buffer-then-commit here (unlike YugabyteEphemeralStore, which batches into one CQL round
-    // trip): each IMap.set/remove is already a single fast local operation, so the transaction
-    // receiver applies ops directly.
-    private val txn = object : AbyssEphemeralStoreTransactionLike {
-        override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) {
-            ephNodes.set(id, node, ttl.inWholeSeconds, TimeUnit.SECONDS)
-        }
-        override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) {
-            ephEdges.set(EdgeKey(fromId, toId, edge::class.serialName()), edge, ttl.inWholeSeconds, TimeUnit.SECONDS)
-        }
-        override fun deleteNode(id: NodeId) { ephNodes.remove(id) }
-        override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { ephEdges.remove(EdgeKey(fromId, toId, type)) }
-    }
-
+    // Real Hazelcast transaction (TransactionalMap), not a plain IMap.set/remove loop — a failure
+    // partway through the block rolls back everything already applied, matching the atomicity
+    // YugabytePersistentStore (JDBC commit/rollback) and YugabyteEphemeralStore (one CQL logged
+    // batch) already give. Trades per-key locking for the transaction's duration for that guarantee.
     override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Either.catch {
-        withContext(Dispatchers.IO) { txn.block() }
+        withContext(Dispatchers.IO) {
+            val ctx = hazelcast.newTransactionContext()
+            ctx.beginTransaction()
+            val txNodes = ctx.getMap<NodeId, NodeLike<*>>(ephNodesMapName)
+            val txEdges = ctx.getMap<EdgeKey, EdgeLike<*, *>>(ephEdgesMapName)
+            val receiver = object : AbyssEphemeralStoreTransactionLike {
+                override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) {
+                    txNodes.put(id, node, ttl.inWholeSeconds, TimeUnit.SECONDS)
+                }
+                override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) {
+                    txEdges.put(EdgeKey(fromId, toId, edge::class.serialName()), edge, ttl.inWholeSeconds, TimeUnit.SECONDS)
+                }
+                override fun deleteNode(id: NodeId) { txNodes.remove(id) }
+                override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { txEdges.remove(EdgeKey(fromId, toId, type)) }
+            }
+            try {
+                receiver.block()
+            } catch (e: Throwable) {
+                ctx.rollbackTransaction()
+                throw e
+            }
+            ctx.commitTransaction()
+        }
     }.mapLeft { AbyssError.Unexpected(it) }
 }
