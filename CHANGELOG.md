@@ -1,3 +1,9 @@
+## [0.33.1] - 2026-08-17
+
+- Fix consistency-audit findings 1-3 (TODO 1.29): mixed-store cold-read fallback bug (`.getOrNull()` on `Either<Error, Pair<T?, Duration?>>` masked a genuine persistent-store miss, blocking ephemeral-store fallback), batch-transaction cache staleness after a partial chunk failure (cache is now synced for whatever chunks actually committed, via new `AbyssError.BatchPartiallyCommitted`), and index-always-alive self-heal gaps (client-mode eviction guard was silently inert; cache-only mode could drop evicted edges with no error) — new `evictionVerifiedExternally` escape hatch for client connections that can't self-verify. Item 4 (integrity-check TOCTOU) investigated and parked as TODO 2.28 — no viable low-risk fix found yet on Hazelcast community edition.
+- Make `HazelcastEphemeralStore.transaction()` atomic via real Hazelcast `TransactionContext`/`TransactionalMap`, replacing the old plain `IMap.set`/`remove` loop that left partial writes on failure (TODO 2.27)
+- Make Maven publication signing conditional on a signing key being present, so `publishToMavenLocal` works unsigned instead of requiring a GPG signatory for a purely local publish
+
 ## [0.33.0] - 2026-07-27
 
 - Hide raw traversal primitives (`addHop`, `addNodeHop`, `filterFrontierBy*`) behind a new `TraversalScope<ID>` facade (TODO 1.28) — every DSL block (`from`, `checkReaches`, `pathTo`, `exhaustReachable`, `detectCycle`, `hasTraversal`) now receives `TraversalScope<ID>` instead of the raw `TraversalBuilderLike<ID>`, so only the typed sugar in `Extensions.kt` can reach the primitives; removes the now-dead `@DslMarker`/`TraversalDsl` annotation
