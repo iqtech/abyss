@@ -420,9 +420,9 @@
   Item 1 (mixed-store cold-read fallback bug), item 2 (batch-transaction cache staleness after
   partial failure), and item 3 (index-always-alive self-heal gaps) are ✅ fixed — see
   `ai-scripts/MixedStoreColdReadFallbackFixPlan.md`, `ai-scripts/BatchTransactionCacheStalenessFixPlan.md`,
-  and `ai-scripts/SelfHealGapsFixPlan.md`. Item 4 (integrity-check TOCTOU) is investigated, with a
-  viable fix direction found (Hazelcast `TransactionContext`, community-edition compatible) — not
-  yet implemented, tracked as TODO 2.28. Still open: item 5, closing out stale TODO 1.5 doc. Details:
+  and `ai-scripts/SelfHealGapsFixPlan.md`. Item 4 (integrity-check TOCTOU) investigated and parked
+  for now — no viable low-risk fix found on Hazelcast community edition, tracked as TODO 2.28.
+  Still open: item 5, closing out stale TODO 1.5 doc. Details:
   `ai-scripts/ConsistencyAuditFindings.md`.
 
 ## 2. Medium
