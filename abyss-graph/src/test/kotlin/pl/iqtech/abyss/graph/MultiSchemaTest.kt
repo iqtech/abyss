@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import pl.iqtech.abyss.dsl.collectNodes
+import pl.iqtech.abyss.dsl.edge
 import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.node
 import pl.iqtech.abyss.dsl.outEdges
@@ -647,6 +648,37 @@ class MultiSchemaTest {
         }
     }
 
+    // TODO 1.29 item 1: loadAndCacheNode used to do `persistentStore.loadNode()?.getOrNull() ?:
+    // ephemeralStore.loadNode()`. .getOrNull() only strips the Either; a genuine persistent miss is
+    // a non-null Pair(null, null), so the elvis never fell through to ephemeral. RecordingStore's
+    // loadNode already returns exactly that shape when seededNodes is empty (the default here).
+    @Test fun `cold node read falls back to ephemeral store when persistent store reports a genuine miss`() = runBlocking {
+        val persistent = RecordingStore()
+        val nid = SchemaKeyAdapter(SchemaTag(253L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(1L)
+        val ephemeral = SeededEphemeralStore(node = nid to LongTestNode(1L, name = "ephemeral-only"))
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx11-nodes", "cx11-edges", persistentStore = persistent, ephemeralStore = ephemeral, module = graphTestModule)
+        val longS = g.register(SchemaTag(253L), LongKeyAdapter)
+        try {
+            assertEquals("ephemeral-only", longS.node<LongTestNode>(1L).getOrNull()?.name)
+        } finally {
+            listOf("cx11-nodes", "cx11-edges", "cx11-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    @Test fun `cold edge read falls back to ephemeral store when persistent store reports a genuine miss`() = runBlocking {
+        val persistent = RecordingStore()
+        val fromNid = SchemaKeyAdapter(SchemaTag(254L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(1L)
+        val toNid = SchemaKeyAdapter(SchemaTag(254L), SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(2L)
+        val ephemeral = SeededEphemeralStore(edge = (fromNid to toNid) to LongTestEdge(1L, 2L))
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "cx13-nodes", "cx13-edges", persistentStore = persistent, ephemeralStore = ephemeral, module = graphTestModule)
+        val longS = g.register(SchemaTag(254L), LongKeyAdapter)
+        try {
+            assertTrue(longS.edge<LongTestEdge>(1L, 2L).isRight())
+        } finally {
+            listOf("cx13-nodes", "cx13-edges", "cx13-edges-adjacency").forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
     // TODO 1.20 (durability audit finding #5, cross-schema instance): addCrossEdge's integrity check
     // used to read worker.containsNodeInCache — a raw cache read — so a genuinely-existing node not
     // yet cache-warmed spuriously failed with IntegrityError. Both endpoints exist only in the (fake)
@@ -770,6 +802,28 @@ private class RecordingStore(var failTx: Boolean = false) : AbyssStoreLike {
             override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, tags: Set<String>) { savedEdges += Triple(fromId, toId, edge) }
             override fun deleteNode(id: NodeId) {}
             override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { deletedEdges += Triple(fromId, toId, type) }
+        }
+        tx.block()
+        return Unit.right()
+    }
+}
+
+// TODO 1.29 item 1: RecordingEphemeralStore below always misses, so it can't stand in for the
+// ephemeral side of a cold-read fallback. This fake seeds exactly one node and/or one edge hit.
+private class SeededEphemeralStore(
+    private val node: Pair<NodeId, NodeLike<*>>? = null,
+    private val edge: Pair<Pair<NodeId, NodeId>, EdgeLike<*, *>>? = null,
+) : AbyssEphemeralStoreLike {
+    override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> =
+        Either.Right((if (node?.first == id) node.second else null) to null)
+    override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> =
+        Either.Right((if (edge?.first == (fromId to toId)) edge.second else null) to null)
+    override suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> {
+        val tx = object : AbyssEphemeralStoreTransactionLike {
+            override fun saveNode(id: NodeId, node: NodeLike<*>, ttl: Duration, tags: Set<String>) {}
+            override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) {}
+            override fun deleteNode(id: NodeId) {}
+            override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) {}
         }
         tx.block()
         return Unit.right()

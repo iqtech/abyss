@@ -372,7 +372,9 @@ class LoadTest {
                 ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batch-fail"), emptySet()) }
             }
         }
-        assertIs<Either.Left<AbyssError>>(result)
+        assertIs<Either.Left<AbyssError.BatchPartiallyCommitted>>(result)
+        // TODO 1.29 item 2: batchSize=2, failAtCommit=2 -> chunk 1 (2 ops) committed before chunk 2 failed.
+        assertEquals(2, result.value.committedOps)
 
         ids.take(2).forEach { id ->
             val loaded = runBlocking { ybPersistentStore.loadNode(nid(id)) }

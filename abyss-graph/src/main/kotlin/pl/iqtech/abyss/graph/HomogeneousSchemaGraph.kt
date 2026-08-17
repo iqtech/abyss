@@ -60,6 +60,7 @@ class HomogeneousSchemaGraph<ID>(
     module: SerializersModule = EmptySerializersModule(),
     adjacencyShardCount: Int = 16,
     hopFanoutParallelism: Int = 256,
+    evictionVerifiedExternally: Boolean = false,
 ) : NodeIdEngine {
 
     init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
@@ -67,6 +68,7 @@ class HomogeneousSchemaGraph<ID>(
     private val worker = AbyssSchemaWorker(
         hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation,
         HomogeneousSchemaResolution(tagWidth, keyAdapter.nodeKeyKind), module, adjacencyShardCount, hopFanoutParallelism,
+        evictionVerifiedExternally,
     )
 
     fun forTag(tag: SchemaTag): AbyssGraphSchema<ID> =

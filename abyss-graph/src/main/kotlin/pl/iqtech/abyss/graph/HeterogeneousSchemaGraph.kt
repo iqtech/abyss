@@ -49,13 +49,14 @@ class HeterogeneousSchemaGraph(
     module: SerializersModule = EmptySerializersModule(),
     adjacencyShardCount: Int = 16,
     hopFanoutParallelism: Int = 256,
+    evictionVerifiedExternally: Boolean = false,
 ) : NodeIdEngine {
 
     init { require(tagWidth != SchemaTagWidth.NONE) { "tagWidth must be tagged; use SingleSchemaGraph for untagged single-schema graphs" } }
 
     private val worker = AbyssSchemaWorker(
         hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation,
-        HeterogeneousSchemaResolution, module, adjacencyShardCount, hopFanoutParallelism,
+        HeterogeneousSchemaResolution, module, adjacencyShardCount, hopFanoutParallelism, evictionVerifiedExternally,
     )
 
     private val registeredTags = mutableSetOf<SchemaTag>()

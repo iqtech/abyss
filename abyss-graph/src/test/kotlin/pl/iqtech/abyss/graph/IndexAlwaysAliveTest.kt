@@ -2,6 +2,8 @@ package pl.iqtech.abyss.graph
 
 import arrow.core.Either
 import arrow.core.right
+import com.hazelcast.client.HazelcastClient
+import com.hazelcast.client.config.ClientConfig
 import com.hazelcast.config.Config
 import com.hazelcast.config.EvictionPolicy
 import com.hazelcast.core.Hazelcast
@@ -69,6 +71,78 @@ class IndexAlwaysAliveTest {
             assertFailsWith<IllegalArgumentException> {
                 AbyssGraphSchema(UuidKeyAdapter, hz, "guard-nodes", "guard-edges", module = graphTestModule)
             }
+        } finally {
+            hz.shutdown()
+        }
+    }
+
+    // TODO 1.29 item 3: findMapConfig always throws UnsupportedOperationException on a Hazelcast
+    // client instance (verified against 5.6.0 sources — ClientDynamicClusterConfig's read methods are
+    // unconditionally unsupported), so the guard above used to be silently skipped on a client
+    // connection instead of failing fast. Point a real client at a member whose adjacency map has
+    // eviction configured, by the member's own bound address (not multicast, for a deterministic test).
+    @Test fun `construction fails fast on a client connection when eviction can't be verified`() {
+        val cfg = Config().setClusterName("iaa-client-test").registerAbyssSerializers(huid, graphTestModule)
+        cfg.getMapConfig("guard-client-edges-adjacency").evictionConfig.evictionPolicy = EvictionPolicy.LRU
+        val member = Hazelcast.newHazelcastInstance(cfg)
+        val addr = member.cluster.localMember.address
+        val client = HazelcastClient.newHazelcastClient(
+            ClientConfig().setClusterName("iaa-client-test").apply { networkConfig.addAddress("${addr.host}:${addr.port}") }
+        )
+        try {
+            assertFailsWith<IllegalArgumentException> {
+                AbyssGraphSchema(UuidKeyAdapter, client, "guard-client-nodes", "guard-client-edges", module = graphTestModule)
+            }
+        } finally {
+            client.shutdown()
+            member.shutdown()
+        }
+    }
+
+    @Test fun `evictionVerifiedExternally lets client-mode construction proceed`() {
+        val cfg = Config().setClusterName("iaa-client-test-2").registerAbyssSerializers(huid, graphTestModule)
+        cfg.getMapConfig("guard-client2-edges-adjacency").evictionConfig.evictionPolicy = EvictionPolicy.LRU
+        val member = Hazelcast.newHazelcastInstance(cfg)
+        val addr = member.cluster.localMember.address
+        val client = HazelcastClient.newHazelcastClient(
+            ClientConfig().setClusterName("iaa-client-test-2").apply { networkConfig.addAddress("${addr.host}:${addr.port}") }
+        )
+        try {
+            AbyssGraphSchema(
+                UuidKeyAdapter, client, "guard-client2-nodes", "guard-client2-edges",
+                module = graphTestModule, evictionVerifiedExternally = true,
+            )
+        } finally {
+            client.shutdown()
+            member.shutdown()
+        }
+    }
+
+    // TODO 1.29 item 3: in cache-only mode (no persistentStore, README-documented as supported), an
+    // evicted edge has nothing to self-heal from — it's silently dropped from traversal results with
+    // no error. Construction must now fail fast the same way the adjacency-map guard already does.
+    @Test fun `cache-only mode fails fast if the edges map has eviction configured`() {
+        val cfg = Config().setClusterName("iaa-cacheonly-guard-test").registerAbyssSerializers(huid, graphTestModule)
+        cfg.getMapConfig("guard2-edges").evictionConfig.evictionPolicy = EvictionPolicy.LRU
+        val hz = Hazelcast.newHazelcastInstance(cfg)
+        try {
+            assertFailsWith<IllegalArgumentException> {
+                AbyssGraphSchema(UuidKeyAdapter, hz, "guard2-nodes", "guard2-edges", module = graphTestModule)
+            }
+        } finally {
+            hz.shutdown()
+        }
+    }
+
+    // Same eviction config on the edges map, but WITH a persistentStore: self-heals per TODO 1.27
+    // Phase 2 (the earlier test in this file), so construction must NOT throw. Guards against
+    // over-tightening the new cache-only-mode check above.
+    @Test fun `edges map eviction is fine when a persistentStore is configured`() {
+        val cfg = Config().setClusterName("iaa-withstore-guard-test").registerAbyssSerializers(huid, graphTestModule)
+        cfg.getMapConfig("guard3-edges").evictionConfig.evictionPolicy = EvictionPolicy.LRU
+        val hz = Hazelcast.newHazelcastInstance(cfg)
+        try {
+            AbyssGraphSchema(UuidKeyAdapter, hz, "guard3-nodes", "guard3-edges", persistentStore = SelfHealStore(), module = graphTestModule)
         } finally {
             hz.shutdown()
         }

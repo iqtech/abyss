@@ -74,11 +74,13 @@ class AbyssGraphSchema<ID> internal constructor(
         module: SerializersModule = EmptySerializersModule(),
         adjacencyShardCount: Int = 16,
         hopFanoutParallelism: Int = 256,
+        evictionVerifiedExternally: Boolean = false,
     ) : this(
         HeaderlessKeyAdapter(adapter),
         AbyssSchemaWorker(
             hazelcast, nodesMapName, edgesMapName, edgesAdjacencyMapName, persistentStore, ephemeralStore, asyncCachePopulation,
             SingleSchemaResolution(HeaderlessKeyAdapter(adapter)), module, adjacencyShardCount, hopFanoutParallelism,
+            evictionVerifiedExternally,
         ),
     )
 

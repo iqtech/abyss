@@ -140,13 +140,37 @@ class BatchTransactionTest {
             assertIs<Either.Left<AbyssError>>(result)
         }
     }
+
+    // TODO 1.29 item 2: batchTransaction used to skip populateCache entirely on any store failure,
+    // even though YugabytePersistentStore commits ops in batchSize-sized chunks (each its own DB
+    // transaction) — a partial failure left earlier chunks durably persisted but invisible to a
+    // warm-cache reader. failAfterOps mirrors that shape without reimplementing chunking: it reports
+    // exactly N ops committed (matching AbyssError.BatchPartiallyCommitted), same as a real
+    // chunk-1-committed/chunk-2-failed run (proven against real YugabyteDB in LoadTest.kt).
+    @Test fun `batchTransaction populates cache for ops that committed before a partial failure`() {
+        runBlocking {
+            val fake = RecordingBatchStore(failAfterOps = 1)
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "bt-nodes", "bt-edges", persistentStore = fake, module = graphTestModule)
+            val a = TestNode(id = Uuid.random(), name = "a")
+            val b = TestNode(id = Uuid.random(), name = "b")
+
+            val result = g.batchTransaction { addNode(a); addNode(b) }
+
+            assertIs<Either.Left<AbyssError>>(result)
+            assertIs<Either.Right<NodeLike<*>>>(g.node(a.id))
+            assertIs<Either.Left<AbyssError>>(g.node(b.id))
+        }
+    }
 }
 
 // Records batchTransaction() vs transaction() call counts and the batchSize it was given, so tests
 // can assert batchTransaction actually routes through the store's batch path rather than reusing
 // transaction()'s. Real chunking (addBatch()/executeBatch() per batchSize-sized chunk) only exists
 // in YugabytePersistentStore and is covered by LoadTest against a live YugabyteDB.
-private class RecordingBatchStore(private val failBatch: Boolean = false) : AbyssStoreLike {
+private class RecordingBatchStore(
+    private val failBatch: Boolean = false,
+    private val failAfterOps: Int? = null,
+) : AbyssStoreLike {
     var transactionCallCount = 0
     var batchCallCount = 0
     var batchSizeSeen: Int? = null
@@ -164,6 +188,7 @@ private class RecordingBatchStore(private val failBatch: Boolean = false) : Abys
         batchCallCount++
         batchSizeSeen = batchSize
         if (failBatch) return AbyssError.Unexpected(RuntimeException("store down")).left()
+        if (failAfterOps != null) return AbyssError.BatchPartiallyCommitted(failAfterOps, RuntimeException("simulated partial batch failure")).left()
         applyBlock(block)
         return Unit.right()
     }

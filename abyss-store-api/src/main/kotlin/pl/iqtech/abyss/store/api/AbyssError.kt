@@ -6,4 +6,5 @@ sealed interface AbyssError {
     data class IntegrityError(val message: String) : AbyssError
     data class SchemaError(val message: String) : AbyssError
     data class Unexpected(val cause: Throwable) : AbyssError
+    data class BatchPartiallyCommitted(val committedOps: Int, val cause: Throwable) : AbyssError
 }

@@ -416,6 +416,15 @@
   regression coverage added in `TraversalScopeTest.kt`. Full design, deviations, and file-by-file
   changes: `ai-scripts/TraversalScopeFacadePlan.md`.
 
+- **➡️ 1.29 Consistency audit findings from the ✅-ledger sweep**
+  Item 1 (mixed-store cold-read fallback bug), item 2 (batch-transaction cache staleness after
+  partial failure), and item 3 (index-always-alive self-heal gaps) are ✅ fixed — see
+  `ai-scripts/MixedStoreColdReadFallbackFixPlan.md`, `ai-scripts/BatchTransactionCacheStalenessFixPlan.md`,
+  and `ai-scripts/SelfHealGapsFixPlan.md`. Item 4 (integrity-check TOCTOU) is investigated, with a
+  viable fix direction found (Hazelcast `TransactionContext`, community-edition compatible) — not
+  yet implemented, tracked as TODO 2.28. Still open: item 5, closing out stale TODO 1.5 doc. Details:
+  `ai-scripts/ConsistencyAuditFindings.md`.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
@@ -715,6 +724,13 @@
   partial failure leaves some ops committed, others not. Fix: `newTransactionContext()` +
   `TransactionalMap` (has `put(k, v, ttl, unit)`), commit/rollback — matching the atomicity the
   YSQL/YCQL stores already give.
+
+- **➡️ 2.28 Integrity-check TOCTOU:
+  `integrityError` reads node existence, then `applyPersistentOp`'s edge write happens later with no
+  re-check and no lock between the two (`AbyssSchemaWorker.kt:449`). A concurrent `removeNode` on
+  either endpoint in that window can still land a dangling edge — the exact failure 1.3 claims to
+  prevent, just concurrently instead of sequentially. Narrow window, reasoning-only, no test either
+  way.
 
 ## 3. Low
 

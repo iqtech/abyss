@@ -68,7 +68,7 @@ internal sealed interface NodeOp {
  * a multi-schema container owns one worker and routes its [NodeIdEngine] surface to it.
  */
 internal class AbyssSchemaWorker(
-    hazelcast: HazelcastInstance,
+    private val hazelcast: HazelcastInstance,
     val nodesMapName: String,
     val edgesMapName: String,
     edgesAdjacencyMapName: String = "$edgesMapName-adjacency",
@@ -79,6 +79,7 @@ internal class AbyssSchemaWorker(
     module: SerializersModule = EmptySerializersModule(),
     private val adjacencyShardCount: Int = 16,
     hopFanoutParallelism: Int = 256,
+    private val evictionVerifiedExternally: Boolean = false,
 ) : NodeIdEngine {
 
     private val log = LoggerFactory.getLogger(AbyssSchemaWorker::class.java)
@@ -99,21 +100,57 @@ internal class AbyssSchemaWorker(
     // so peak in-flight stays bounded regardless of degree.
     private val valueFetchBatch = 128
 
-    init {
-        // Index-always-alive (TODO 1.27): the adjacency index is the authoritative in-memory topology and
-        // MUST NOT be evicted — never-evict is the default. Eviction/TTL on it silently corrupts traversal:
-        // Hazelcast evicts individual shard entries, and the per-node warm-check only inspects the first
-        // window, so partial eviction reads as "warm" and returns an incomplete neighbor set with no error.
-        // Value maps (nodes/edges) may evict — they self-heal from the store. Fail fast rather than lie.
-        // (findMapConfig resolves wildcard/default configs; skipped on a client instance with no local config.)
-        runCatching { hazelcast.config.findMapConfig(edgesAdjacencyMapName) }.getOrNull()?.let { cfg ->
+    // Index-always-alive (TODO 1.27) fail-fast guard, shared by the adjacency map (always) and the
+    // edges map (only in cache-only mode, TODO 1.29 item 3 below). findMapConfig resolves
+    // wildcard/default configs on an embedded member; on a Hazelcast CLIENT instance it always throws
+    // UnsupportedOperationException instead (client Config is add-only dynamic config — it cannot read
+    // back the cluster's real static map config), so that specific exception gets its own loud failure
+    // rather than being silently swallowed like any other unexpected error here.
+    // Index-always-alive (TODO 1.27) fail-fast guard, shared by the adjacency map (always) and the
+    // edges map (only in cache-only mode, TODO 1.29 item 3 below). findMapConfig resolves
+    // wildcard/default configs on an embedded member; on a Hazelcast CLIENT instance it always throws
+    // UnsupportedOperationException instead (client Config is add-only dynamic config — it cannot read
+    // back the cluster's real static map config), so that specific exception gets its own loud failure
+    // rather than being silently swallowed like any other unexpected error here.
+    private fun requireNoEviction(mapName: String, why: String) {
+        val cfgResult = runCatching { hazelcast.config.findMapConfig(mapName) }
+        val cfg = cfgResult.getOrNull()
+        if (cfg != null) {
             require(cfg.evictionConfig.evictionPolicy == EvictionPolicy.NONE && cfg.timeToLiveSeconds == 0 && cfg.maxIdleSeconds == 0) {
-                "Eviction/TTL is configured on the adjacency map '$edgesAdjacencyMapName' " +
-                "(evictionPolicy=${cfg.evictionConfig.evictionPolicy}, ttl=${cfg.timeToLiveSeconds}s, maxIdle=${cfg.maxIdleSeconds}s). " +
-                "This silently corrupts traversal — partial eviction is invisible to the per-node warm-check, so reads " +
-                "return an incomplete neighbor set with no error. Remove all eviction from this map; evict " +
-                "'$edgesMapName'/'$nodesMapName' instead (those self-heal from the store)."
+                "Eviction/TTL is configured on map '$mapName' (evictionPolicy=${cfg.evictionConfig.evictionPolicy}, " +
+                "ttl=${cfg.timeToLiveSeconds}s, maxIdle=${cfg.maxIdleSeconds}s). $why"
             }
+        } else if (cfgResult.exceptionOrNull() is UnsupportedOperationException) {
+            require(evictionVerifiedExternally) {
+                "Cannot verify eviction/TTL is disabled on map '$mapName': this HazelcastInstance is a client " +
+                "connection, and Hazelcast's client Config API can't read the cluster's real map config " +
+                "(findMapConfig always throws UnsupportedOperationException on a client). $why Either connect " +
+                "via an embedded member instance, or confirm server-side and pass evictionVerifiedExternally = true."
+            }
+        }
+    }
+
+    init {
+        // The adjacency index is the authoritative in-memory topology and MUST NOT be evicted —
+        // never-evict is the default. Eviction/TTL on it silently corrupts traversal: Hazelcast evicts
+        // individual shard entries, and the per-node warm-check only inspects the first window, so
+        // partial eviction reads as "warm" and returns an incomplete neighbor set with no error.
+        requireNoEviction(edgesAdjacencyMapName,
+            "This silently corrupts traversal — partial eviction is invisible to the per-node warm-check, so reads " +
+            "return an incomplete neighbor set with no error. Remove all eviction from this map; evict " +
+            "'$edgesMapName'/'$nodesMapName' instead (those self-heal from the store)."
+        )
+        // Value maps (nodes/edges) may evict when a persistentStore self-heals them — but in cache-only
+        // mode (no persistentStore, README-documented as supported) an evicted edge has nothing to
+        // reload from: it's silently dropped out of traversal results with no error (adjacency still
+        // lists it, the value read comes back null). Same fail-fast treatment as the adjacency map.
+        if (persistentStore == null) {
+            requireNoEviction(edgesMapName,
+                "No persistentStore is configured (pure in-memory / cache-only mode) — without a store to self-heal " +
+                "from, an evicted edge is unrecoverable and is silently dropped from traversal results with no error " +
+                "(the adjacency index still lists it, the value read comes back null). Remove eviction/TTL from " +
+                "'$edgesMapName', or configure a persistentStore."
+            )
         }
     }
 
@@ -364,7 +401,9 @@ internal class AbyssSchemaWorker(
         if (persistentStore != null) {
             val storeResult = persistentStore.batchTransaction(batchSize) { ops.forEach { applyPersistentOp(it) } }
             if (storeResult.isLeft()) {
-                log.error("Batch transaction failed partway; chunks committed before the failure remain persisted [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                val committed = (storeResult.leftOrNull() as? AbyssError.BatchPartiallyCommitted)?.committedOps ?: 0
+                if (committed > 0) populateCache(ops.take(committed), "Cache update failed after partial batch store commit; cache may be stale")
+                log.error("Batch transaction failed partway; {} of {} op(s) committed and cache-synced before the failure [nodes={}, edges={}]", committed, ops.size, nodesMapName, edgesMapName)
                 return storeResult
             }
         }
@@ -520,7 +559,8 @@ internal class AbyssSchemaWorker(
         val (node, remaining) = coroutineScope {
             val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadNode(nid)?.getOrNull() }
             val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore.loadNode(nid).getOrNull() }
-            fromPersistent.await() ?: fromEphemeral.await()
+            val p = fromPersistent.await()
+            if (p?.first != null) p else fromEphemeral.await()
         } ?: return null
         node ?: return null
         if (remaining != null && remaining.inWholeSeconds <= 0) return null
@@ -535,7 +575,8 @@ internal class AbyssSchemaWorker(
         val (edge, remaining) = coroutineScope {
             val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadEdge(fromNid, toNid, type)?.getOrNull() }
             val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore.loadEdge(fromNid, toNid, type).getOrNull() }
-            fromPersistent.await() ?: fromEphemeral.await()
+            val p = fromPersistent.await()
+            if (p?.first != null) p else fromEphemeral.await()
         } ?: return null
         edge ?: return null
         if (remaining != null && remaining.inWholeSeconds <= 0) return null

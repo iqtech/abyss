@@ -99,7 +99,10 @@ class YugabytePersistentStore(
             val tx = PersistentTransaction()
             tx.block()
             if (tx.ops.isNotEmpty()) withContext(Dispatchers.IO) { commitYsqlBatched(tx.ops, batchSize) }
-        }.mapLeft { AbyssError.Unexpected(it) }
+        }.mapLeft { e ->
+            if (e is PartialBatchFailure) AbyssError.BatchPartiallyCommitted(e.committedOps, e.original)
+            else AbyssError.Unexpected(e)
+        }
 
     override fun close() {
         runCatching { (ysql as? Closeable)?.close() }.onFailure { log.warn("Failed to close YSQL DataSource", it) }
@@ -315,6 +318,7 @@ class YugabytePersistentStore(
                 }
             }
 
+            var committed = 0
             for (chunk in ops.chunked(batchSize)) {
                 try {
                     var i = 0
@@ -329,13 +333,19 @@ class YugabytePersistentStore(
                         i = j
                     }
                     conn.commit()
+                    committed += chunk.size
                 } catch (e: Throwable) {
                     conn.rollback()
-                    throw e
+                    throw PartialBatchFailure(committed, e)
                 }
             }
         }
     }
+
+    // Carries how many ops committed (in full chunks) before commitYsqlBatched's failing chunk, so
+    // batchTransaction can report it as AbyssError.BatchPartiallyCommitted instead of collapsing it
+    // into an opaque Unexpected — the caller needs this count to cache-sync only what actually landed.
+    private class PartialBatchFailure(val committedOps: Int, val original: Throwable) : RuntimeException(original)
 
     private inner class PersistentTransaction : AbyssStoreTransactionLike {
         val ops = mutableListOf<PersistentOp>()
