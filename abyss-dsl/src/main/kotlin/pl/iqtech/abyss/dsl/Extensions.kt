@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.transform
+import kotlin.reflect.KClass
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
@@ -152,6 +154,32 @@ suspend fun <ID> TraversalScope<ID>.reaches(targetId: ID, block: suspend Travers
 suspend fun <ID> TraversalScope<ID>.allReachable(block: suspend TraversalScope<ID>.() -> Unit): Subgraph = exhaustReachable(block)
 
 suspend fun <ID> TraversalScope<ID>.hasCycle(block: suspend TraversalScope<ID>.() -> Unit): Boolean = detectCycle(block)
+
+// Walks the whole reachable subgraph (paths() under the hood) emitting every node of type N,
+// including matches nested below other matches — never prunes on a type match, only
+// maxDepth/edgeVisitor bound the walk. paths() only emits a Path per maximal branch (see its own
+// doc), not per accepted node, but EXCLUDE_AND_CONTINUE keeps non-matches out of Path.nodes — so
+// each emitted Path's nodes (minus the origin at index 0) is exactly the ordered run of matches
+// along that branch; flattening that recovers one emission per match.
+suspend inline fun <reified N : NodeLike<*>> TraversalScope<*>.nodesOf(
+    strategy: TraversalStrategy = TraversalStrategy.DFS,
+    direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
+    maxDepth: Int = Int.MAX_VALUE,
+    noinline edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean = { _, _ -> true }
+): Flow<N> = paths(strategy, direction, maxDepth, edgeVisitor) { _, node ->
+    if (node is N) Evaluation.INCLUDE_AND_CONTINUE else Evaluation.EXCLUDE_AND_CONTINUE
+}.transform { path -> path.nodes.drop(1).forEach { emit(it as N) } }
+
+// Multi-type form — reified can't take a vararg of type params.
+fun TraversalScope<*>.nodesOf(
+    vararg types: KClass<out NodeLike<*>>,
+    strategy: TraversalStrategy = TraversalStrategy.DFS,
+    direction: EdgeTraversalDirection = EdgeTraversalDirection.BOTH,
+    maxDepth: Int = Int.MAX_VALUE,
+    edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean = { _, _ -> true }
+): Flow<NodeLike<*>> = paths(strategy, direction, maxDepth, edgeVisitor) { _, node ->
+    if (types.any { it.isInstance(node) }) Evaluation.INCLUDE_AND_CONTINUE else Evaluation.EXCLUDE_AND_CONTINUE
+}.transform { path -> path.nodes.drop(1).forEach { emit(it) } }
 
 // Narrow a raw result's heterogeneous nodes to one concrete type.
 inline fun <reified T : NodeLike<*>> Subgraph.resolve(): List<T> = nodes.filterIsInstance<T>()

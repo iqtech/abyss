@@ -732,6 +732,12 @@
   prevent, just concurrently instead of sequentially. Narrow window, reasoning-only, no test either
   way.
 
+- **➡️ 2.29 Traversal DSL: `nodesOf<N>()` / `nodesOf(vararg types)`**
+  Like `paths()` but returns `Flow<N>` (or `Flow<NodeLike<*>>` for the multi-type form), filtered to
+  node(s) of the given type(s). Walks the whole reachable subgraph (never prunes on type match —
+  `INCLUDE_AND_CONTINUE` on match, `EXCLUDE_AND_CONTINUE` otherwise), emitting every matching node,
+  including ones nested below other matches.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
