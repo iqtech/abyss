@@ -425,6 +425,19 @@
   Still open: item 5, closing out stale TODO 1.5 doc. Details:
   `ai-scripts/ConsistencyAuditFindings.md`.
 
+- **➡️ 1.30 Persistence-layer error logging drops the actual exception**
+  `AbyssSchemaWorker.kt`'s `transaction()`/`batchTransaction()`/`ephemeral()` (and their ephemeral/
+  persistent delete-fanout `onLeft` warns) log only a static context message (e.g. "Store
+  transaction failed; cache unchanged [nodes=..., edges=...]") on failure — the `AbyssError` left
+  value (and its wrapped `Throwable`, if any) is never included, so the real exception
+  message/stack trace never reaches the log. Cause chain itself is NOT clobbered anywhere in the
+  store layer — `YugabytePersistentStore` correctly threads the original `Throwable` through
+  `Either.catch { }.mapLeft { AbyssError.Unexpected(it) }` and `PartialBatchFailure(committed, e)`
+  (`RuntimeException(original)` preserves `cause`). This is purely a logging-callsite fix: extract
+  `AbyssError.Unexpected`/`BatchPartiallyCommitted`'s `cause` and pass it as a trailing,
+  placeholder-unmatched arg to `log.error`/`log.warn` so SLF4J attaches the full stack trace, and
+  include the `AbyssError` itself (`{}`) for its message content.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
@@ -732,11 +745,22 @@
   prevent, just concurrently instead of sequentially. Narrow window, reasoning-only, no test either
   way.
 
-- **✅ 2.29 Traversal DSL: `nodesOf<N>()` / `nodesOf(vararg types)`**
+- **🔴 ~~2.29 Traversal DSL: `nodesOf<N>()` / `nodesOf(vararg types)`~~**
   Like `paths()` but returns `Flow<N>` (or `Flow<NodeLike<*>>` for the multi-type form), filtered to
   node(s) of the given type(s). Walks the whole reachable subgraph (never prunes on type match —
   `INCLUDE_AND_CONTINUE` on match, `EXCLUDE_AND_CONTINUE` otherwise), emitting every matching node,
   including ones nested below other matches.
+  Reverted: implementation never deduped across branches. `paths()`'s `visited`/`seen` set is
+  threaded per-branch through the DFS/BFS recursion (`TraversalBuilder.kt` `dfsLoop`/`bfsLoop`), not
+  shared globally — it only stops a single branch from cycling, by design `paths()` emits one `Path`
+  per maximal branch, and the same node legitimately appears in more than one branch (any diamond in
+  the graph, or a `BOTH`-direction revisit of a shared neighbor). `nodesOf` flattened every emitted
+  `Path`'s matched nodes with no cross-branch dedup, so it silently double/multi-emitted any node
+  reachable via more than one path within `maxDepth` — broken for anything less trivial than a
+  strict tree, and the added test coverage (linear chains only) couldn't have caught it. Both
+  methods removed from `Extensions.kt`, tests removed from `PathsTraversalTest.kt`. If this comes
+  back, it needs its own visited-node set (independent of `paths()`'s per-branch one) to dedup
+  emissions across branches.
 
 ## 3. Low
 

@@ -9,7 +9,6 @@ import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.dsl.TraversalStrategy
-import pl.iqtech.abyss.dsl.nodesOf
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -29,12 +28,6 @@ class PathsTraversalTest {
 
     private fun putNode(name: String): TestNode {
         val node = TestNode(id = Uuid.random(), name = name)
-        graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[huid.toNodeId(node.id)] = node
-        return node
-    }
-
-    private fun putOtherNode(): OtherNode {
-        val node = OtherNode(id = Uuid.random())
         graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[huid.toNodeId(node.id)] = node
         return node
     }
@@ -245,26 +238,5 @@ class PathsTraversalTest {
         assertEquals(Right(a), list[0])
         assertEquals(Left(edge.fromId to edge.toId), (list[1] as Left).value.let { Left(it.fromId to it.toId) })
         assertEquals(Right(b), list[2])
-    }
-
-    // ── nodesOf ──────────────────────────────────────────────────────────────
-
-    @Test fun `nodesOf single type continues past a match to collect nested matches`() = runBlocking {
-        val a = putNode("a"); val b = putOtherNode(); val c = putOtherNode(); val d = putNode("d")
-        putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, d.id)
-        val matches = (graphTest.from(a.id) {
-            nodesOf<OtherNode>(TraversalStrategy.DFS).toList()
-        } as Either.Right).value
-        // b and c are both OtherNode — the walk must not stop expanding at b to also find c
-        assertEquals(listOf(b, c), matches)
-    }
-
-    @Test fun `nodesOf multi-type unions matches across kinds`() = runBlocking {
-        val a = putNode("a"); val b = putOtherNode(); val c = putNode("c"); val d = putOtherNode()
-        putEdge(a.id, b.id); putEdge(b.id, c.id); putEdge(c.id, d.id)
-        val matches = (graphTest.from(a.id) {
-            nodesOf(TestNode::class, OtherNode::class, strategy = TraversalStrategy.DFS).toList()
-        } as Either.Right).value
-        assertEquals(listOf(b, c, d), matches)
     }
 }
