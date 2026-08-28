@@ -1,3 +1,8 @@
+## [0.33.2] - 2026-08-28
+
+- Include the actual `AbyssError`/exception (message + full stack trace via cause) in persistence-layer failure logs (`AbyssSchemaWorker.transaction`/`batchTransaction`/`ephemeral` and their delete-fanout warns) — previously logged only static `[nodes=..., edges=...]` context, dropping the real failure reason
+- Revert `nodesOf<N>()`/`nodesOf(vararg types)` (TODO 2.29, soft-deleted): `paths()`'s visited set is per-branch, not global, so the flatten had no cross-branch dedup and double/multi-emitted any node reachable via more than one branch
+
 ## [0.33.1] - 2026-08-17
 
 - Fix consistency-audit findings 1-3 (TODO 1.29): mixed-store cold-read fallback bug (`.getOrNull()` on `Either<Error, Pair<T?, Duration?>>` masked a genuine persistent-store miss, blocking ephemeral-store fallback), batch-transaction cache staleness after a partial chunk failure (cache is now synced for whatever chunks actually committed, via new `AbyssError.BatchPartiallyCommitted`), and index-always-alive self-heal gaps (client-mode eviction guard was silently inert; cache-only mode could drop evicted edges with no error) — new `evictionVerifiedExternally` escape hatch for client connections that can't self-verify. Item 4 (integrity-check TOCTOU) investigated and parked as TODO 2.28 — no viable low-risk fix found yet on Hazelcast community edition.
