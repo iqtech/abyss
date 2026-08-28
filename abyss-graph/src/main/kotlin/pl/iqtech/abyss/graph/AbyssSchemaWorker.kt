@@ -366,6 +366,15 @@ internal class AbyssSchemaWorker(
 
     // --- Commit pipelines ---------------------------------------------------------------------------
 
+    // AbyssError variants that wrap a Throwable (store-layer failures); the rest are validation
+    // errors with no underlying exception. Passed as a trailing, placeholder-unmatched arg to
+    // log.error/log.warn, SLF4J attaches the full stack trace (incl. nested causes).
+    private fun AbyssError.cause(): Throwable? = when (this) {
+        is AbyssError.Unexpected -> cause
+        is AbyssError.BatchPartiallyCommitted -> cause
+        else -> null
+    }
+
     suspend fun transaction(baseOps: List<NodeOp>, checkIntegrity: Boolean): Either<AbyssError, Unit> {
         val ops = expandCascades(baseOps)
         integrityError(ops, checkIntegrity)?.let { return it.left() }
@@ -373,14 +382,15 @@ internal class AbyssSchemaWorker(
         if (persistentStore != null) {
             val storeResult = persistentStore.transaction { ops.forEach { applyPersistentOp(it) } }
             if (storeResult.isLeft()) {
-                log.error("Store transaction failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
+                val err = storeResult.leftOrNull()
+                log.error("Store transaction failed; cache unchanged [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, err, err?.cause())
                 return storeResult
             }
         }
         val deletes = ops.filter { it is NodeOp.RemoveNode || it is NodeOp.RemoveEdge }
         if (deletes.isNotEmpty()) {
             ephemeralStore.transaction { deletes.forEach { applyEphemeralOp(it) } }
-                .onLeft { log.warn("Ephemeral delete fanout failed during transaction; stale ephemeral data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
+                .onLeft { log.warn("Ephemeral delete fanout failed during transaction; stale ephemeral data possible [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, it, it.cause()) }
         }
 
         populateCache(ops, "Cache update failed after store commit; cache may be stale")
@@ -401,16 +411,17 @@ internal class AbyssSchemaWorker(
         if (persistentStore != null) {
             val storeResult = persistentStore.batchTransaction(batchSize) { ops.forEach { applyPersistentOp(it) } }
             if (storeResult.isLeft()) {
-                val committed = (storeResult.leftOrNull() as? AbyssError.BatchPartiallyCommitted)?.committedOps ?: 0
+                val err = storeResult.leftOrNull()
+                val committed = (err as? AbyssError.BatchPartiallyCommitted)?.committedOps ?: 0
                 if (committed > 0) populateCache(ops.take(committed), "Cache update failed after partial batch store commit; cache may be stale")
-                log.error("Batch transaction failed partway; {} of {} op(s) committed and cache-synced before the failure [nodes={}, edges={}]", committed, ops.size, nodesMapName, edgesMapName)
+                log.error("Batch transaction failed partway; {} of {} op(s) committed and cache-synced before the failure [nodes={}, edges={}, error={}]", committed, ops.size, nodesMapName, edgesMapName, err, err?.cause())
                 return storeResult
             }
         }
         val deletes = ops.filter { it is NodeOp.RemoveNode || it is NodeOp.RemoveEdge }
         if (deletes.isNotEmpty()) {
             ephemeralStore.transaction { deletes.forEach { applyEphemeralOp(it) } }
-                .onLeft { log.warn("Ephemeral delete fanout failed during batch transaction; stale ephemeral data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
+                .onLeft { log.warn("Ephemeral delete fanout failed during batch transaction; stale ephemeral data possible [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, it, it.cause()) }
         }
 
         populateCache(ops, "Cache update failed after batch store commit; cache may be stale")
@@ -424,13 +435,14 @@ internal class AbyssSchemaWorker(
 
         val storeResult = ephemeralStore.transaction { ops.forEach { applyEphemeralOp(it) } }
         if (storeResult.isLeft()) {
-            log.error("Ephemeral store commit failed; cache unchanged [nodes={}, edges={}]", nodesMapName, edgesMapName)
+            val err = storeResult.leftOrNull()
+            log.error("Ephemeral store commit failed; cache unchanged [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, err, err?.cause())
             return storeResult
         }
         val deletes = ops.filter { it is NodeOp.RemoveNode || it is NodeOp.RemoveEdge }
         if (persistentStore != null && deletes.isNotEmpty()) {
             persistentStore.transaction { deletes.forEach { applyPersistentOp(it) } }
-                .onLeft { log.warn("Persistent delete fanout failed during ephemeral commit; stale persistent data possible [nodes={}, edges={}]", nodesMapName, edgesMapName) }
+                .onLeft { log.warn("Persistent delete fanout failed during ephemeral commit; stale persistent data possible [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, it, it.cause()) }
         }
 
         populateCache(ops, "Cache update failed after ephemeral store commit; cache may be stale")
