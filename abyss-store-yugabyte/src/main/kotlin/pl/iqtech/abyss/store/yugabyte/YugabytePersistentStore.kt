@@ -362,19 +362,31 @@ class YugabytePersistentStore(
             ysqlPassword: String,
             module: SerializersModule = EmptySerializersModule(),
             ysqlSchema: String = "abyss",
-            ysqlMaxPoolSize: Int = 20
+            ysqlMaxPoolSize: Int = 20,
+            ysqlLoadBalance: Boolean = true,
+            ysqlTopologyKeys: String? = null
         ): YugabytePersistentStore {
             val dataSource = HikariDataSource(HikariConfig().apply {
                 jdbcUrl         = ysqlUrl
                 username        = ysqlUser
                 password        = ysqlPassword
-                driverClassName = "org.postgresql.Driver"
+                // libs.yugabyte-jdbc is the YugabyteDB smart driver (a pgjdbc fork relocated to
+                // com.yugabyte.*, URL scheme jdbc:yugabytedb:). With load-balance=true (below) it
+                // learns every tserver from yb_servers() and spreads / fails over connections
+                // across live nodes instead of pinning the whole pool to the one host in the URL
+                // (connectivity SPOF + query-layer coordination hotspot otherwise). `ysqlUrl` may
+                // list several seed hosts: jdbc:yugabytedb://h1:5433,h2:5433,h3:5433/db.
+                driverClassName = "com.yugabyte.Driver"
                 maximumPoolSize = ysqlMaxPoolSize
                 minimumIdle     = ysqlMaxPoolSize
                 addDataSourceProperty("prepareThreshold", "1")
                 // Lets pgjdbc rewrite addBatch()/executeBatch() calls into one multi-values INSERT
                 // wire message (commitYsqlBatched). No-op for commitYsql's plain executeUpdate() loop.
                 addDataSourceProperty("reWriteBatchedInserts", "true")
+                addDataSourceProperty("load-balance", ysqlLoadBalance.toString())
+                // Optional placement filter, e.g. "cloud1.region1.zone1" (comma-separated, ":n" suffix
+                // sets fallback priority) — keeps SQL coordinator hops on the near tservers.
+                if (ysqlTopologyKeys != null) addDataSourceProperty("topology-keys", ysqlTopologyKeys)
             })
             return YugabytePersistentStore(dataSource, module, ysqlSchema)
         }

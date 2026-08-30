@@ -59,7 +59,7 @@ private val ybModule = SerializersModule {
 
 private val ybPersistentStore by lazy {
     YugabytePersistentStore.create(
-        ysqlUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph",
+        ysqlUrl = "jdbc:yugabytedb://localhost:5433/abyss_test_graph",
         ysqlUser = "abyss",
         ysqlPassword = "abyss",
         module = ybModule

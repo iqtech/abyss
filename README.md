@@ -499,7 +499,7 @@ Apply the schema scripts from `abyss-store-yugabyte/src/main/resources/db/` then
 
 ```kotlin
 val persistentStore = YugabytePersistentStore.create(
-    ysqlUrl      = "jdbc:postgresql://localhost:5433/my_graph",
+    ysqlUrl      = "jdbc:yugabytedb://localhost:5433/my_graph",
     ysqlUser     = "abyss",
     ysqlPassword = "abyss",
     module       = module,
@@ -534,6 +534,13 @@ Either store can be omitted. Pass only `persistentStore` for YSQL-only durabilit
 or only `ephemeralStore` for TTL-only data (nothing survives a YCQL keyspace drop). Pass neither for
 pure in-memory (Hazelcast-only) mode.
 
+The YSQL pool uses the YugabyteDB smart driver (`jdbc:yugabytedb://` scheme). With `ysqlLoadBalance`
+(default `true`) it discovers every tserver via `yb_servers()` and spreads connections across the
+cluster rather than pinning the whole pool to the one host in `ysqlUrl` — list several seed hosts
+(`jdbc:yugabytedb://h1:5433,h2:5433,h3:5433/db`) so bootstrap survives a dead node. Set
+`ysqlTopologyKeys = "cloud.region.zone"` to keep connections (and SQL coordinator hops) on a
+preferred placement.
+
 Cache misses trigger automatic load from whichever store(s) are configured; both are queried in
 parallel and the persistent result wins if both return a hit.
 
@@ -546,7 +553,7 @@ container](#multi-schema-graphs--cross-schema-edges) instead.
 
 ```kotlin
 val socialPersistent = YugabytePersistentStore.create(
-    ysqlUrl = "jdbc:postgresql://localhost:5433/mydb",
+    ysqlUrl = "jdbc:yugabytedb://localhost:5433/mydb",
     ysqlUser = "app", ysqlPassword = "secret",
     module = socialModule, ysqlSchema = "social",
 )
@@ -555,7 +562,7 @@ val socialEphemeral = YugabyteEphemeralStore.create(
 )
 
 val productPersistent = YugabytePersistentStore.create(
-    ysqlUrl = "jdbc:postgresql://localhost:5433/mydb",
+    ysqlUrl = "jdbc:yugabytedb://localhost:5433/mydb",
     ysqlUser = "app", ysqlPassword = "secret",
     module = productModule, ysqlSchema = "product",
 )

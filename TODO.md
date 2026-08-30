@@ -438,6 +438,19 @@
   placeholder-unmatched arg to `log.error`/`log.warn` so SLF4J attaches the full stack trace, and
   include the `AbyssError` itself (`{}`) for its message content.
 
+- **✅ 1.31 YSQL connections funnel to one node — switch to the YugabyteDB smart driver**
+  `YugabytePersistentStore.create` built the Hikari pool over stock `org.postgresql.Driver` with a
+  single-host `ysqlUrl`, so every connection landed on one tserver: connectivity SPOF plus a
+  query-layer/coordination hotspot, with no failover or node discovery. Done: main dep is now
+  `com.yugabyte:jdbc-yugabytedb` (smart driver, fully relocated to `com.yugabyte.*` /
+  `jdbc:yugabytedb://`); `create` sets `driverClassName = "com.yugabyte.Driver"` +
+  `load-balance` (new `ysqlLoadBalance` param, default true) + optional `ysqlTopologyKeys`.
+  `ysqlUrl` takes a comma-separated multi-host seed list. Constructor `DataSource`-injection seam
+  unchanged. Stock pgjdbc kept as `testImplementation` for the raw `jdbc:postgresql://` test
+  datasources (disjoint packages, no collision). README updated; `abyss-store-yugabyte` test
+  suite green against the live container. YB is on VMs/bare metal so `yb_servers()` returns
+  routable addresses — no K8s caveat. See `ai-scripts/IoT.md` finding H.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
