@@ -37,7 +37,7 @@ Abyss's actual SQL shapes (`commitYsql`'s `INSERT … ON CONFLICT (id) DO UPDATE
 
 ## What bites at scale
 
-### 1. Multi-op transactions with inconsistent key ordering → deadlock flood, non-retryable
+### 1. Multi-op transactions with inconsistent key ordering → deadlock flood, non-retryable — FIXED (TODO 1.32)
 
 25 pairs of 2-op txns touching `{m1,m2}` in opposite orders → **30/50 failed**:
 `deadlock detected (query layer retry isn't possible because this is not the first
@@ -49,6 +49,16 @@ order — common once a shared "gateway" or "config" node exists that many devic
 **Fix:** sort `ops` by a deterministic key (node-id bytes, then edge key) before
 executing, in both commit paths. Small, safe, eliminates the entire deadlock class.
 Does not help the serialization-conflict case, but kills deadlocks.
+
+**Done (TODO 1.32).** `commitYsql` sorts by row identity `(table, from_id, to_id)` — stable, so
+same-row ops keep the caller's order; skipped entirely for single-op transactions. Measured with
+`CommitOrderDeadlockTest` against the live container: nodes 24–31/50 deadlocks → **0/50**; edges
+staged so `idx_edges_to_id` order inverts the base-key order 27–29/50 → **0/50**; same-order
+control 0/40 throughout. `commitYsqlBatched` is deliberately NOT sorted — it exists for
+homogeneous work (bulk import, one batch of ops per event), so it doesn't produce the mixed
+cross-key staging order, and a global sort would move ops across chunk boundaries and break
+`AbyssSchemaWorker`'s `ops.take(committed)` cache replay. Residual: the edge key stops at
+`(from_id, to_id)`, since `type` is only reachable via `jsonPair`.
 
 ### 2. `modifyNode` under concurrency = silent lost update
 
@@ -106,7 +116,7 @@ raise `ysqlMaxPoolSize` and the IO dispatcher to match target concurrency.
 
 | # | Change | Effort | Payoff |
 |---|--------|--------|--------|
-| 1 | Deterministic op sort in `commitYsql` + `commitYsqlBatched` | tiny | kills the deadlock class |
+| 1 | ~~Deterministic op sort in `commitYsql`~~ — DONE, TODO 1.32 | tiny | killed the deadlock class: 24–31/50 → 0/50 |
 | 2 | Explicit `modifyNode` concurrency contract (doc or version-guard) | small–med | removes silent data loss |
 | 3 | Version-guarded `populateCache` writes | med | cache stops lying about the winner |
 | 5 | Ingest buffer + `batchTransaction`, bigger pool/dispatcher | med | the actual scale path |
@@ -217,7 +227,7 @@ point.
 | C | No property/range queries (2.12 open, equality-only) | Eliminator for fleet ops; 2.12 needs ranges |
 | D | No change notifications / TTL-expiry events | Eliminator for rules/alerting |
 | B + 2 | No event-time/version guard | One version column fixes both |
-| 1, 5 | Deadlock ordering, ingest ceilings | Ranked above; 1 still the cheapest win |
+| 1, 5 | Deadlock ordering, ingest ceilings | 1 DONE (TODO 1.32); 5 remains the scale path |
 | F | No metrics | Prereq for operating any of the above at rate |
 | E, G | RAM ceiling, ephemeral asymmetry | Document as constraints |
 

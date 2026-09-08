@@ -29,6 +29,7 @@ import pl.iqtech.abyss.store.api.abyssSerializersModule
 import java.io.Closeable
 import java.sql.Timestamp
 import java.sql.Types
+import java.util.Arrays
 import javax.sql.DataSource
 import kotlin.time.toJavaInstant
 
@@ -37,6 +38,28 @@ private sealed interface PersistentOp {
     data class SaveEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val tags: Set<String>) : PersistentOp
     data class DeleteNode(val id: NodeId) : PersistentOp
     data class DeleteEdge(val fromId: NodeId, val toId: NodeId, val type: String) : PersistentOp
+}
+
+private val NO_BYTES = ByteArray(0)
+
+// Row identity for lock ordering: (table, primary key). Op kind is deliberately NOT part of it —
+// ordering by op class (all saves, then all deletes) still deadlocks, because two transactions can
+// reach the same row through different classes: A = {Save x, Delete y}, B = {Save y, Delete x}.
+// Only ordering on the row itself removes the cycle.
+private fun PersistentOp.lockKey(): Triple<Int, ByteArray, ByteArray> = when (this) {
+    is PersistentOp.SaveNode   -> Triple(0, id.bytes, NO_BYTES)
+    is PersistentOp.DeleteNode -> Triple(0, id.bytes, NO_BYTES)
+    is PersistentOp.SaveEdge   -> Triple(1, fromId.bytes, toId.bytes)
+    is PersistentOp.DeleteEdge -> Triple(1, fromId.bytes, toId.bytes)
+}
+
+private val LOCK_ORDER = Comparator<PersistentOp> { a, b ->
+    val (ta, fa, sa) = a.lockKey()
+    val (tb, fb, sb) = b.lockKey()
+    when {
+        ta != tb -> ta.compareTo(tb)
+        else -> Arrays.compareUnsigned(fa, fb).let { if (it != 0) it else Arrays.compareUnsigned(sa, sb) }
+    }
 }
 
 class YugabytePersistentStore(
@@ -211,7 +234,30 @@ class YugabytePersistentStore(
         return el.jsonObject["type"]!!.jsonPrimitive.content to el.toString()
     }
 
-    private fun commitYsql(ops: List<PersistentOp>) {
+    // IoT.md finding 1: two concurrent transactions that stage the same rows in different orders
+    // deadlock, and YB's error is non-retryable at the query layer ("query layer retry isn't
+    // possible because this is not the first command in the transaction"), so it surfaces to the
+    // caller as an outright failure. Taking every row lock in one globally consistent order breaks
+    // the cycle. sortedWith is STABLE, so several ops on the SAME row keep the caller's relative
+    // order — a SaveNode(x) followed by DeleteNode(x) still resolves the way it was written. Safe to
+    // reorder across distinct rows because this commit issues no reads, and the schema carries no
+    // foreign keys or triggers (see ysql-schema.sql); if an FK is ever added for the dangling-edge
+    // backstop it must be DEFERRABLE INITIALLY DEFERRED, or it will re-impose node-before-edge order.
+    // Single-op transactions can't deadlock, so they skip the sort entirely — that is the whole
+    // per-event ingest path.
+    // ponytail: the key stops at (from_id, to_id); the third PK column, `type`, is only reachable by
+    // serializing the edge (jsonPair), which happens below. Residual window: two concurrent txns
+    // writing the SAME node pair with DIFFERENT edge types in opposite order. If that ever shows up,
+    // hoist jsonPair above the sort and extend the key.
+    // Deliberately NOT applied to commitYsqlBatched, and that is a design decision, not a gap: the
+    // batched path exists for homogeneous work — bulk import, or one batch of ops per event — so it
+    // does not produce the mixed cross-key staging order this sort defends against. Sorting it would
+    // also cost more than it buys: a global sort moves ops across chunk boundaries, breaking
+    // AbyssSchemaWorker's `ops.take(committed)` cache replay and splitting a RemoveNode from its
+    // cascaded edges. If a caller ever does drive contended mixed-order writes through it, the fix is
+    // a per-chunk sort (the chunk is the transaction there, so per-chunk ordering is sufficient).
+    private fun commitYsql(unordered: List<PersistentOp>) {
+        val ops = if (unordered.size < 2) unordered else unordered.sortedWith(LOCK_ORDER)
         ysql.connection.use { conn ->
             conn.autoCommit = false
             try {

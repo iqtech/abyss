@@ -451,6 +451,28 @@
   suite green against the live container. YB is on VMs/bare metal so `yb_servers()` returns
   routable addresses — no K8s caveat. See `ai-scripts/IoT.md` finding H.
 
+- **✅ 1.32 Multi-op transactions with inconsistent key ordering deadlock**
+  Two concurrent `transaction { }` calls that staged the same rows in different orders deadlocked
+  in YB, and the error is non-retryable at the query layer ("query layer retry isn't possible
+  because this is not the first command in the transaction"), so it surfaced to the caller as an
+  outright failure. Done: `commitYsql` sorts its op list by row identity — `(table, from_id,
+  to_id)` via `LOCK_ORDER`/`lockKey()` — so every transaction takes its row locks in one globally
+  consistent order. The sort is stable, so several ops on the same row keep the caller's relative
+  order (`SaveNode(x)` then `DeleteNode(x)` still resolves as written); single-op transactions skip
+  it entirely, which is the whole per-event ingest path. Safe to reorder across distinct rows
+  because the commit issues no reads and the schema has no FKs or triggers — if an FK is ever added
+  for the dangling-edge backstop it must be `DEFERRABLE INITIALLY DEFERRED`. Measured with the new
+  `CommitOrderDeadlockTest` against the live container: nodes 24–31/50 deadlocks → 0/50, edges
+  (staged so `idx_edges_to_id` order inverts the base-key order) 27–29/50 → 0/50, same-order
+  control 0/40 throughout. `commitYsqlBatched` is deliberately left unsorted: it exists for
+  homogeneous work (bulk import, one batch of ops per event) and so doesn't produce the mixed
+  cross-key staging order, and a global sort there would move ops across chunk boundaries, breaking
+  `AbyssSchemaWorker`'s `ops.take(committed)` cache replay and splitting a `RemoveNode` from its
+  cascaded edges. Known residual (`ponytail:` comment at the callsite): the edge key stops at
+  `(from_id, to_id)` because the third PK column `type` is only reachable via `jsonPair`, so two
+  concurrent txns writing the same node pair with different edge types in opposite order can still
+  cross. See `ai-scripts/IoT.md` finding 1.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
