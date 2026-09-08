@@ -425,7 +425,7 @@
   Still open: item 5, closing out stale TODO 1.5 doc. Details:
   `ai-scripts/ConsistencyAuditFindings.md`.
 
-- **➡️ 1.30 Persistence-layer error logging drops the actual exception**
+- **✅ 1.30 Persistence-layer error logging drops the actual exception**
   `AbyssSchemaWorker.kt`'s `transaction()`/`batchTransaction()`/`ephemeral()` (and their ephemeral/
   persistent delete-fanout `onLeft` warns) log only a static context message (e.g. "Store
   transaction failed; cache unchanged [nodes=..., edges=...]") on failure — the `AbyssError` left
