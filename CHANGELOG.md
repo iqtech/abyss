@@ -1,3 +1,11 @@
+## [0.34.0] - 2026-09-14
+
+- Batched node loading (TODO 2.30): new `NodeIdEngine.nodesAt` and `AbyssStoreLike`/`AbyssEphemeralStoreLike.loadNodes` (both with defaults, no implementor breaks); `AbyssSchemaWorker` resolves node sets with one `IMap.getAll` plus one batched store heal, `YugabytePersistentStore` with `WHERE id = ANY(?)` — `flushFrontierNodes`, `filterFrontierByNode`, `collectSubgraph`, `exhaustReachable`, `paths` origin and `pathTo` converted (`flushFrontierNodes` 300 round trips → 3)
+- Windowed node resolution in `addNodeHop` and BFS `paths()` (TODO 4.12): one `nodesAt` per 128 neighbours instead of a sequential `nodeAt` per hop (supernode of 300: ~1.5 s → 28 ms, ~300 round trips → 4–5)
+- Fix BFS `paths()` emitting duplicate paths when two edges from one node reach the same neighbour (e.g. `a→b` + `b→a` under `BOTH`) — `bfsLoop` lacked `dfsLoop`'s per-expansion `seen` gate, contradicting the README path-uniqueness contract
+- Order row locks deterministically in `commitYsql` to eliminate the concurrent-transaction deadlock class (TODO 1.32)
+- Use the YugabyteDB smart driver for cluster-aware YSQL connection load balancing (TODO 1.31)
+
 ## [0.33.2] - 2026-08-28
 
 - Include the actual `AbyssError`/exception (message + full stack trace via cause) in persistence-layer failure logs (`AbyssSchemaWorker.transaction`/`batchTransaction`/`ephemeral` and their delete-fanout warns) — previously logged only static `[nodes=..., edges=...]` context, dropping the real failure reason
