@@ -1149,42 +1149,60 @@
   traversal frontier from indexed-query results) — noting it here too since it's also a
   traversal-API gap on its own, independent of the indexed-query feature.
 
-- **➡️ 4.12 Other `TraversalBuilder` methods share `pathTo`'s pre-fix serial-fan-out bottleneck**
-  `pathTo` (`TraversalBuilder.kt:366`) was fixed in two passes — entry-level fan-out (many frontier
-  nodes processed one at a time) and per-entry fan-out (many neighbors of one high-degree node
-  processed one at a time) — both replaced with `coroutineScope`/`async(engine.hopDispatcher)`/
-  `awaitAll()`. The same two bottleneck shapes exist, unfixed, in several sibling methods in this
-  file:
-  - `flushFrontierNodes` (`TraversalBuilder.kt:158`) — `for (nid in frontier) engine.nodeAt(nid)`
-    is a plain sequential loop; `collectSubgraph`/`exhaustReachable` already do the parallel
-    version of exactly this (`TraversalBuilder.kt:176`, `197`) so this is a one-line-shape fix.
-  - `addNodeHop` (`TraversalBuilder.kt:76`) — frontier nodes already fan out in parallel, but
-    inside each one, `hops(...).filter { engine.nodeAt(hop.target(direction)) ... }` (line 81)
-    resolves every hop's target node sequentially. A single frontier node with high out-degree
-    (supernode) pays one round trip per neighbor with no other frontier node to hide behind —
-    the exact case TODO's `pathTo` supernode fix addressed.
-  - `filterFrontierByEdgeType` (`TraversalBuilder.kt:119`) — same shape at line 123
-    (`hops(...).any { engine.nodeAt(...) }`); `.any` short-circuits on the first type match, so
-    it's only the worst case (no match, or a late match) that pays the full sequential cost.
-  - `paths()` (`TraversalBuilder.kt:227`), both strategies — `dfsLoop` (line 252) and `bfsLoop`
-    (line 297) each call `engine.nodeAt(nextNid)` (lines 272, 316) inside a sequential `for (hop in
-    edges)` loop over one node's hop list — the per-entry bottleneck. `bfsLoop` additionally
-    processes its queue one `Entry` at a time (`queue.removeFirst()`, line 308) with no fan-out
-    across entries at the same conceptual depth — the entry-level bottleneck, i.e. `bfsLoop` has
-    both of `pathTo`'s pre-fix problems at once. `dfsLoop`'s per-hop `nodeAt` loop is fixable the
-    same way; its recursive depth-first structure is not a good fit for entry-level fan-out (would
-    change DFS ordering/early-exit semantics), so leave that part alone.
-  - `detectCycle`/`dfsCycle` (`TraversalBuilder.kt:202`) — siblings at each DFS level are visited
-    one at a time (`for (neighbor in sub.frontier)`, line 219), each potentially triggering a full
-    recursive sub-search before the next sibling starts. Same entry-level shape as the others, but
-    parallelizing it safely needs care: `visited`/`inStack` are shared mutable state read *during*
-    the fan-out (not just merged after, like `pathTo`'s fix does), and the early "cycle found" exit
-    would need to cancel sibling coroutines rather than just skip remaining loop iterations.
-  Fix shape for the straightforward cases: same `coroutineScope { xs.map { async(engine.hopDispatcher)
-  { ... } } }.awaitAll()` pattern already used four times in this file. Worth doing given the
-  public/unknown-graph-shape performance stance — see `pathTo`'s benchmark files
-  (`PathToPerformanceTest.kt`, `-Pperf`) as the template: isolate with a synthetic supernode/wide-
-  frontier graph, measure baseline, fix, remeasure.
+- **➡️ 4.12 Remaining serial node resolution in `TraversalBuilder`**
+  Rewritten 2026-09-14 after TODO 2.30 landed: the original entry's first bullet is now done, the
+  two methods it named as the pattern to copy have since moved on to a better one, and every line
+  number it cited was stale. Scope and prescription below are current.
+
+  Background: `pathTo` (`TraversalBuilder.kt:454`) had two bottleneck shapes, both fixed —
+  **entry-level** (many frontier nodes handled one at a time) and **per-entry** (many neighbours of
+  one high-degree node handled one at a time). 2.30 then went further on the set-shaped sites,
+  replacing fan-out with a single batched `engine.nodesAt`: a fan-out of N point reads hides its
+  latency but still costs N round trips, N pool slots and N tablet ops, which is the number that
+  decides whether the cluster keeps up. **So the prescription is no longer "fan out" — it is "batch
+  where the shape allows, fan out only where it doesn't."**
+
+  Done, no longer part of this entry: `flushFrontierNodes`, `filterFrontierByNode`,
+  `collectSubgraph`, `exhaustReachable`, `paths`' origin and `pathTo` — all batched by 2.30.
+
+  What remains, in the order worth doing:
+
+  - **`addNodeHop` (`:115`, the fetch at `:127`) — windowed batch.** Frontier nodes already fan out,
+    but within one node's hop flow `engine.nodeAt(hop.target(direction))` resolves every neighbour
+    sequentially: a supernode pays one round trip per neighbour with no sibling to hide behind.
+    Do NOT fan out (fixes latency only) and do NOT batch the whole stream (unbounded memory on a
+    supernode). Buffer neighbours in windows of `valueFetchBatch` and issue one `nodesAt` per window
+    — exactly the shape `AbyssSchemaWorker.adjacencyHopFlow`'s `flush()` (`:309`) already uses for
+    edge values. Zero semantic risk here: the method ends in `.collect { collector += it }`
+    (`:130`), so the filter is already exhaustive — there is no short-circuit to preserve.
+  - **`bfsLoop` (`:381`) — the `pathTo` fix applied to its twin.** It carries both pre-fix shapes at
+    once: `queue.removeFirst()` (`:392`) processes one entry at a time with no fan-out across a
+    conceptual level, and inside each entry `engine.nodeAt(nextNid)` (`:399`) runs sequentially per
+    hop. Drain a whole level, resolve that level's nodes in one `nodesAt`, then run the
+    `nodeEvaluator`/emit pass sequentially in queue order — same restructuring, and the same
+    order-preservation argument, as `pathTo`'s.
+  - **`filterFrontierByEdgeType` (`:170`, fetch at `:178`) — optional, do last.** Same per-neighbour
+    shape, but `.firstOrNull` (`:174`) genuinely short-circuits, so a window can over-fetch to find a
+    match at position 3. It also only falls back to a fetch when the adjacency tag is null (cold or
+    dangling entries) — with tags present it is already fetch-free. A small window (16–32) if it
+    turns out to matter; the payoff is worst-case-only.
+
+  Deliberately NOT doing, and the entry should stay explicit about why:
+
+  - **`dfsLoop` (`:337`, fetch at `:356`).** The recursion happens *inside* the `edgesFrom(...)
+    .collect`, so batching a window means fetching nodes the `nodeEvaluator` would have pruned
+    before reaching them. Correctness is unaffected but the fetch count is, and the interleaving
+    with recursion is messy for a graph-shape-dependent constant.
+  - **`detectCycle`/`dfsCycle` (`:261`/`:277`).** No longer the code the original entry described:
+    TODO 3.12 rewrote it into an explicit-stack iterative DFS. What is left is one `neighborsOf()`
+    sub-traversal per node at push time (`:291`, `:300`), sequential by the nature of depth-first.
+    Parallelizing sibling exploration would change *which* cycle is found first, needs coroutine
+    cancellation for the early "cycle found" exit, and reads `visited`/`inStack` *during* the
+    fan-out rather than merging after — which is precisely what made `pathTo`'s fix safe.
+
+  Per the perf workflow, each item is isolate → baseline → fix → remeasure.
+  `NodeBatchLoadPerformanceTest` already carries the supernode and wide-frontier fixtures plus the
+  round-trip counter, so these extend it rather than starting fresh.
 
 - **✅ 4.13 Widen container.transaction into a multi-schema transaction**
   `HeterogeneousSchemaGraph`/`HomogeneousSchemaGraph`'s `container.transaction { }` is currently
