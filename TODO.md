@@ -835,6 +835,36 @@
   back, it needs its own visited-node set (independent of `paths()`'s per-branch one) to dedup
   emissions across branches.
 
+- **➡️ 2.30 Batched node loading (`nodesAt`) — nodes never got `resolveEdges`' treatment**
+  Every node read in the engine goes through `NodeIdEngine.nodeAt(nid)`: one `nodesMap.getAsync` per
+  id, plus one store point-read per cache miss (`AbyssSchemaWorker.loadAndCacheNode`). Edges already
+  have the batched counterpart (`resolveEdges` → `IMap.getAll`, `AbyssSchemaWorker.kt:325`); nodes
+  don't. Set-shaped call sites that can batch today: `flushFrontierNodes` (`TraversalBuilder.kt:210`,
+  a plain sequential loop), `filterFrontierByNode` (`:145`), `collectSubgraph` (`:232`),
+  `exhaustReachable` (`:252`), `paths`' origin (`:313`), `pathTo`'s origin and per-level neighbour
+  fan-out (`:451`, `:465`).
+  Deliberately NOT batchable: `addNodeHop` (`:120`), `filterFrontierByEdgeType` (`:176`),
+  `dfsLoop`/`bfsLoop` (`:353`, `:396`) — those `nodeAt` calls sit inside streaming
+  `.filter`/`.firstOrNull` over a hop flow where short-circuiting is the point; batching would force
+  full materialization. Parallel fan-out (TODO 4.12) stays the right fix for those.
+  Shape: `NodeIdEngine.nodesAt(ids): Map<NodeId, NodeLike<*>>` (worker: `nodesMap.getAll` + batched
+  store heal for the misses, same self-heal logic as `adjacencyHopFlow`'s flush at `:296`; one-line
+  delegates in `Homogeneous`/`HeterogeneousSchemaGraph`) plus
+  `AbyssStoreLike.loadNodes(ids): Either<_, Map<NodeId, Pair<NodeLike<*>?, Duration?>>>` with a
+  default per-id loop (same pattern as `batchTransaction`'s default), overridden only by
+  `YugabytePersistentStore` as `WHERE id = ANY(?)` over `createArrayOf("bytea", ...)`. Per-node
+  `remaining` (ephemeral TTL) must survive the batch — the `Pair<node, Duration?>` shape carries it.
+  Chunk the id set at the existing `valueFetchBatch = 128` so peak heap and the `ANY()` array stay
+  bounded.
+  Measured on the live YB container (2025.1.0.1, real `abyss.nodes` DDL, 20k rows, 128 ids,
+  `EXPLAIN (ANALYZE, DIST)`): `id = ANY($1::bytea[])` → `Index Scan using nodes_pkey`,
+  `Index Cond: (id = ANY (...))`, **1** storage read request, 4.91 ms/iter, vs 128 point reads →
+  **128** storage read requests, 25.07 ms/iter. 5.1×, and that's the floor — measured in-database,
+  so the serial path isn't charged for its 128 JDBC round trips.
+  Per the perf workflow: isolate with a wide-frontier `flushFrontierNodes` benchmark
+  (`PathToPerformanceTest.kt` + `-Pperf` as the template), baseline, fix, remeasure.
+  Design plan: `ai-scripts/BatchedNodeLoadingPlan.md`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
