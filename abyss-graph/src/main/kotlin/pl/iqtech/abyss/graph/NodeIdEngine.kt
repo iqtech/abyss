@@ -1,6 +1,9 @@
 package pl.iqtech.abyss.graph
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
@@ -21,6 +24,18 @@ data class Hop(val fromId: NodeId, val toId: NodeId, val type: String, val edge:
 // ordinary hops over the shared edge map.
 interface NodeIdEngine {
     suspend fun nodeAt(nid: NodeId): NodeLike<*>?
+
+    // Batched counterpart of nodeAt, for the set-shaped call sites (a frontier, a visited set, one
+    // BFS level's neighbours) — the node-side twin of resolveEdges. Absent ids are absent from the
+    // result, exactly like resolveEdges drops unresolvable hops.
+    //
+    // The default fans out over nodeAt rather than being abstract, for two reasons: it keeps the
+    // test fakes implementing this interface compiling untouched, and it keeps *which* nodes get
+    // fetched identical to the per-id path — batching is a round-trip optimization, never a change
+    // to the tag-based fetch-avoidance semantics the typed filters rely on.
+    suspend fun nodesAt(ids: Collection<NodeId>): Map<NodeId, NodeLike<*>> = coroutineScope {
+        ids.map { nid -> async(hopDispatcher) { nodeAt(nid)?.let { nid to it } } }.awaitAll()
+    }.filterNotNull().toMap()
     // Cold, lazy hop streams — a supernode's neighbors arrive in bounded batches, so short-circuiting
     // consumers (reachability, hasOutgoing) stop early instead of materializing the whole set.
     // includeEphemeral (OUT-only): also stream ephemeral (TTL) out-edges, read from the ephemeral store

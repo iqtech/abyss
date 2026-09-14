@@ -145,3 +145,26 @@ Per the performance workflow: test first, baseline, fix, re-measure.
 `HeterogeneousSchemaGraph.kt`, `AbyssStoreLike.kt`, `YugabytePersistentStore.kt`,
 `traversal/TraversalBuilder.kt` — 7 files. New public surface: two methods, both with defaults, so
 no existing implementor breaks.
+
+## Results (implemented)
+
+`NodeBatchLoadPerformanceTest`, `-Pperf`, 300-wide, 5 ms charged per engine call, `nodesAt` charged
+one call per batch:
+
+| scenario | ms before | ms after | round trips before | round trips after |
+|---|---:|---:|---:|---:|
+| `flushFrontierNodes` | 1531 | 17 | 300 | **3** |
+| `collectSubgraph`    |    9 |  6 | 300 | **1** |
+| `pathTo` (supernode) |   74 | 77 | 606 | **307** |
+
+The wall-clock column only moves where the old code was *sequential* (`flushFrontierNodes`). The
+other two were already fanned out, so they hid their latency — and kept paying 300 round trips to
+do it. That is the column that matters at throughput: 300 concurrent point reads still occupy 300
+pool slots and 300 tablet ops.
+
+`pathTo`'s residual 307 are `outAt` hop streams (one per leaf), not node reads — TODO 4.12
+territory. Its *node* round trips went 302 → 3.
+
+Full `abyss-graph` suite green, `TypedNodeFilterFetchTest`'s exact `nodeAt` counters included. The
+YSQL override is verified against the live container by two new `LoadTest` cases: agreement with N
+`loadNode` calls, and absent ids omitted from the result rather than mapped to null.

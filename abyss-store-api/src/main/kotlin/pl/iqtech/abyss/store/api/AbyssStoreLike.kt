@@ -24,6 +24,14 @@ interface AbyssStoreLike {
     suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
 
+    // Batched counterpart of loadNode, for the set-shaped read paths (a traversal frontier, one BFS
+    // level's neighbours). Absent ids are absent from the result. The per-id `Duration?` is kept
+    // verbatim from loadNode so an ephemeral node's remaining TTL survives the batch.
+    // Default loops loadNode (correct, not faster) — only YugabytePersistentStore overrides this
+    // with a real multi-key query. Same shape as batchTransaction's default below.
+    suspend fun loadNodes(ids: Collection<NodeId>): Either<AbyssError, Map<NodeId, Pair<NodeLike<*>?, Duration?>>> =
+        Either.Right(buildMap { for (id in ids) loadNode(id).getOrNull()?.let { put(id, it) } })
+
     // Bulk-load path, deliberately independent of transaction(): commits ops in chunks of
     // `batchSize`, each chunk its own DB transaction, instead of one atomic transaction for the
     // whole list. Default just delegates to transaction() unchunked (correct, not faster) — only
@@ -52,6 +60,11 @@ interface AbyssEphemeralStoreLike {
     suspend fun loadEdges(fromId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun loadInEdges(toId: NodeId): Either<AbyssError, List<StoredEdge>> = Either.Right(emptyList())
     suspend fun transaction(block: suspend AbyssEphemeralStoreTransactionLike.() -> Unit): Either<AbyssError, Unit>
+
+    // See AbyssStoreLike.loadNodes. No ephemeral store overrides this yet: ephemeral volume is
+    // session-shaped (a handful of live keys), so the per-id loop is the whole story here.
+    suspend fun loadNodes(ids: Collection<NodeId>): Either<AbyssError, Map<NodeId, Pair<NodeLike<*>?, Duration?>>> =
+        Either.Right(buildMap { for (id in ids) loadNode(id).getOrNull()?.let { put(id, it) } })
 
     fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<NodeId> = emptyFlow()
 }

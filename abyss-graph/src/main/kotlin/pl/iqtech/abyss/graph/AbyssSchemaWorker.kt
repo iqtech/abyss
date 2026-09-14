@@ -234,6 +234,22 @@ internal class AbyssSchemaWorker(
 
     override suspend fun nodeAt(nid: NodeId): NodeLike<*>? = readNode(nid)
 
+    // Batched read-through (TODO 2.30), node-side twin of resolveEdges: one getAll for the whole set
+    // instead of one getAsync per id, then ONE batched store read to heal whatever the cache missed
+    // instead of a point-read per miss. Chunked at valueFetchBatch so peak heap and the store's bound
+    // id-array stay bounded the same way the edge-value fetch already is.
+    override suspend fun nodesAt(ids: Collection<NodeId>): Map<NodeId, NodeLike<*>> {
+        if (ids.isEmpty()) return emptyMap()
+        return buildMap {
+            for (chunk in ids.toSet().chunked(valueFetchBatch)) {
+                val cached = withContext(Dispatchers.IO) { nodesMap.getAll(chunk.toSet()) }
+                putAll(cached)
+                val missing = chunk.filterNot { it in cached }
+                if (missing.isNotEmpty()) putAll(loadAndCacheNodes(missing))
+            }
+        }
+    }
+
     override fun outAt(nid: NodeId, type: String?, needValue: Boolean, includeEphemeral: Boolean): Flow<Hop> {
         val persistent = outAtPersistent(nid, type, needValue)
         // Ephemeral edges are store-only (TODO 1.27): included only on explicit opt-in, from the store.
@@ -581,6 +597,31 @@ internal class AbyssSchemaWorker(
             else nodesMap.set(nid, node, remaining.inWholeSeconds, TimeUnit.SECONDS)
         }
         return node
+    }
+
+    // Batched loadAndCacheNode: same persistent-wins-over-ephemeral merge, same expiry check, same
+    // TTL-preserving write-back — one store round trip per side instead of one per id. Kept separate
+    // from loadAndCacheNode rather than folded into it: the single-id path is the hot point-read and
+    // doesn't deserve the collection allocations.
+    private suspend fun loadAndCacheNodes(nids: List<NodeId>): Map<NodeId, NodeLike<*>> {
+        val (persistent, ephemeral) = coroutineScope {
+            val p = async(Dispatchers.IO) { persistentStore?.loadNodes(nids)?.getOrNull() ?: emptyMap() }
+            val e = async(Dispatchers.IO) { ephemeralStore.loadNodes(nids).getOrNull() ?: emptyMap() }
+            p.await() to e.await()
+        }
+        return buildMap {
+            for (nid in nids) {
+                val p = persistent[nid]
+                val (node, remaining) = (if (p?.first != null) p else ephemeral[nid]) ?: continue
+                node ?: continue
+                if (remaining != null && remaining.inWholeSeconds <= 0) continue
+                withContext(Dispatchers.IO) {
+                    if (remaining == null) nodesMap.set(nid, node)
+                    else nodesMap.set(nid, node, remaining.inWholeSeconds, TimeUnit.SECONDS)
+                }
+                put(nid, node)
+            }
+        }
     }
 
     private suspend fun loadAndCacheEdge(fromNid: NodeId, toNid: NodeId, type: String): EdgeLike<*, *>? {

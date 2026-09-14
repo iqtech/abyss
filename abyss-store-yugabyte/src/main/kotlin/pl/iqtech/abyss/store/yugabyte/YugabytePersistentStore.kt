@@ -88,6 +88,17 @@ class YugabytePersistentStore(
             withContext(Dispatchers.IO) { queryNodeYsql(id)?.let { it to null } ?: (null to null) }
         }.mapLeft { AbyssError.Unexpected(it) }
 
+    // Multi-key point read (TODO 2.30). Verified against the live container (YB 2025.1.0.1,
+    // EXPLAIN ANALYZE DIST): `id = ANY(?)` on the hash PK plans as `Index Scan using nodes_pkey` with
+    // `Index Cond: (id = ANY (...))` and costs **1** storage read request for 128 ids, against 128
+    // for the same ids read one at a time. Callers chunk the id set (AbyssSchemaWorker) so the bound
+    // parameter array stays bounded. `remaining` is null for every row — persistent rows have no TTL,
+    // same contract as loadNode above.
+    override suspend fun loadNodes(ids: Collection<NodeId>): Either<AbyssError, Map<NodeId, Pair<NodeLike<*>?, kotlin.time.Duration?>>> =
+        Either.catch {
+            if (ids.isEmpty()) emptyMap() else withContext(Dispatchers.IO) { queryNodesYsql(ids) }
+        }.mapLeft { AbyssError.Unexpected(it) }
+
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, kotlin.time.Duration?>> =
         Either.catch {
             withContext(Dispatchers.IO) { queryEdgeYsql(fromId, toId, type)?.let { it to null } ?: (null to null) }
@@ -196,6 +207,15 @@ class YugabytePersistentStore(
                 val rs = stmt.executeQuery()
                 if (!rs.next()) return null
                 json.decodeFromString(nodeSer, rs.getString("data"))
+            }
+        }
+
+    private fun queryNodesYsql(ids: Collection<NodeId>): Map<NodeId, Pair<NodeLike<*>?, kotlin.time.Duration?>> =
+        ysql.connection.use { conn ->
+            conn.prepareStatement("SELECT id, data FROM $ysqlSchema.nodes WHERE id = ANY(?)").use { stmt ->
+                stmt.setArray(1, conn.createArrayOf("bytea", ids.map { it.bytes }.toTypedArray()))
+                val rs = stmt.executeQuery()
+                buildMap { while (rs.next()) put(NodeId(rs.getBytes("id")), json.decodeFromString(nodeSer, rs.getString("data")) to null) }
             }
         }
 

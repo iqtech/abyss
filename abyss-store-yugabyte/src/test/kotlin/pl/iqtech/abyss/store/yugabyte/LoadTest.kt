@@ -91,6 +91,33 @@ class LoadTest {
         assertEquals(null, result.value.first)
     }
 
+    // TODO 2.30: the batched multi-key read must agree with N single loadNode calls, absent ids
+    // included (absent = missing from the map, not a null entry).
+    @Test fun `loadNodes returns every present node and omits absent ids`() {
+        val present = List(3) { Uuid.random() }
+        present.forEachIndexed { i, id -> insertYsqlNode(id, nodeJson(id, "batch-node-$i")) }
+        val absent = Uuid.random()
+
+        val result = runBlocking { ybPersistentStore.loadNodes((present + absent).map(::nid)) }
+        assertIs<Either.Right<Map<NodeId, Pair<NodeLike<*>?, *>>>>(result)
+        val batched = result.value
+
+        assertEquals(present.size, batched.size, "absent id must not appear in the result")
+        assertEquals(null, batched[nid(absent)])
+        present.forEachIndexed { i, id ->
+            assertEquals("batch-node-$i", assertIs<YbTestNode>(batched.getValue(nid(id)).first).name)
+            assertEquals(null, batched.getValue(nid(id)).second)
+            // ...and agrees with the per-id path it replaces.
+            val single = runBlocking { ybPersistentStore.loadNode(nid(id)) }
+            assertEquals((single as Either.Right).value, batched.getValue(nid(id)))
+        }
+    }
+
+    @Test fun `loadNodes on an empty id list hits no database`() {
+        val result = runBlocking { ybPersistentStore.loadNodes(emptyList()) }
+        assertEquals(emptyMap(), assertIs<Either.Right<Map<NodeId, Pair<NodeLike<*>?, *>>>>(result).value)
+    }
+
     @Test fun `loadNode returns node inserted in ycql`() {
         val id = Uuid.random()
         insertYcqlNode(id, nodeJson(id, "ycql-node"))

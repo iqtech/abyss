@@ -835,7 +835,7 @@
   back, it needs its own visited-node set (independent of `paths()`'s per-branch one) to dedup
   emissions across branches.
 
-- **➡️ 2.30 Batched node loading (`nodesAt`) — nodes never got `resolveEdges`' treatment**
+- **✅ 2.30 Batched node loading (`nodesAt`) — nodes never got `resolveEdges`' treatment**
   Every node read in the engine goes through `NodeIdEngine.nodeAt(nid)`: one `nodesMap.getAsync` per
   id, plus one store point-read per cache miss (`AbyssSchemaWorker.loadAndCacheNode`). Edges already
   have the batched counterpart (`resolveEdges` → `IMap.getAll`, `AbyssSchemaWorker.kt:325`); nodes
@@ -861,8 +861,22 @@
   `Index Cond: (id = ANY (...))`, **1** storage read request, 4.91 ms/iter, vs 128 point reads →
   **128** storage read requests, 25.07 ms/iter. 5.1×, and that's the floor — measured in-database,
   so the serial path isn't charged for its 128 JDBC round trips.
-  Per the perf workflow: isolate with a wide-frontier `flushFrontierNodes` benchmark
-  (`PathToPerformanceTest.kt` + `-Pperf` as the template), baseline, fix, remeasure.
+  Done. `NodeIdEngine.nodesAt` and `AbyssStoreLike.loadNodes` both landed with default
+  implementations, so no existing implementor (4 test fakes, 3 stores) needed a line changed, and
+  `TypedNodeFilterFetchTest`'s exact `nodeAt` counters still hold — batching moved round trips, not
+  which nodes get fetched. `pathTo`'s neighbour resolution was hoisted out of the per-entry fan-out
+  to one batched `nodesAt` per BFS level, which also dedups a neighbour reached by several entries
+  into one fetch. Measured by `NodeBatchLoadPerformanceTest` (`-Pperf`, 300-wide, 5ms/call fake):
+  | scenario | ms before | ms after | round trips before | after |
+  |---|---|---|---|---|
+  | `flushFrontierNodes` | 1531 | 17 | 300 | **3** |
+  | `collectSubgraph` | 9 | 6 | 300 | **1** |
+  | `pathTo` (supernode) | 74 | 77 | 606 | **307** |
+  `collectSubgraph`/`pathTo` barely move on wall clock because their fan-out already hid the
+  latency — the round-trip column is the point, and it's the one a connection pool and a YB tablet
+  actually feel. `pathTo`'s residual 307 are `outAt` hop streams (300 leaves), not node reads:
+  its node round trips went 302 → 3. Batched YSQL read verified against the live container by two
+  new `LoadTest` cases (agreement with N `loadNode` calls, absent ids omitted).
   Design plan: `ai-scripts/BatchedNodeLoadingPlan.md`.
 
 ## 3. Low

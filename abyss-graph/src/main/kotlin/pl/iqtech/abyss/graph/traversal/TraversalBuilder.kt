@@ -66,6 +66,13 @@ class TraversalBuilder<ID>(
     private var lastHopEdges: List<Hop> = emptyList()
     private var lastHopDirection: HopDirection? = null
 
+    private companion object {
+        // Chunk size for the streaming batched fetch: keeps flushFrontierNodes a real Flow (an early
+        // stop pays for consumed chunks, not the whole frontier) instead of materializing every node
+        // before the first emission. Matches AbyssSchemaWorker's valueFetchBatch.
+        const val FETCH_BATCH = 128
+    }
+
     private fun hops(nid: NodeId, direction: HopDirection, type: String?, needValue: Boolean, includeEphemeral: Boolean = false): Flow<Hop> =
         if (direction == HopDirection.OUTGOING) engine.outAt(nid, type, needValue, includeEphemeral) else engine.inAt(nid, type, needValue)
 
@@ -142,16 +149,11 @@ class TraversalBuilder<ID>(
             toFetch += nid                                            // null tag (fallback), or predicate to run
         }
         if (toFetch.isNotEmpty()) {
-            matched += coroutineScope {
-                toFetch.map { nid ->
-                    async(engine.hopDispatcher) {
-                        val node = engine.nodeAt(nid) ?: return@async null
-                        if (node.typeName() != nodeType) return@async null
-                        if (predicate != null && !predicate(node)) return@async null
-                        nid
-                    }
-                }.awaitAll()
-            }.filterNotNull()
+            val fetched = engine.nodesAt(toFetch)
+            matched += toFetch.filter { nid ->
+                val node = fetched[nid] ?: return@filter false
+                node.typeName() == nodeType && (predicate == null || predicate(node))
+            }
         }
         retainFrontier(matched)
     }
@@ -208,7 +210,12 @@ class TraversalBuilder<ID>(
     }
 
     override suspend fun flushFrontierNodes(): Flow<NodeLike<*>> = flow {
-        for (nid in frontier) engine.nodeAt(nid)?.let { emit(it) }
+        // Batched per chunk, still streamed: a caller that stops early pays for the chunks it
+        // consumed, not the whole frontier. Emission order follows the frontier, as before.
+        for (chunk in frontier.chunked(FETCH_BATCH)) {
+            val fetched = engine.nodesAt(chunk)
+            for (nid in chunk) fetched[nid]?.let { emit(it) }
+        }
     }
 
     override suspend fun flushHopEdges(): Flow<EdgeLike<*, *>> = flow {
@@ -229,9 +236,7 @@ class TraversalBuilder<ID>(
         // (or all, when unfiltered) nodes are fetched, then filtered by @SerialName as a fallback.
         val candidates = if (nodeType == null || nodeTag == null) allVisitedTags.keys
             else allVisitedTags.filter { (_, tag) -> tag == null || tag == nodeTag }.keys
-        val nodes = coroutineScope {
-            candidates.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
-        }.filterNotNull().let { all ->
+        val nodes = engine.nodesAt(candidates).let { fetched -> candidates.mapNotNull { fetched[it] } }.let { all ->
             if (nodeType == null) all else all.filter { it.typeName() == nodeType }
         }
         return Subgraph(nodes, resolveHopEdges(allTraversedHops).values.toList())
@@ -249,9 +254,7 @@ class TraversalBuilder<ID>(
             visited += next
             current = next
         }
-        val nodes = coroutineScope {
-            visited.map { nid -> async(engine.hopDispatcher) { engine.nodeAt(nid) } }.awaitAll()
-        }.filterNotNull()
+        val nodes = engine.nodesAt(visited).let { fetched -> visited.mapNotNull { fetched[it] } }
         return Subgraph(nodes, resolveHopEdges(allHops).values.toList())
     }
 
@@ -311,7 +314,7 @@ class TraversalBuilder<ID>(
         edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ): Flow<Path> = flow {
-        val origin = frontier.mapNotNull { nid -> engine.nodeAt(nid)?.let { nid to it } }
+        val origin = engine.nodesAt(frontier).let { fetched -> frontier.mapNotNull { nid -> fetched[nid]?.let { nid to it } } }
         when (strategy) {
             TraversalStrategy.DFS -> for ((nid, node) in origin)
                 dfsLoop(Path(listOf(node), emptyList()), nid, nid, setOf(nid), direction, maxDepth, 0, edgeVisitor, nodeEvaluator)
@@ -433,22 +436,29 @@ class TraversalBuilder<ID>(
     // level) so each hop's edges can be attributed back to the specific path that produced them —
     // but every entry's sub-traversal is independent I/O, so they're fanned out concurrently
     // (same coroutineScope+async+awaitAll shape as collectSubgraph/exhaustReachable) rather than
-    // awaited one at a time. Fan-out is two-layered: entries in parallel across the level, and each
-    // entry's own neighbor nodeAt lookups in parallel too — a single high-degree entry (supernode)
-    // would otherwise still pay one round trip per neighbor with no other entries to hide behind.
-    // Both layers share hopDispatcher, so its limitedParallelism still bounds total concurrent
-    // engine calls regardless of nesting. The dedup/target-match pass runs after the gather,
-    // sequentially, in the same entry/hop order the old serial loop used, so a shared neighbor still
-    // resolves to whichever entry reached it first — only the round trips are parallel, not the
-    // semantics. Trade-off: like checkReaches, the target is only checked once the whole level's
+    // awaited one at a time. Both layers share hopDispatcher, so its limitedParallelism still bounds
+    // total concurrent engine calls.
+    //
+    // Neighbor node resolution is NOT part of that fan-out (TODO 2.30): the per-entry pass produces
+    // candidates key-only, then the whole level's neighbors resolve in ONE batched nodesAt. That
+    // fixes what fanning out could not — a supernode level cost one round trip per neighbor even
+    // when they all completed in parallel — and dedups a neighbor reached by several entries into a
+    // single fetch instead of one per reaching entry.
+    //
+    // The dedup/target-match pass still runs after the gather, sequentially, in the same entry/hop
+    // order the original serial loop used, so a shared neighbor still resolves to whichever entry
+    // reached it first, and a neighbor whose node is gone is still dropped before it can be marked
+    // visited. Trade-off: like checkReaches, the target is only checked once the whole level's
     // fetches are in, not mid-level — a few extra fetches in exchange for the level no longer costing
     // one round trip per node (or per neighbor of one node).
     override suspend fun pathTo(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Path? {
         val target = homeAdapter.toNodeId(targetId)
         data class Entry(val nid: NodeId, val path: Path)
-        data class Candidate(val neighborNid: NodeId, val edge: EdgeLike<*, *>, val neighborNode: NodeLike<*>, val fromPath: Path)
+        data class Candidate(val neighborNid: NodeId, val edge: EdgeLike<*, *>, val fromPath: Path)
 
-        var current = frontier.mapNotNull { nid -> engine.nodeAt(nid)?.let { Entry(nid, Path(listOf(it), emptyList())) } }
+        var current = engine.nodesAt(frontier).let { fetched ->
+            frontier.mapNotNull { nid -> fetched[nid]?.let { Entry(nid, Path(listOf(it), emptyList())) } }
+        }
         val visited = frontier.toMutableSet()
         while (current.isNotEmpty()) {
             val candidates = coroutineScope {
@@ -457,24 +467,23 @@ class TraversalBuilder<ID>(
                         val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
                         TraversalScope(sub).block()
                         val edgesByHop = resolveHopEdges(sub.traversedHops)
-                        val resolvedHops = sub.traversedHops.mapNotNull { hop -> edgesByHop[hop]?.let { hop to it } }
-                        coroutineScope {
-                            resolvedHops.map { (hop, edge) ->
-                                async(engine.hopDispatcher) {
-                                    val neighborNid = if (hop.fromId == entry.nid) hop.toId else hop.fromId
-                                    engine.nodeAt(neighborNid)?.let { Candidate(neighborNid, edge, it, entry.path) }
-                                }
-                            }.awaitAll()
-                        }.filterNotNull()
+                        sub.traversedHops.mapNotNull { hop ->
+                            edgesByHop[hop]?.let { edge ->
+                                Candidate(if (hop.fromId == entry.nid) hop.toId else hop.fromId, edge, entry.path)
+                            }
+                        }
                     }
                 }.awaitAll()
             }.flatten()
 
+            val neighborNodes = engine.nodesAt(candidates.mapTo(mutableSetOf()) { it.neighborNid })
+
             val next = mutableListOf<Entry>()
             for (c in candidates) {
                 if (c.neighborNid in visited) continue
+                val neighborNode = neighborNodes[c.neighborNid] ?: continue
                 visited += c.neighborNid
-                val extended = Path(c.fromPath.nodes + c.neighborNode, c.fromPath.edges + c.edge)
+                val extended = Path(c.fromPath.nodes + neighborNode, c.fromPath.edges + c.edge)
                 if (c.neighborNid == target) return extended
                 next += Entry(c.neighborNid, extended)
             }
