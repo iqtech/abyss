@@ -117,17 +117,34 @@ class TraversalBuilder<ID>(
         coroutineScope {
             frontier.map { nid ->
                 async(engine.hopDispatcher) {
-                    hops(nid, direction, edgeType, needValue = false).filter { hop ->
+                    // TODO 4.12: neighbours resolve in windows of FETCH_BATCH (one nodesAt each) instead of
+                    // one nodeAt per hop — same buffer/flush shape as AbyssSchemaWorker.adjacencyHopFlow.
+                    // The window holds every surviving hop in arrival order (order preserved) but only the
+                    // tag-undecided ones are fetched (fetch set preserved). Safe to window: this filter was
+                    // already exhaustive, nothing short-circuits.
+                    val window = ArrayList<Pair<Hop, Boolean>>(FETCH_BATCH)   // hop to needsFetch
+                    suspend fun flush() {
+                        if (window.isEmpty()) return
+                        val toFetch = window.filter { it.second }.map { it.first.target(direction) }
+                        val fetched = if (toFetch.isEmpty()) emptyMap() else engine.nodesAt(toFetch)
+                        for ((hop, needsFetch) in window) {
+                            if (!needsFetch) { collector += hop; continue }
+                            val node = fetched[hop.target(direction)] ?: continue
+                            if (node.typeName() == nodeType && (nodePredicate == null || nodePredicate(node))) collector += hop
+                        }
+                        window.clear()
+                    }
+                    hops(nid, direction, edgeType, needValue = false).collect { hop ->
                         val tag = hop.nodeTypeTag
                         // Tag known and wanted -> decide by tag; keep fetch-free unless a predicate needs the value.
-                        if (tag != null && nodeTag != null) {
-                            if (tag != nodeTag) return@filter false
-                            if (nodePredicate == null) return@filter true
-                        }
-                        val node = engine.nodeAt(hop.target(direction)) ?: return@filter false
-                        if (node.typeName() != nodeType) return@filter false
-                        nodePredicate == null || nodePredicate(node)
-                    }.collect { collector += it }
+                        val needsFetch = if (tag != null && nodeTag != null) {
+                            if (tag != nodeTag) return@collect
+                            nodePredicate != null
+                        } else true
+                        window += hop to needsFetch
+                        if (window.size >= FETCH_BATCH) flush()
+                    }
+                    flush()
                 }
             }.awaitAll()
         }
@@ -392,26 +409,49 @@ class TraversalBuilder<ID>(
             val (currentPath, headNid, fromNid, visited, depth) = queue.removeFirst()
             if (depth >= maxDepth) continue // safety guard; with the enqueue guard below only fires for maxDepth == 0
             var produced = false // this entry emitted a path or enqueued a continuation
+            // Per-expansion dedup, mirroring dfsLoop's `seen`: two edges from this entry to the same
+            // neighbour (e.g. a→b and b→a under BOTH) visit it once, per README's path-local uniqueness
+            // contract. Only this expansion's gate — children still inherit `visited + nextNid`, not
+            // `seen`, so siblings never block each other's descendants (the diamond case).
+            val seen = visited.toMutableSet()
+            // TODO 4.12: neighbours resolve in windows of FETCH_BATCH, one nodesAt each, instead of one
+            // nodeAt per hop. The FIFO above is untouched and the window drains in hop order, so emission
+            // order is exactly what it was. edgeVisitor and the seen gate still run per hop, before the
+            // fetch, so the fetch set is unchanged too. Cost: a consumer cancelling mid-entry may have
+            // paid for up to one window of fetches it never used.
+            val window = ArrayList<Hop>(FETCH_BATCH)
+            suspend fun flushWindow() {
+                if (window.isEmpty()) return
+                val nodes = engine.nodesAt(window.map { if (it.fromId == fromNid) it.toId else it.fromId })
+                for (hop in window) {
+                    val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
+                    val nextNode = nodes[nextNid] ?: continue
+                    val eval = nodeEvaluator(currentPath, nextNode)
+                    val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
+                    val extendedPath = if (included) {
+                        val edgePart = if (fromNid == headNid) listOf(hop.edge!!) else emptyList()
+                        Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
+                    } else currentPath
+                    val nextHeadNid = if (included) nextNid else headNid
+                    val nextDepth = depth + 1
+                    if (eval == Evaluation.INCLUDE_AND_PRUNE ||
+                        (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) { emit(extendedPath); produced = true }
+                    if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)) {
+                        queue += Entry(extendedPath, nextHeadNid, nextNid, visited + nextNid, nextDepth)
+                        produced = true
+                    }
+                }
+                window.clear()
+            }
             edgesFrom(fromNid, direction).collect { hop ->
                 if (!edgeVisitor(currentPath, hop.edge!!)) return@collect
                 val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
-                if (nextNid in visited) return@collect
-                val nextNode = engine.nodeAt(nextNid) ?: return@collect
-                val eval = nodeEvaluator(currentPath, nextNode)
-                val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
-                val extendedPath = if (included) {
-                    val edgePart = if (fromNid == headNid) listOf(hop.edge) else emptyList()
-                    Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
-                } else currentPath
-                val nextHeadNid = if (included) nextNid else headNid
-                val nextDepth = depth + 1
-                if (eval == Evaluation.INCLUDE_AND_PRUNE ||
-                    (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) { emit(extendedPath); produced = true }
-                if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)) {
-                    queue += Entry(extendedPath, nextHeadNid, nextNid, visited + nextNid, nextDepth)
-                    produced = true
-                }
+                if (nextNid in seen) return@collect
+                seen += nextNid
+                window += hop
+                if (window.size >= FETCH_BATCH) flushWindow()
             }
+            flushWindow()
             if (!produced && currentPath.nodes.size > 1) emit(currentPath) // natural terminal (excludes lone origin)
         }
     }

@@ -8,6 +8,10 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import pl.iqtech.abyss.dsl.EdgeTraversalDirection
+import pl.iqtech.abyss.dsl.Evaluation
+import pl.iqtech.abyss.dsl.TraversalScope
+import pl.iqtech.abyss.dsl.TraversalStrategy
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
 import pl.iqtech.abyss.store.api.EdgeLike
@@ -21,7 +25,7 @@ import kotlin.test.assertNull
 import kotlin.time.measureTime
 import kotlin.uuid.Uuid
 
-// TODO 2.30 baseline/after harness. Two axes are measured, deliberately:
+// TODO 2.30 / 4.12 baseline/after harness. Two axes are measured, deliberately:
 //
 //  - **wall-clock ms** — what a `delay()`-per-call fake charges. Catches the *sequential* sites
 //    (flushFrontierNodes' `for (nid in frontier)`), useless for the already-fanned-out ones.
@@ -33,9 +37,14 @@ import kotlin.uuid.Uuid
 // nodesAt charges ONE delay and ONE round trip per call, which is exactly what `IMap.getAll` and
 // one `WHERE id = ANY(?)` cost (measured on the live YB container: 1 storage read request for 128
 // ids). Same modelling resolveEdges already gets in PathToPerformanceTest.
+//
+// valuedHops: paths()' edgesFrom dereferences hop.edge, so the paths scenario needs hops that carry a
+// value. Opt-in, so the 2.30 scenarios (which resolve edges via resolveEdges) keep measuring exactly
+// what they measured before.
 private class CountingFakeEngine(
     private val children: Map<NodeId, List<NodeId>>,
     private val latencyMs: Long,
+    private val valuedHops: Boolean = false,
 ) : NodeIdEngine {
     override val hopDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(512)
 
@@ -57,7 +66,10 @@ private class CountingFakeEngine(
     override fun outAt(nid: NodeId, type: String?, needValue: Boolean, includeEphemeral: Boolean): Flow<Hop> = flow {
         roundTrips.incrementAndGet()
         delay(latencyMs)
-        children[nid].orEmpty().forEach { emit(Hop(nid, it, "test_edge", null)) }
+        children[nid].orEmpty().forEach {
+            val edge = if (valuedHops) TestEdge(fromId = Uuid.random(), toId = Uuid.random(), label = "") else null
+            emit(Hop(nid, it, "test_edge", edge))
+        }
     }
 
     override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> = emptyFlow()
@@ -127,6 +139,52 @@ class NodeBatchLoadPerformanceTest {
         engine.roundTrips.set(0)
         val elapsed = measureTime { repeat(n) { run() } }
         report("collectSubgraph (visited=$WIDTH, latency=${LATENCY_MS}ms)", engine.roundTrips.get(), elapsed.inWholeMilliseconds, n)
+    }
+
+    // TODO 4.12: a typed node hop out of one supernode. Fake hops carry no nodeTypeTag, so every
+    // neighbour needs a fetch — the public outgoing<E, N>(predicate) sugar always supplies a predicate
+    // anyway, which makes this the common case, not a cold-cache corner.
+    @Test fun `addNodeHop over a single supernode`() {
+        if (System.getProperty("perf") == null) return
+        val (children, root) = star(WIDTH)
+        val hub = children.getValue(root).single()
+        val engine = CountingFakeEngine(children, LATENCY_MS)
+
+        fun run() = runBlocking {
+            val builder = TraversalBuilder(engine, setOf(hub), UuidKeyAdapter)
+            TraversalScope(builder).outgoing<Uuid, TestEdge, TestNode> { true }
+            builder.frontier.size
+        }
+
+        assertEquals(WIDTH, run())
+
+        val n = 3
+        engine.roundTrips.set(0)
+        val elapsed = measureTime { repeat(n) { run() } }
+        report("addNodeHop (supernode width=$WIDTH, latency=${LATENCY_MS}ms)", engine.roundTrips.get(), elapsed.inWholeMilliseconds, n)
+    }
+
+    // TODO 4.12: BFS paths out of one supernode — one entry whose hop loop resolves every neighbour.
+    @Test fun `paths BFS over a single supernode`() {
+        if (System.getProperty("perf") == null) return
+        val (children, root) = star(WIDTH)
+        val hub = children.getValue(root).single()
+        val engine = CountingFakeEngine(children, LATENCY_MS, valuedHops = true)
+
+        fun run() = runBlocking {
+            TraversalBuilder(engine, setOf(hub), UuidKeyAdapter).paths(
+                TraversalStrategy.BFS, EdgeTraversalDirection.OUT,
+                edgeVisitor = { _, _ -> true },
+                nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_PRUNE },
+            ).toList().size
+        }
+
+        assertEquals(WIDTH, run())
+
+        val n = 3
+        engine.roundTrips.set(0)
+        val elapsed = measureTime { repeat(n) { run() } }
+        report("paths BFS (supernode width=$WIDTH, latency=${LATENCY_MS}ms)", engine.roundTrips.get(), elapsed.inWholeMilliseconds, n)
     }
 
     @Test fun `pathTo neighbour resolution over a single supernode`() {

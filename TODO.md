@@ -1149,60 +1149,55 @@
   traversal frontier from indexed-query results) — noting it here too since it's also a
   traversal-API gap on its own, independent of the indexed-query feature.
 
-- **➡️ 4.12 Remaining serial node resolution in `TraversalBuilder`**
-  Rewritten 2026-09-14 after TODO 2.30 landed: the original entry's first bullet is now done, the
-  two methods it named as the pattern to copy have since moved on to a better one, and every line
-  number it cited was stale. Scope and prescription below are current.
+- **✅ 4.12 Remaining serial node resolution in `TraversalBuilder`**
+  Rewritten 2026-09-14 after TODO 2.30, then done the same day. Rule carried over from 2.30: a
+  fan-out of N point reads hides latency but still costs N round trips, N pool slots and N tablet
+  ops — **batch where the shape allows, fan out only where it doesn't.** Plan:
+  `~/.claude/plans/now-plan-4-12-logical-knuth.md`.
 
-  Background: `pathTo` (`TraversalBuilder.kt:454`) had two bottleneck shapes, both fixed —
-  **entry-level** (many frontier nodes handled one at a time) and **per-entry** (many neighbours of
-  one high-degree node handled one at a time). 2.30 then went further on the set-shaped sites,
-  replacing fan-out with a single batched `engine.nodesAt`: a fan-out of N point reads hides its
-  latency but still costs N round trips, N pool slots and N tablet ops, which is the number that
-  decides whether the cluster keeps up. **So the prescription is no longer "fan out" — it is "batch
-  where the shape allows, fan out only where it doesn't."**
+  Done — windowed batch, `FETCH_BATCH = 128`, the buffer/flush shape of
+  `AbyssSchemaWorker.adjacencyHopFlow`:
+  - **`addNodeHop`.** Neighbours buffered in arrival order, only tag-undecided ones fetched, one
+    `nodesAt` per window. Order and fetch set both preserved; `TypedNodeFilterFetchTest`'s exact
+    `nodeAt` counts (3 and 0) unchanged. Safe to window because the filter was already exhaustive.
+  - **`bfsLoop`**, windowed *within* each entry — deliberately not a level-at-a-time restructure. The
+    FIFO is untouched and windows drain in hop order, so emission order is exactly as before and a
+    `.take(n)` consumer still stops after the entry that satisfies it. Level batching was rejected:
+    it makes early-terminating consumers pay for a whole level, and its "entry-level" half is
+    latency-only anyway since every entry needs its own `edgesFrom` round trip.
 
-  Done, no longer part of this entry: `flushFrontierNodes`, `filterFrontierByNode`,
-  `collectSubgraph`, `exhaustReachable`, `paths`' origin and `pathTo` — all batched by 2.30.
+  Measured by `NodeBatchLoadPerformanceTest` (`-Pperf`, supernode width 300, 5 ms/call fake) —
+  both sites were fully sequential, not just round-trip-heavy:
+  | scenario | ms before | ms after | round trips before | after |
+  |---|---|---|---|---|
+  | `addNodeHop` | 1571 | 28 | 301 | **4** |
+  | `paths` BFS | 1548 | 28 | 302 | **5** |
+  The 2.30 scenarios (`flushFrontierNodes`, `collectSubgraph`, `pathTo`) re-measured unchanged.
 
-  What remains, in the order worth doing:
+  **Bug found and fixed along the way.** Before touching `bfsLoop`, five BFS tests were added
+  (`maxDepth`, `EXCLUDE_AND_PRUNE`, cycle, `BOTH` direction, multi-origin) — BFS had two tests in
+  the whole repo. The cycle test failed against the untouched code: under `BOTH`, `a→b` and `b→a`
+  are two edges from `a` to the same neighbour, and `bfsLoop` emitted `[a, b]` twice. `dfsLoop`
+  has a per-expansion `seen` set; `bfsLoop` had none, contradicting README's path-local uniqueness
+  contract ("if two edges from the same parent lead to the same neighbour, that neighbour is visited
+  only once from that parent"). Fixed in the same change with a per-expansion `seen` gate. Children
+  still inherit `visited + nextNid`, not `seen` — otherwise siblings would block each other's
+  descendants and break the diamond case `loop BFS emits shorter paths before longer ones` pins.
+  **Observable behaviour change:** BFS `paths()` no longer emits duplicate paths through a
+  multi-edge neighbour.
 
-  - **`addNodeHop` (`:115`, the fetch at `:127`) — windowed batch.** Frontier nodes already fan out,
-    but within one node's hop flow `engine.nodeAt(hop.target(direction))` resolves every neighbour
-    sequentially: a supernode pays one round trip per neighbour with no sibling to hide behind.
-    Do NOT fan out (fixes latency only) and do NOT batch the whole stream (unbounded memory on a
-    supernode). Buffer neighbours in windows of `valueFetchBatch` and issue one `nodesAt` per window
-    — exactly the shape `AbyssSchemaWorker.adjacencyHopFlow`'s `flush()` (`:309`) already uses for
-    edge values. Zero semantic risk here: the method ends in `.collect { collector += it }`
-    (`:130`), so the filter is already exhaustive — there is no short-circuit to preserve.
-  - **`bfsLoop` (`:381`) — the `pathTo` fix applied to its twin.** It carries both pre-fix shapes at
-    once: `queue.removeFirst()` (`:392`) processes one entry at a time with no fan-out across a
-    conceptual level, and inside each entry `engine.nodeAt(nextNid)` (`:399`) runs sequentially per
-    hop. Drain a whole level, resolve that level's nodes in one `nodesAt`, then run the
-    `nodeEvaluator`/emit pass sequentially in queue order — same restructuring, and the same
-    order-preservation argument, as `pathTo`'s.
-  - **`filterFrontierByEdgeType` (`:170`, fetch at `:178`) — optional, do last.** Same per-neighbour
-    shape, but `.firstOrNull` (`:174`) genuinely short-circuits, so a window can over-fetch to find a
-    match at position 3. It also only falls back to a fetch when the adjacency tag is null (cold or
-    dangling entries) — with tags present it is already fetch-free. A small window (16–32) if it
-    turns out to matter; the payoff is worst-case-only.
-
-  Deliberately NOT doing, and the entry should stay explicit about why:
-
-  - **`dfsLoop` (`:337`, fetch at `:356`).** The recursion happens *inside* the `edgesFrom(...)
-    .collect`, so batching a window means fetching nodes the `nodeEvaluator` would have pruned
-    before reaching them. Correctness is unaffected but the fetch count is, and the interleaving
-    with recursion is messy for a graph-shape-dependent constant.
-  - **`detectCycle`/`dfsCycle` (`:261`/`:277`).** No longer the code the original entry described:
-    TODO 3.12 rewrote it into an explicit-stack iterative DFS. What is left is one `neighborsOf()`
-    sub-traversal per node at push time (`:291`, `:300`), sequential by the nature of depth-first.
-    Parallelizing sibling exploration would change *which* cycle is found first, needs coroutine
-    cancellation for the early "cycle found" exit, and reads `visited`/`inStack` *during* the
-    fan-out rather than merging after — which is precisely what made `pathTo`'s fix safe.
-
-  Per the perf workflow, each item is isolate → baseline → fix → remeasure.
-  `NodeBatchLoadPerformanceTest` already carries the supernode and wide-frontier fixtures plus the
-  round-trip counter, so these extend it rather than starting fresh.
+  Closed out, deliberately not done:
+  - **`filterFrontierByEdgeType`.** `.firstOrNull` genuinely short-circuits, and the fetch only
+    fires on a null adjacency tag — with tags present it is already fetch-free
+    (`TypedNodeFilterFetchTest` asserts zero). A window would over-fetch on the common case for a
+    worst-case-only win.
+  - **`dfsLoop`.** Recursion happens inside the `edgesFrom(...).collect`, so a window fetches nodes
+    the `nodeEvaluator` would have pruned before reaching. Messy for a graph-shape-dependent
+    constant.
+  - **`detectCycle`/`dfsCycle`.** Already an explicit-stack iterative DFS (TODO 3.12); the remaining
+    per-node `neighborsOf()` is sequential by the nature of depth-first. Parallelizing siblings
+    changes *which* cycle is found first, needs cancellation for the early exit, and reads
+    `visited`/`inStack` mid-fan-out — the opposite of what made `pathTo`'s fix safe.
 
 - **✅ 4.13 Widen container.transaction into a multi-schema transaction**
   `HeterogeneousSchemaGraph`/`HomogeneousSchemaGraph`'s `container.transaction { }` is currently

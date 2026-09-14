@@ -159,6 +159,68 @@ class PathsTraversalTest {
         assertEquals(d, result[1].nodes.last())
     }
 
+    // BFS coverage was two tests before TODO 4.12 touched bfsLoop; these five close the gap
+    // (maxDepth, EXCLUDE_AND_PRUNE, cycles, BOTH direction, multi-origin frontier) and were added
+    // and green against the pre-rewrite code, so they are a real safety net and not a post-hoc
+    // description of whatever the rewrite happened to do.
+
+    @Test fun `BFS maxDepth limits path length`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+        putEdge(a.id, b.id); putEdge(b.id, c.id)
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.BFS, maxDepth = 1,
+                edgeVisitor = ::followAll,
+                nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_CONTINUE }
+            ).toList()
+        } as Either.Right).value
+        assertEquals(1, paths.size)
+        assertEquals(listOf(a, b), paths[0].nodes)
+    }
+
+    @Test fun `BFS EXCLUDE_AND_PRUNE stops branch without emitting`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+        putEdge(a.id, b.id); putEdge(b.id, c.id)
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.BFS, edgeVisitor = ::followAll,
+                nodeEvaluator = { _, _ -> Evaluation.EXCLUDE_AND_PRUNE }
+            ).toList()
+        } as Either.Right).value
+        assertTrue(paths.isEmpty())
+    }
+
+    @Test fun `BFS does not loop on cyclic graph`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b")
+        putEdge(a.id, b.id); putEdge(b.id, a.id)
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.BFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+        } as Either.Right).value
+        // Default direction is BOTH, so a→b and b→a are two edges from `a` to the same neighbour `b`.
+        // README's path-local uniqueness contract says that neighbour is visited once from that
+        // parent — exactly one [a, b]. Before TODO 4.12 bfsLoop had no per-expansion `seen` set (unlike
+        // dfsLoop) and emitted [a, b] twice; this test is what caught it.
+        assertEquals(listOf(listOf(a, b)), paths.map { it.nodes })
+    }
+
+    @Test fun `BFS BOTH direction follows incoming and outgoing`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val c = putNode("c")
+        putEdge(b.id, a.id)  // incoming to a
+        putEdge(a.id, c.id)  // outgoing from a
+        val paths = (graphTest.from(a.id) {
+            paths(TraversalStrategy.BFS, direction = EdgeTraversalDirection.BOTH,
+                edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+        } as Either.Right).value
+        assertEquals(setOf(b, c), paths.map { it.nodes.last() }.toSet())
+    }
+
+    @Test fun `BFS walks every origin in a multi-node frontier`() = runBlocking {
+        val a = putNode("a"); val b = putNode("b"); val x = putNode("x"); val y = putNode("y")
+        putEdge(a.id, x.id); putEdge(b.id, y.id)
+        val paths = (graphTest.from(setOf(a.id, b.id)) {
+            paths(TraversalStrategy.BFS, edgeVisitor = ::followAll, nodeEvaluator = ::includeAll).toList()
+        } as Either.Right).value
+        assertEquals(setOf(x, y), paths.map { it.nodes.last() }.toSet())
+    }
+
     // ── natural terminal (INCLUDE_AND_CONTINUE below maxDepth) ───────────────
 
     @Test fun `DFS emits natural-terminal INCLUDE_AND_CONTINUE path`() = runBlocking {
