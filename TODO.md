@@ -511,6 +511,33 @@
   Complements 2.12 (`@AbyssStoreColumn` + attribute-indexed `queryNodeIds`): that one indexes *attributes*,
   this one finally reads the *type* index that has been sitting there unused since the schema was written.
 
+- **➡️ 1.34 DFS `paths()` drops paths depending on edge order; O(depth²) memory — OOM at ~5k depth, sometimes a silent hang**
+  `dfsLoop` keeps per-level copies alive on the suspended recursion: `visited.toMutableSet()`,
+  `seen.toSet()` for the child, `currentPath.nodes + nextNode`. Measured on real Hazelcast, default
+  512 MB test heap: 4k links ~464 MB, 5k `OutOfMemoryError`; at 10k OOM in 4/6 fresh JVMs and a
+  **silent permanent hang** in 2/6 (heap full, all threads idle, no error on any thread despite logging
+  and an uncaught handler). BFS control on the same 10k chain: ~94 MB.
+  **Correctness (why High):** the child receives `seen` — ancestors *plus siblings already expanded* — so
+  a sibling blocks a route through it. `a→b, a→c, c→b`: DFS dropped `a-c-b` in 11/20 runs (exactly when
+  shard-hash order put `ab` first); BFS returned `[a-b, a-c-b]` every time. Violates README's path-local
+  uniqueness contract (`README.md:892-899`) at depth 2 — the memory problem alone was Medium (deep DFS is
+  marginal; an operator should bound `maxDepth`).
+  Fix direction: one shared on-route set with backtracking (add on descend, remove on return) plus an
+  O(degree) per-expansion neighbour set — fixes both the memory and the ordering bug — and the path held
+  as a single stack instead of copied per level. Open decision: callbacks get a per-call snapshot
+  (O(d²) time) or a fail-fast live `subList` view (O(1), valid only during the callback).
+  Open: where the OOM is swallowed in the hang case (not `asDeferred` — it forwards to
+  `handleCoroutineException`).
+  **Recursion: kept (decided 2026-09-16), revisit after the fix.** Not the stack: on Hazelcast every level
+  suspends on a partition-thread `getAsync` — DFS 2,000 links completes collected on the event loop,
+  `Dispatchers.IO` and `Dispatchers.Default` (the fake's `StackOverflowError` is `delay(0)` never
+  suspending). Not the OOM either: that is the per-level copies. Dropping it (3.12's explicit-stack pattern)
+  would materialize each ancestor's full hop list (worse on hubs than the suspended flow's ≤8-shard window +
+  ≤128-hop buffer) and read whole levels before descending. Gate: after the fix, rerun
+  `DfsDepthHangReproTest` at 10k — if heap still grows with depth beyond small per-frame overhead, drop the
+  recursion with those numbers. Residual risk: an engine that completes synchronously (only test fakes today).
+  Repro: `DfsDepthHangReproTest` (`-Pperf`). Evidence: `ai-scripts/TypedChainWalkPlan.md`, "Phase 0 results".
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
@@ -909,17 +936,17 @@
   node values batched `FETCH_BATCH` behind the id chase (the chase needs only ids, so the value
   fetches decouple and amortize).
   **`needValue` inverts between the two** — `walkOut` passes `true` to buy `outAtPersistent`'s
-  partition-local `edgesMap` predicate (type-filtered in the map, 2 RTs/link) and then discards the
+  partition-local `edgesMap` predicate (type-filtered in the map, ~2.5 map ops/link warm) and then discards the
   value; `walkIn` passes `false` because `inAt` has no such path (adjacency index, type post-filtered
-  at `ShardedAdjacencyIndex:49`, 3 RTs/link). There is no reverse edges map — `edgesMap` is
+  at `ShardedAdjacencyIndex:49`, ~3.5 map ops/link warm). There is no reverse edges map — `edgesMap` is
   partitioned by `fromId`, so a partition-local predicate structurally cannot find in-edges.
   Measured against the live container: `loadEdges(from_id)` 2 storage read requests / 2 rows scanned
   vs `loadInEdges(to_id)` 3 / 4 (`edges_pkey` is `(from_id HASH, to_id ASC, type ASC)`; `to_id` is a
   bare secondary index with no `type` column). Both are Index Scans, not seq scans — but probe degree
   was 2, so it does not predict degree 500. Ephemeral in-edges are invisible to `walkIn` by contract
   (outgoing-only, TODO 1.13/1.27): the one asymmetry that yields a wrong answer rather than a slow one.
-  Blocked on two harness gaps before any baseline number means anything: nothing in the repo counts
-  Hazelcast map operations, and `CountingFakeEngine.inAt` is a stub returning `emptyFlow()`.
+  Phase 0 done: both harness gaps closed (`MapOpCounter`; `CountingFakeEngine` type filter + `inAt`) and
+  the baseline recorded in the plan's "Phase 0 results". Next: Phase 1.
   Design plan: `ai-scripts/TypedChainWalkPlan.md`.
 
 ## 3. Low
