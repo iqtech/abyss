@@ -511,7 +511,7 @@
   Complements 2.12 (`@AbyssStoreColumn` + attribute-indexed `queryNodeIds`): that one indexes *attributes*,
   this one finally reads the *type* index that has been sitting there unused since the schema was written.
 
-- **➡️ 1.34 DFS `paths()` drops paths depending on edge order; O(depth²) memory — OOM at ~5k depth, sometimes a silent hang**
+- **✅ 1.34 DFS `paths()` drops paths depending on edge order; O(depth²) memory — OOM at ~5k depth, sometimes a silent hang**
   `dfsLoop` keeps per-level copies alive on the suspended recursion: `visited.toMutableSet()`,
   `seen.toSet()` for the child, `currentPath.nodes + nextNode`. Measured on real Hazelcast, default
   512 MB test heap: 4k links ~464 MB, 5k `OutOfMemoryError`; at 10k OOM in 4/6 fresh JVMs and a
@@ -537,6 +537,19 @@
   `DfsDepthHangReproTest` at 10k — if heap still grows with depth beyond small per-frame overhead, drop the
   recursion with those numbers. Residual risk: an engine that completes synchronously (only test fakes today).
   Repro: `DfsDepthHangReproTest` (`-Pperf`). Evidence: `ai-scripts/TypedChainWalkPlan.md`, "Phase 0 results".
+  **Done (3438a0b, 2026-09-17): iterative DFS.** The keep-recursion gate failed: with the backtracking fix alone,
+  DFS still hung at 3k links — a `StackOverflowError` on the *unwind* (needValue hops descend from
+  `adjacencyHopFlow`'s flush after the last read, so every return is synchronous), confirmed via
+  `-Xlog:exceptions`. `dfsLoop` is now an explicit frame stack + one route set + one path stack. Gated first as a
+  test-source prototype (`IterativeDfsPrototypeTest`, 4005327): identical emission sequence to the recursive
+  oracle on 4,500 random-graph cases (sensitive to two injected bugs); 40k links on a non-suspending engine;
+  2k–40k on Hazelcast across event loop/IO/Default; map ops identical to production. Landed: sibling regression
+  test in `PathsTraversalTest` (fails on the old code), 382 tests green across modules, `-Pperf` suites green,
+  production DFS 2k–40k links on 512 MB (10k: ~79 MB peak; 40k: ~232–379 MB depending on other tests' seeded
+  maps in the same JVM — not isolated). Chain route cost unchanged (5.51 / 5.00 map ops/link).
+  Left open, not logged (untested): callback `Path` contract — snapshot per call (current, O(d) each) vs
+  fail-fast live view; worker `resolveEdges` does not self-heal evicted edges, so `flushHopEdges` /
+  `collectSubgraph` may drop evicted-but-persistent edges; where the swallowed error was finally caught.
 
 ## 2. Medium
 
