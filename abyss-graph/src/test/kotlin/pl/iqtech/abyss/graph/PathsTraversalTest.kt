@@ -65,6 +65,24 @@ class PathsTraversalTest {
         assertEquals(setOf(b, c), terminals)
     }
 
+    // TODO 1.34: an already-expanded sibling must not block a route through it (README path-local
+    // uniqueness). The adjacency read walks shards in order, so b in shards 0-7 and c in 8-15 forces a→b
+    // to expand before a→c — exactly the order in which the old per-level `seen` dropped a-c-b.
+    @Test fun `DFS earlier sibling does not block a route through it`() = runBlocking {
+        fun putNodeInShard(name: String, window0: Boolean): TestNode {
+            val id = generateSequence { Uuid.random() }.first { (shardIndexOf(huid.toNodeId(it), 16) < 8) == window0 }
+            return TestNode(id = id, name = name).also { graphTestHz.getMap<NodeId, NodeLike<*>>("g-nodes")[huid.toNodeId(id)] = it }
+        }
+        val a = putNode("a"); val b = putNodeInShard("b", window0 = true); val c = putNodeInShard("c", window0 = false)
+        putEdge(a.id, b.id); putEdge(a.id, c.id); putEdge(c.id, b.id)
+        for (strategy in TraversalStrategy.entries) {
+            val paths = (graphTest.from(a.id) {
+                paths(strategy, EdgeTraversalDirection.OUT, edgeVisitor = ::followAll, nodeEvaluator = { _, _ -> Evaluation.INCLUDE_AND_CONTINUE }).toList()
+            } as Either.Right).value
+            assertEquals(setOf(listOf(a, b), listOf(a, c, b)), paths.map { it.nodes }.toSet(), "$strategy")
+        }
+    }
+
     @Test fun `paths DFS path contains correct edge`() = runBlocking {
         val a = putNode("a"); val b = putNode("b")
         val edge = putEdge(a.id, b.id)

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.serialization.SerialName
 import pl.iqtech.abyss.dsl.Evaluation
@@ -334,7 +335,7 @@ class TraversalBuilder<ID>(
         val origin = engine.nodesAt(frontier).let { fetched -> frontier.mapNotNull { nid -> fetched[nid]?.let { nid to it } } }
         when (strategy) {
             TraversalStrategy.DFS -> for ((nid, node) in origin)
-                dfsLoop(Path(listOf(node), emptyList()), nid, nid, setOf(nid), direction, maxDepth, 0, edgeVisitor, nodeEvaluator)
+                dfsLoop(nid, node, direction, maxDepth, edgeVisitor, nodeEvaluator)
             TraversalStrategy.BFS -> bfsLoop(origin, direction, maxDepth, edgeVisitor, nodeEvaluator)
         }
     }
@@ -347,52 +348,90 @@ class TraversalBuilder<ID>(
         EdgeTraversalDirection.BOTH -> flow { emitAll(engine.outAt(fromNid, null)); emitAll(engine.inAt(fromNid, null)) }
     }
 
-    // headNid: NodeId of the last accepted node (currentPath.head); fromNid: physical position (may
-    // differ when a node was EXCLUDE_AND_CONTINUE). depth counts hops. seen prevents re-processing a
-    // neighbour via different edges within a level. Returns whether this subtree emitted any path —
-    // the caller uses it to decide if an INCLUDE_AND_CONTINUE head is itself a natural terminal.
+    // TODO 1.34: iterative DFS — an explicit frame stack driven by one `while` loop, with ONE route set
+    // (`onPath`) and ONE path stack (`nodes`/`edges`) pushed on descend and popped when a frame is exhausted.
+    // Replaces a recursive dfsLoop that failed two ways at depth:
+    //  - per-level copies of visited/seen/Path held on the suspended recursion — O(depth²) heap, OOM ~5k links;
+    //  - even without the copies, its unwind recursed on the thread stack: with needValue hops a level descends
+    //    from adjacencyHopFlow's flush, after its last read, so every return runs synchronously — a swallowed
+    //    StackOverflowError (~3k links) left the walk parked forever.
+    // Here every suspend call (hop read, nodeAt, emit) returns into the loop — no nested collect — so stack depth
+    // is constant whether or not the engine suspends.
+    // Semantics: README path-local uniqueness. `onPath` is the physical route (included and excluded nodes);
+    // `expanded` dedups one parent's neighbours only. The old code passed the child `seen` — ancestors PLUS
+    // already-expanded siblings — so a sibling blocked a route through it (a→b, a→c, c→b lost a-c-b whenever ab
+    // expanded first). Emission order is the recursive order: a natural terminal is emitted when its frame is
+    // exhausted, before the parent's next hop. headNid = last included node; fromNid = physical position (differs
+    // after EXCLUDE_AND_CONTINUE). Callbacks and emissions get a snapshot Path (callers may keep it).
+    // Cost vs recursion: a frame holds its node's full hop list WITH values (read once at push — the worker's
+    // resolveEdges doesn't self-heal evicted edges, so key-only hops + a later value fetch would drop them), and a
+    // level is read fully before descending. Equivalence to the recursive backtracking oracle and equal map-op
+    // counts are gated in IterativeDfsPrototypeTest.
     private suspend fun FlowCollector<Path>.dfsLoop(
-        currentPath: Path,
-        headNid: NodeId,
-        fromNid: NodeId,
-        visited: Set<NodeId>,
+        originNid: NodeId,
+        originNode: NodeLike<*>,
         direction: EdgeTraversalDirection,
         maxDepth: Int,
-        depth: Int,
         edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
-    ): Boolean {
-        if (depth >= maxDepth) return false
-        val seen = visited.toMutableSet()
-        var emitted = false
-        edgesFrom(fromNid, direction).collect { hop ->
-            if (!edgeVisitor(currentPath, hop.edge!!)) return@collect
-            val nextNid = if (hop.fromId == fromNid) hop.toId else hop.fromId
-            if (nextNid in seen) return@collect
-            seen += nextNid
-            val nextNode = engine.nodeAt(nextNid) ?: return@collect
-            val eval = nodeEvaluator(currentPath, nextNode)
-            val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
-            val extendedPath = if (included) {
-                val edgePart = if (fromNid == headNid) listOf(hop.edge) else emptyList()
-                Path(currentPath.nodes + nextNode, currentPath.edges + edgePart)
-            } else currentPath
-            val nextHeadNid = if (included) nextNid else headNid
-            val nextDepth = depth + 1
-            when {
-                eval == Evaluation.INCLUDE_AND_PRUNE -> { emit(extendedPath); emitted = true }
-                eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth -> { emit(extendedPath); emitted = true }
-                eval == Evaluation.INCLUDE_AND_CONTINUE -> {
-                    val childEmitted = dfsLoop(extendedPath, nextHeadNid, nextNid, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)
-                    if (!childEmitted) emit(extendedPath) // natural terminal: included head with no emitting expansion
-                    emitted = true
+    ) {
+        class Frame(
+            val fromNid: NodeId, val headNid: NodeId, val depth: Int,
+            val hops: Iterator<Hop>,
+            val enteredVia: Evaluation?,          // null = origin
+            val pushedNode: Boolean, val pushedEdge: Boolean,
+        ) {
+            val expanded = HashSet<NodeId>()
+            var emitted = false                   // this subtree emitted a path (the recursive return value)
+        }
+
+        suspend fun hopsOf(nid: NodeId, depth: Int): Iterator<Hop> =
+            if (depth >= maxDepth) emptyList<Hop>().iterator() else edgesFrom(nid, direction).toList().iterator()
+
+        val nodes = arrayListOf(originNode)
+        val edges = arrayListOf<EdgeLike<*, *>>()
+        val onPath = mutableSetOf(originNid)
+        fun snapshot() = Path(nodes.toList(), edges.toList())
+        fun pop(node: Boolean, edge: Boolean) { if (node) nodes.removeAt(nodes.size - 1); if (edge) edges.removeAt(edges.size - 1) }
+
+        val stack = ArrayDeque<Frame>()
+        stack.addLast(Frame(originNid, originNid, 0, hopsOf(originNid, 0), null, false, false))
+        while (stack.isNotEmpty()) {
+            val top = stack.last()
+            if (!top.hops.hasNext()) {                                   // subtree done = the recursive "return"
+                stack.removeLast()
+                onPath -= top.fromNid
+                val parent = stack.lastOrNull() ?: continue
+                when (top.enteredVia) {
+                    Evaluation.INCLUDE_AND_CONTINUE -> { if (!top.emitted) emit(snapshot()); parent.emitted = true } // natural terminal
+                    Evaluation.EXCLUDE_AND_CONTINUE -> if (top.emitted) parent.emitted = true
+                    else -> {}
                 }
-                eval == Evaluation.EXCLUDE_AND_CONTINUE && nextDepth < maxDepth ->
-                    if (dfsLoop(extendedPath, nextHeadNid, nextNid, seen.toSet(), direction, maxDepth, nextDepth, edgeVisitor, nodeEvaluator)) emitted = true
-                // else: EXCLUDE_AND_PRUNE, or EXCLUDE_AND_CONTINUE at cap → nothing
+                pop(top.pushedNode, top.pushedEdge)
+                continue
+            }
+            val hop = top.hops.next()
+            val edge = hop.edge!!
+            if (!edgeVisitor(snapshot(), edge)) continue
+            val next = if (hop.fromId == top.fromNid) hop.toId else hop.fromId
+            if (next in onPath || !top.expanded.add(next)) continue
+            val node = engine.nodeAt(next) ?: continue
+            val eval = nodeEvaluator(snapshot(), node)
+            val included = eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.INCLUDE_AND_PRUNE
+            val pushedEdge = included && top.fromNid == top.headNid
+            val nextDepth = top.depth + 1
+            if (included) { nodes += node; if (pushedEdge) edges += edge }
+            when {
+                eval == Evaluation.INCLUDE_AND_PRUNE || (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth) -> {
+                    emit(snapshot()); top.emitted = true; pop(true, pushedEdge)
+                }
+                (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE) && nextDepth < maxDepth -> {
+                    onPath += next
+                    stack.addLast(Frame(next, if (included) next else top.headNid, nextDepth, hopsOf(next, nextDepth), eval, included, pushedEdge))
+                }
+                else -> {}                                               // EXCLUDE_AND_PRUNE, or EXCLUDE_AND_CONTINUE at cap
             }
         }
-        return emitted
     }
 
     private suspend fun FlowCollector<Path>.bfsLoop(
