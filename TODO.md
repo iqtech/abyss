@@ -879,6 +879,49 @@
   new `LoadTest` cases (agreement with N `loadNode` calls, absent ids omitted).
   Design plan: `ai-scripts/BatchedNodeLoadingPlan.md`.
 
+- **➡️ 2.31 Typed batched node read — `AbyssEngineLike<ID>.nodes(ids)`**
+  2.30 left `nodesAt` reachable only through the raw `NodeIdEngine` (`Collection<NodeId>` →
+  `Map<NodeId, NodeLike<*>>`). That's correct there: one frontier can span schemas, so there's no single
+  `ID`. The typed surface has `node(id)` but no batched version, so a user holding a set of ids still
+  pays one `getAsync` plus one store point-read per miss.
+  Shape: `suspend fun nodes(ids: Collection<ID>): Either<AbyssError, Map<ID, NodeLike<ID>>>` on
+  `AbyssEngineLike<ID>`, implemented in `AbyssGraphSchema<ID>` as a bridge over `worker.nodesAt`:
+  - `ids.associateBy(adapter::toNodeId)`, then map results back through that pairing. No
+    `adapter.fromNodeId` decode per result.
+  - Absent ids are omitted from the map, matching `nodesAt`/`resolveEdges`. Unlike `node(id)`, no
+    `NodeNotFound`; `Left` only for `Either.catch` failures.
+  - No `ownsNodeId` filter: `toNodeId` stamps this schema's tag, so every key is owned by construction.
+  - Abstract member, no default: `AbyssGraphSchema` is the only `AbyssEngineLike` implementor.
+  - Heterogeneous containers: a mixed-schema batch has no single `ID`, so the caller makes one call
+    per registered schema handle (one `getAll` per schema). Raw cross-schema batching stays `nodesAt`.
+  Test: mixed present/absent ids (absent omitted), a cold miss healed through the store, and a
+  tagged schema in a container returning only its own ids' nodes.
+
+- **➡️ 2.32 Typed chain walk — `walkOut<E>()` / `walkIn<E>()`**
+  Walking `A -hasNext-> B -hasNext-> C -> …` to the end has no primitive today. `paths()` can express
+  it but is the wrong instrument at 10k length: it emits one `Path` at the very end holding every node
+  (so `.take(10)` still walks the whole chain), `edgesFrom` hardcodes `outAt(nid, null)` so each step
+  reads and deserializes every edge of every type (`TraversalBuilder.kt:342-348`), and both loops
+  degrade on a degree-1 chain — DFS recurses 10k deep (TODO 3.12's pathology, never applied to
+  `dfsLoop`), BFS copies a growing `visited` set and `Path` per link (~100M element copies).
+  Two public methods over one raw `walkChain(edgeType, direction, maxLength)`: iterative `while`,
+  streaming `Flow<NodeLike<*>>`, throw on a fork (>1 edge of `E` in the walked direction) or a cycle,
+  node values batched `FETCH_BATCH` behind the id chase (the chase needs only ids, so the value
+  fetches decouple and amortize).
+  **`needValue` inverts between the two** — `walkOut` passes `true` to buy `outAtPersistent`'s
+  partition-local `edgesMap` predicate (type-filtered in the map, 2 RTs/link) and then discards the
+  value; `walkIn` passes `false` because `inAt` has no such path (adjacency index, type post-filtered
+  at `ShardedAdjacencyIndex:49`, 3 RTs/link). There is no reverse edges map — `edgesMap` is
+  partitioned by `fromId`, so a partition-local predicate structurally cannot find in-edges.
+  Measured against the live container: `loadEdges(from_id)` 2 storage read requests / 2 rows scanned
+  vs `loadInEdges(to_id)` 3 / 4 (`edges_pkey` is `(from_id HASH, to_id ASC, type ASC)`; `to_id` is a
+  bare secondary index with no `type` column). Both are Index Scans, not seq scans — but probe degree
+  was 2, so it does not predict degree 500. Ephemeral in-edges are invisible to `walkIn` by contract
+  (outgoing-only, TODO 1.13/1.27): the one asymmetry that yields a wrong answer rather than a slow one.
+  Blocked on two harness gaps before any baseline number means anything: nothing in the repo counts
+  Hazelcast map operations, and `CountingFakeEngine.inAt` is a stub returning `emptyFlow()`.
+  Design plan: `ai-scripts/TypedChainWalkPlan.md`.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
