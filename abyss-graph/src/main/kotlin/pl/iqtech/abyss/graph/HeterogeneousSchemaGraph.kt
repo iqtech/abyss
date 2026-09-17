@@ -41,7 +41,7 @@ class HeterogeneousSchemaGraph(
     val tagWidth: SchemaTagWidth = SchemaTagWidth.BYTE,
     nodesMapName: String = "abyss-nodes",
     edgesMapName: String = "abyss-edges",
-    edgesAdjacencyMapName: String = "abyss-edges-adjacency",
+    edgesAdjacencyMapName: String = "$edgesMapName-adjacency",
     private val allowCrossSchemaEdges: Boolean = false,
     persistentStore: AbyssStoreLike? = null,
     ephemeralStore: AbyssEphemeralStoreLike? = null,

@@ -715,6 +715,25 @@ class MultiSchemaTest {
         assertEquals(setOf(9L), b.outEdges<LongTestEdge>(1L).toList().map { it.toId }.toSet())
     }
 
+    // TODO 4.14: the adjacency map name defaults from edgesMapName, as in every other container — two
+    // containers with different edgesMapName must not share one index.
+    @Test fun adjacencyMapNameDefaultsFromEdgesMapName() = runBlocking {
+        val names = listOf("adjn-a-nodes", "adjn-a-edges", "adjn-a-edges-adjacency", "adjn-b-nodes", "adjn-b-edges", "adjn-b-edges-adjacency")
+        try {
+            val a = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "adjn-a-nodes", "adjn-a-edges", module = graphTestModule)
+                .register(LONG_TAG, LongKeyAdapter)
+            val b = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "adjn-b-nodes", "adjn-b-edges", module = graphTestModule)
+                .register(LONG_TAG, LongKeyAdapter)
+            a.transaction { addNode(LongTestNode(1L)); addNode(LongTestNode(2L)); addEdge(LongTestEdge(1L, 2L)) }.getOrNull()!!
+
+            assertTrue(multiSchemaHz.getMap<Any, Any>("adjn-a-edges-adjacency").isNotEmpty(), "A indexes into its own map")
+            assertEquals(0, multiSchemaHz.getMap<Any, Any>("adjn-b-edges-adjacency").size)
+            assertEquals(emptyList(), b.outEdges<LongTestEdge>(1L).toList())
+        } finally {
+            names.forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
     @Test fun demo() {
         // Tag round-trips through the schema adapter, and the header reads back to its tag.
         val adapter = SchemaKeyAdapter(LONG_TAG, SchemaTagWidth.BYTE, LongKeyAdapter)

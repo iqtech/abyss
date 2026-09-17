@@ -1383,9 +1383,11 @@
     whether one remote invocation beats two once there is a network.
   - **Ring 3-hop plateaus after N≈4** on both commits (~1.4–1.9k ops/sec to N=32 while `inEdges` reaches ~20k) —
     not investigated.
-  - **`HeterogeneousSchemaGraph` adjacency map default** is the fixed `"abyss-edges-adjacency"` (since `a8579fb`),
-    not `"$edgesMapName-adjacency"` like `HomogeneousSchemaGraph`/the worker: two containers with different
-    `edgesMapName` share one adjacency index. Intentional? If not, a one-word fix + a two-container test.
+  - ~~**`HeterogeneousSchemaGraph` adjacency map default**~~ — **DONE 2026-09-17**, not intentional: the default
+    was the fixed `"abyss-edges-adjacency"` since `a8579fb`, so containers with different `edgesMapName` shared
+    one index (and every Heterogeneous test's `*-edges-adjacency` cleanup cleared an unused map). Now
+    `"$edgesMapName-adjacency"` like the other containers; pinned by
+    `MultiSchemaTest.adjacencyMapNameDefaultsFromEdgesMapName` (failed before the fix).
   - **Typed traversal perf** (`outgoing<E> { pred }`) pays the count op — unmeasured; no suite covers it.
   - **Edge count per hop:** no test exists (`PerformanceTest.kt` empty stub); the old README table is gone.
   - **Cache serde** (candidate): JSON value decoding is 73% of a high-degree `outEdges` on BOTH commits
