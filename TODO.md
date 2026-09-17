@@ -1379,8 +1379,12 @@
 
   **Open:**
   - **`outEdges` construction-time route** (above) — waiting for a go; needs a test pinning 1 op in cache-only mode.
-  - **expX on a real network hop:** HEAD vs expX on the in-process 3-member cluster (`-Pcluster`, TCP loopback) —
-    whether one remote invocation beats two once there is a network.
+  - ~~**expX on a real network hop**~~ — **measured 2026-09-17, dropped.** 3-member in-process cluster over TCP
+    loopback, 10k-node ring, timed bursts, 3 alternating rounds (scratch `ClusterOutEdgesBenchTest`, same file in
+    both trees); expX/HEAD median ops/sec, no range overlap anywhere: embedded-member caller N=1/6/16
+    **0.75/0.90/0.92×**, smart client **0.83/0.79/0.81×**. HEAD's two ops run in parallel, so on a real network it
+    pays ≈max, not sum, of the two RTTs — one invocation has no round trip to save; expX adds an executor hop + task
+    serde. Caveat: loopback, all members and callers share 12 threads.
   - **Ring 3-hop plateaus after N≈4** on both commits (~1.4–1.9k ops/sec to N=32 while `inEdges` reaches ~20k) —
     not investigated.
   - ~~**`HeterogeneousSchemaGraph` adjacency map default**~~ — **DONE 2026-09-17**, not intentional: the default
