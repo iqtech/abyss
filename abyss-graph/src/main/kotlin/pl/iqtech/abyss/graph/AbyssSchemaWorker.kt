@@ -313,21 +313,29 @@ internal class AbyssSchemaWorker(
     // key-only hops straight through, so short-circuiting consumers (.any/.firstOrNull) stop early.
     @Suppress("UNCHECKED_CAST")
     private fun adjacencyHopFlow(nid: NodeId, direction: AdjacencyDirection, type: String?, needValue: Boolean, batch: Int): Flow<Hop> = flow {
-        if (adjacency.isEmpty(nid, direction)) {
-            // ponytail: a node with genuinely zero edges in this direction is indistinguishable from
-            // "never preloaded" (no shard entry to tell them apart) — it retries the store on every
-            // call instead of caching "confirmed empty". Upgrade to a dedicated warm-marker key if a
-            // hot zero-degree node's repeated store hits ever show up in profiling.
-            if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
-        }
         val edgeTag = type?.let { tagRegistry.edgeTagOf(it) }
+        // Read first, warm only when cold (TODO 4.14): no separate empty-probe round trip, so a warm hop is ONE
+        // index read (was probe 1-2 + read windows 2). The direction is read unfiltered and filtered here, so a
+        // warm node with no entries of THIS edge type isn't mistaken for cold and sent to the store every call.
+        // Entries are consumed as they arrive; only a direction with no entries at all preloads and reads again.
+        // ponytail: a node with genuinely zero edges in this direction is indistinguishable from
+        // "never preloaded" (no shard entry to tell them apart) — it retries the store on every
+        // call instead of caching "confirmed empty". Upgrade to a dedicated warm-marker key if a
+        // hot zero-degree node's repeated store hits ever show up in profiling.
+        suspend fun readEntries(consume: suspend (AdjacencyEntry) -> Unit) {
+            var sawAny = false
+            adjacency.read(nid, direction).collect { e -> sawAny = true; if (edgeTag == null || e.edgeTypeTag == edgeTag) consume(e) }
+            if (sawAny) return
+            if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
+            adjacency.read(nid, direction, edgeTag).collect { consume(it) }
+        }
         // nodeTypeTag is the neighbor's (== target's) type — carried so typed filters skip a fetch.
         fun hopOf(entry: AdjacencyEntry): Hop {
             val (fromId, toId) = if (direction == AdjacencyDirection.OUT) nid to entry.neighborId else entry.neighborId to nid
             return Hop(fromId, toId, tagRegistry.edgeNameOf(entry.edgeTypeTag), null, entry.nodeTypeTag)
         }
         if (!needValue) {
-            adjacency.read(nid, direction, edgeTag).collect { emit(hopOf(it)) }
+            readEntries { emit(hopOf(it)) }
             return@flow
         }
         val map = edgesMap as IMap<EdgeKey, Any>
@@ -350,7 +358,7 @@ internal class AbyssSchemaWorker(
             }
             buffer.clear()
         }
-        adjacency.read(nid, direction, edgeTag).collect { entry ->
+        readEntries { entry ->
             buffer += hopOf(entry)
             if (buffer.size >= batch) flush()
         }

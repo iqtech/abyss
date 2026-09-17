@@ -13,17 +13,21 @@ import java.util.concurrent.CompletionStage
  * [AdjacencyIndex] seam. Writes are unchanged — the [AdjacencyMutationProcessor] per `(owner, shard)`
  * key, shard chosen by `murmur(neighbor) % shardCount` for write-contention spreading.
  *
- * The read walks shards in bounded **windows** ([readWindow] keys per `getAll`) instead of `getAll`-ing
- * every shard at once, so a supernode streams in window-sized batches rather than materializing its
- * whole neighbor set (TODO 1.26). All of a node's shards co-locate in its partition ([AdjacencyKey] is
- * `PartitionAware` on the owner), so each window is a single-partition batched read. Shard order is
- * hash order — complete and non-overlapping (each neighbor lives in exactly one shard), which matches
- * the unordered contract adjacency reads already had.
+ * The read pulls shards in **windows** of [readWindow] keys per `getAll` (TODO 1.26). All of a node's
+ * shards co-locate in its partition ([AdjacencyKey] is `PartitionAware` on the owner), so each window is
+ * a single-partition batched read. Shard order is hash order — complete and non-overlapping (each
+ * neighbor lives in exactly one shard), which matches the unordered contract adjacency reads already had.
+ *
+ * Default window = every shard, i.e. ONE `getAll` per read (TODO 4.14). Windowing a Set-per-shard layout
+ * caps peak heap by at most shardCount/readWindow (2x at 8 of 16) — every shard's full Set still
+ * materializes — while each extra window is another invocation: measured, the 8-key windows plus a
+ * separate warm probe made a sparse-node hop ~3.8 getAlls instead of 1, and Astronomy 3-hop 27-44% slower.
+ * Real bounded heap for supernodes is the paged K-page [AdjacencyIndex] implementation's job.
  */
 internal class ShardedAdjacencyIndex(
     private val adjacencyMap: IMap<AdjacencyKey, AdjacencyValue>,
     private val shardCount: Int,
-    private val readWindow: Int = 8,
+    private val readWindow: Int = shardCount,
     private val partitionKeyOf: (NodeId) -> Any,
 ) : AdjacencyIndex {
 
@@ -50,19 +54,6 @@ internal class ShardedAdjacencyIndex(
             }
             start = end
         }
-    }
-
-    // Fast path: a non-empty first window proves warm without loading the whole node. Only when the
-    // first window is empty (necessarily a sparse or cold node — a dense node fills window 0) do we
-    // pay the definitive full-shard check, and for a sparse node that getAll is cheap.
-    override suspend fun isEmpty(owner: NodeId, direction: AdjacencyDirection): Boolean {
-        val pk = partitionKeyOf(owner)
-        val firstEnd = minOf(readWindow, shardCount)
-        val first = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys(owner, direction, 0, firstEnd, pk)) }
-        if (first.values.any { it.entries.isNotEmpty() }) return false
-        if (firstEnd == shardCount) return true
-        val rest = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys(owner, direction, firstEnd, shardCount, pk)) }
-        return rest.values.all { it.entries.isEmpty() }
     }
 
     // One getAll over every shard — all shards share the owner's partition, so it's a single round trip.

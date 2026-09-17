@@ -11,7 +11,6 @@ import java.lang.reflect.Proxy
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 
@@ -78,13 +77,5 @@ class AdjacencyIndexTest {
 
         assertEquals(1, one.size)
         assertEquals(1, counting.getAllSizes.size, "take(1) reads only the first window, not the rest")
-    }
-
-    @Test fun `isEmpty is false once warmed, true for an unknown node, and stays bounded`() = runBlocking {
-        assertTrue(index.isEmpty(UuidKeyAdapter.toNodeId(Uuid.random()), AdjacencyDirection.OUT), "unknown node is empty")
-        add(neighborInWindow0())
-        counting.getAllSizes.clear()
-        assertFalse(index.isEmpty(owner, AdjacencyDirection.OUT), "warmed node is not empty")
-        assertTrue(counting.getAllSizes.all { it <= WINDOW }, "a non-empty first window answers without loading every shard")
     }
 }

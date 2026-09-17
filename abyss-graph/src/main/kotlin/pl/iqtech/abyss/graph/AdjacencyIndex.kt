@@ -22,17 +22,12 @@ internal interface AdjacencyIndex {
     fun removeAsync(owner: NodeId, direction: AdjacencyDirection, neighborId: NodeId, edgeTypeTag: Short): CompletionStage<*>
 
     /**
-     * Bounded, streamed read. Emits entries in internally-bounded batches so heap stays bounded
-     * regardless of degree (a supernode never materializes its whole neighbor set at once). An
-     * [edgeTypeTag] restricts to a single edge type.
+     * Streamed read of every entry for this owner/direction; an [edgeTypeTag] restricts to a single edge
+     * type. How much it materializes at once is the implementation's trade-off: [ShardedAdjacencyIndex]
+     * reads all shards in one round trip by default (TODO 4.14); a paged implementation bounds heap for
+     * supernodes. An empty result is also the worker's cold-node signal (it then preloads from the store).
      */
     fun read(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short? = null): Flow<AdjacencyEntry>
-
-    /**
-     * Warm signal for the worker's self-heal: true when this owner/direction holds no cached entries.
-     * Must be **bounded** — it may not materialize the whole adjacency just to answer.
-     */
-    suspend fun isEmpty(owner: NodeId, direction: AdjacencyDirection): Boolean
 
     /**
      * Entry count for this owner/direction, restricted to one edge type when [edgeTypeTag] is set. The

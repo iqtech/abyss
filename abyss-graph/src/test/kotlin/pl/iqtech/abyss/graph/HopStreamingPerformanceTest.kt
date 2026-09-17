@@ -1,75 +1,71 @@
 package pl.iqtech.abyss.graph
 
-import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
-import pl.iqtech.abyss.dsl.hasOutgoing
+import pl.iqtech.abyss.dsl.typeTag
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 
-// Perf test (gated by -Pperf) for TODO 1.26 (b): a short-circuit frontier filter (hasOutgoing ->
-// filterFrontierByOutEdgeTo -> hops(...).any { ... }) over a supernode. Before: hops() is a List, so
-// outAt materializes the WHOLE neighbor set (every shard window) before .any looks. After: hops() is
-// a Flow, so .any stops at the window holding the match. The match is placed in shard 0 (window 0), so
-// a short-circuiting read must never touch window 1 (shards >= readWindow). That "did it read window 1"
-// signal is independent of the isEmpty warm-check (which only ever reads window 0).
+// Perf test (gated by -Pperf) for TODO 1.26 (b): a short-circuiting lookup over a supernode (the shape
+// hasOutgoing -> filterFrontierByOutEdgeTo uses: hops(...).firstOrNull { it.target == endpoint }) must stop at
+// the shard window holding the match instead of materializing every window.
+// Index-level since TODO 4.14: ShardedAdjacencyIndex now defaults to ONE window (every shard per getAll), where
+// there is nothing to stop at, and the worker doesn't expose readWindow — so this pins the window mechanism
+// itself with an explicit readWindow = 8, the pre-4.14 default. The match sits in shard 0 (window 0), so a
+// short-circuiting read must never touch window 1 (shards >= readWindow).
 class HopStreamingPerformanceTest {
 
     private val shards = 16
-    private val readWindow = 8   // ShardedAdjacencyIndex default
+    private val readWindow = 8
 
     private class WindowProbe(private val readWindow: Int) {
         var laterWindowGetAlls = 0   // getAll calls that touch a shard >= readWindow (i.e. window 1+)
         var totalEntries = 0
+
+        @Suppress("UNCHECKED_CAST")
+        fun proxy(real: IMap<AdjacencyKey, AdjacencyValue>): IMap<AdjacencyKey, AdjacencyValue> =
+            Proxy.newProxyInstance(IMap::class.java.classLoader, arrayOf(IMap::class.java)) { _, m, a ->
+                val r = m.invoke(real, *(a ?: emptyArray()))
+                if (m.name == "getAll") {
+                    val keys = a?.getOrNull(0) as? Set<AdjacencyKey>
+                    if (keys != null && keys.any { it.shard.shardIndex() >= readWindow }) laterWindowGetAlls++
+                    if (r is Map<*, *>) totalEntries += r.values.sumOf { (it as? AdjacencyValue)?.entries?.size ?: 0 }
+                }
+                r
+            } as IMap<AdjacencyKey, AdjacencyValue>
     }
 
-    private fun countingHz(real: HazelcastInstance, adjMapName: String, probe: WindowProbe): HazelcastInstance =
-        Proxy.newProxyInstance(HazelcastInstance::class.java.classLoader, arrayOf(HazelcastInstance::class.java)) { _, method, args ->
-            val res = method.invoke(real, *(args ?: emptyArray()))
-            if (method.name == "getMap" && (args?.getOrNull(0) as? String) == adjMapName) {
-                @Suppress("UNCHECKED_CAST")
-                val realMap = res as IMap<Any, Any>
-                Proxy.newProxyInstance(IMap::class.java.classLoader, arrayOf(IMap::class.java)) { _, m, a ->
-                    val r = m.invoke(realMap, *(a ?: emptyArray()))
-                    if (m.name == "getAll") {
-                        @Suppress("UNCHECKED_CAST")
-                        val keys = a?.getOrNull(0) as? Set<AdjacencyKey>
-                        if (keys != null && keys.any { it.shard.shardIndex() >= readWindow }) probe.laterWindowGetAlls++
-                        if (r is Map<*, *>) probe.totalEntries += r.values.sumOf { (it as? AdjacencyValue)?.entries?.size ?: 0 }
-                    }
-                    r
-                }
-            } else res
-        } as HazelcastInstance
-
-    @Test fun `hasOutgoing over a supernode reads every window (before) vs stops at the match's window (after)`() {
+    @Test fun `short-circuit lookup over a supernode stops at the match's window (readWindow = 8)`() {
         if (System.getProperty("perf") == null) return
         val n = 2000
+        val real = graphTestHz.getMap<AdjacencyKey, AdjacencyValue>("hs-edges-adjacency").also { it.clear() }
         val probe = WindowProbe(readWindow)
-        val hz = countingHz(graphTestHz, "hs-edges-adjacency", probe)
-        val g = AbyssGraphSchema(UuidKeyAdapter, hz, "hs-nodes", "hs-edges", module = graphTestModule)
+        val index = ShardedAdjacencyIndex(probe.proxy(real), shards, readWindow) { it.toString() }
 
-        val hub = Uuid.random()
+        val hub = UuidKeyAdapter.toNodeId(Uuid.random())
         // Match in shard 0 (window 0) so a short-circuiting read never needs window 1.
-        val target = generateSequence { Uuid.random() }.first { shardIndexOf(huid.toNodeId(it), shards) == 0 }
-        val edges = (listOf(target) + (1 until n).map { Uuid.random() }).map { TestEdge(fromId = hub, toId = it, label = "e") }
-        runBlocking { g.transaction(checkIntegrity = false) { edges.forEach { addEdge(it) } } }
+        val target = generateSequence { UuidKeyAdapter.toNodeId(Uuid.random()) }.first { shardIndexOf(it, shards) == 0 }
+        val edgeTag = TestEdge::class.typeTag()
+        val neighbors = listOf(target) + (1 until n).map { UuidKeyAdapter.toNodeId(Uuid.random()) }
+        runBlocking { neighbors.forEach { index.addAsync(hub, AdjacencyDirection.OUT, AdjacencyEntry(it, null, edgeTag)).toCompletableFuture().await() } }
 
         probe.laterWindowGetAlls = 0; probe.totalEntries = 0
-        val reached = runBlocking { g.from(hub) { hasOutgoing<TestEdge, Uuid>(target); count() } }.getOrNull()
+        val found = runBlocking { index.read(hub, AdjacencyDirection.OUT).firstOrNull { it.neighborId == target } }
 
-        println("\nhasOutgoing over a $n-edge hub (match in shard 0, window 0):")
-        println("  frontier retained = $reached, adjacency entries materialized = ${probe.totalEntries}, " +
+        println("\nshort-circuit lookup over a $n-entry hub (readWindow = $readWindow, match in shard 0, window 0):")
+        println("  found = ${found != null}, adjacency entries materialized = ${probe.totalEntries}, " +
             "window-1 getAll calls = ${probe.laterWindowGetAlls}")
 
-        graphTestHz.getMap<Any, Any>("hs-nodes").clear()
-        graphTestHz.getMap<Any, Any>("hs-edges").clear()
-        graphTestHz.getMap<Any, Any>("hs-edges-adjacency").clear()
+        real.clear()
 
-        assertEquals(1, reached, "hub is retained (it has the out-edge)")
+        assertTrue(found != null, "the match is found")
         assertEquals(0, probe.laterWindowGetAlls, "short-circuits at the match's window; never reads window 1")
+        assertTrue(probe.totalEntries < n, "materializes only window 0, not all $n entries")
     }
 }
