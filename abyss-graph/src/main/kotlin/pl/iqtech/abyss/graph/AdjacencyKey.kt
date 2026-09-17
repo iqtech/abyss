@@ -1,6 +1,7 @@
 package pl.iqtech.abyss.graph
 
 import com.hazelcast.partition.PartitionAware
+import pl.iqtech.abyss.dsl.ReadBackKeyApi
 import pl.iqtech.abyss.store.api.NodeId
 import java.util.Objects
 
@@ -23,10 +24,21 @@ class AdjacencyKey(
     pk: Any = nodeId.toString(),
 ) : PartitionAware<Any> {
     private val _pk = pk
-    override fun getPartitionKey(): Any = _pk
+    // Same read-back guard as EdgeKey: a deserialized key has no pk (the serializer doesn't store it), and
+    // routing it with the hex default would miss the partition the adapter pk wrote to (TODO 4.14).
+    override fun getPartitionKey(): Any =
+        if (_pk === READ_BACK) error("$this was read back from a map and has no partition key; rebuild it with the owner's pk before routing")
+        else _pk
     override fun equals(other: Any?) = other is AdjacencyKey && nodeId == other.nodeId && shard == other.shard
     override fun hashCode() = Objects.hash(nodeId, shard)
     override fun toString() = "AdjacencyKey($nodeId, $shard)"
+
+    companion object {
+        private val READ_BACK = Any()
+        /** For deserializers only: a key whose partition key is unknown (see [getPartitionKey]). */
+        @ReadBackKeyApi
+        fun readBack(nodeId: NodeId, shard: Byte) = AdjacencyKey(nodeId, shard, READ_BACK)
+    }
 }
 
 // Set uniqueness is effectively (neighborId, edgeTypeTag) — nodeTypeTag is a pure function of

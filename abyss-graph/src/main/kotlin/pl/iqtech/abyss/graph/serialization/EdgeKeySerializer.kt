@@ -4,6 +4,7 @@ import com.hazelcast.nio.serialization.compact.CompactReader
 import com.hazelcast.nio.serialization.compact.CompactSerializer
 import com.hazelcast.nio.serialization.compact.CompactWriter
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.ReadBackKeyApi
 import pl.iqtech.abyss.store.api.EdgeAdapter
 
 class EdgeKeySerializer(private val adapter: EdgeAdapter) : CompactSerializer<EdgeKey> {
@@ -16,7 +17,8 @@ class EdgeKeySerializer(private val adapter: EdgeAdapter) : CompactSerializer<Ed
         writer.writeString("type", obj.type)
     }
 
-    override fun read(reader: CompactReader) = EdgeKey(
+    @OptIn(ReadBackKeyApi::class)
+    override fun read(reader: CompactReader) = EdgeKey.readBack(
         fromId = adapter.decodeKey(reader.readNodeKey("fromId", adapter.keyEncodingShape)),
         toId   = adapter.decodeKey(reader.readNodeKey("toId", adapter.keyEncodingShape)),
         type   = reader.readString("type")!!

@@ -19,6 +19,9 @@ import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.uuid.Uuid
 
@@ -58,9 +61,8 @@ class OutEdgesEvictionTest {
         val (g, hub, edges) = setup("oev1")
         val map: IMap<EdgeKey, EdgeLike<*, *>> = graphTestHz.getMap("oev1-edges")
         assertEquals(10, map.size)
-        // Evict by predicate (runs on every partition): a key read back from the map carries EdgeKey's hex-string
-        // default pk, not the adapter pk, so a routed evict(key) would miss (TODO 4.14 finding). No MapStore here,
-        // so remove == cache eviction.
+        // Evict by predicate (runs on every partition): a key read back from the map has no partition key
+        // (EdgeKey.readBack, TODO 4.14), so it can't be routed to evict(key). No MapStore here, so remove == eviction.
         val victims = edges.take(3).map { it.label }.toSet()
         map.removeAll(com.hazelcast.query.Predicate<EdgeKey, EdgeLike<*, *>> { (it.value as TestEdge).label in victims })
         assertEquals(7, map.size, "3 values evicted from the cache")
@@ -78,6 +80,19 @@ class OutEdgesEvictionTest {
     @Test fun `steady state - nothing evicted`() = runBlocking {
         val (g, hub, edges) = setup("oev3")
         assertEquals(edges.map { it.label }.toSet(), g.outEdges(hub).toList().map { (it as TestEdge).label }.toSet())
+    }
+
+    // A key read back from a map has no partition key: routing with it must fail loudly, not hit the hex-default
+    // partition while the worker wrote with the adapter pk (UUID here) — TODO 4.14.
+    @Test fun `keys read back from a map refuse to route`() = runBlocking {
+        val (_, _, _) = setup("oev6")
+        val edgeKey = graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("oev6-edges").entries.first().key
+        val adjKey = graphTestHz.getMap<AdjacencyKey, AdjacencyValue>("oev6-edges-adjacency").entries.first().key
+        assertFailsWith<IllegalStateException> { edgeKey.partitionKey }
+        assertFailsWith<IllegalStateException> { adjKey.partitionKey }
+        // Through the map, Hazelcast wraps it (HazelcastSerializationException while computing the partition hash).
+        val routed = assertFails { graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("oev6-edges")[edgeKey] }
+        assertTrue(generateSequence(routed) { it.cause }.any { it is IllegalStateException && "read back" in (it.message ?: "") }, "cause chain: $routed")
     }
 
     // Node delete cascades its edges from the key set it can see. Store deleteNode removes only the node row
@@ -103,8 +118,8 @@ class OutEdgesEvictionTest {
         assertEquals(emptyList(), g.outEdges(hub.id).toList().map { (it as TestEdge).label }, "deleted hub has no outgoing edges")
     }
 
-    // outAtPersistent's typed value fast path (type != null && needValue, i.e. outgoing<E> { predicate }) is a
-    // partition scan behind ensureOutWarm — the C1 shape. Existence-only outgoing<E>() rides the index: control.
+    // outAtPersistent's typed value fast path (type != null && needValue, i.e. outgoing<E> { predicate }) was an
+    // unchecked partition scan behind a warm probe before TODO 4.14. Existence-only outgoing<E>() rides the index: control.
     @Test fun `partial eviction - typed traversal with edge predicate still reaches every target`() = runBlocking {
         listOf("oev4-nodes", "oev4-edges", "oev4-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
         val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "oev4-nodes", "oev4-edges", persistentStore = EvictionTestStore(), module = graphTestModule)

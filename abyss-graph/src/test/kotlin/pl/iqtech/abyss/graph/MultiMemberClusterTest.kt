@@ -145,16 +145,22 @@ class MultiMemberClusterTest {
             }
         }
 
-        // Real stored keys only — EdgeKey/AdjacencyKey's default constructor pk (fromId.toString())
-        // is never what production actually stamps on the key (see AbyssSchemaWorker.edgeKey/
-        // outKeyFor/inKeyFor), so hand-reconstructing keys here would query the wrong partition.
-        // equals()/hashCode() on both classes ignore pk, so filtering the real key set is safe.
+        // The stored key SET, re-keyed with the pk production stamps (AbyssSchemaWorker.edgeKey /
+        // ShardedAdjacencyIndex: the adapter's partitionKey — native Long here). A key read back from a map
+        // carries no pk at all (EdgeKey/AdjacencyKey.readBack, TODO 4.14): before that guard this test called
+        // getPartition() on read-back keys, which hashed the hex-string default pk and so "proved" co-location
+        // of a partitioning production never uses. The routed get() below proves the rebuilt keys are where the
+        // data actually lives. equals()/hashCode() on both classes ignore pk.
         // IMap's keySet()/entrySet() overload set (inherited from both ConcurrentMap and BaseMap,
         // the latter also declaring a Predicate-taking overload) trips up Kotlin overload
         // resolution, and IMap being simultaneously a Map and an Iterable<Map.Entry<K,V>> makes
         // even `.map { }` ambiguous. A plain for-loop over the Iterable side sidesteps all of it.
-        val edgeKeys = buildSet { for (e in hz.getMap<EdgeKey, Any>("cluster-edges")) add(e.key) }
-        val adjKeys = buildSet { for (e in hz.getMap<AdjacencyKey, AdjacencyValue>("cluster-edges-adjacency")) add(e.key) }
+        val edgesMap = hz.getMap<EdgeKey, Any>("cluster-edges")
+        val adjMap = hz.getMap<AdjacencyKey, AdjacencyValue>("cluster-edges-adjacency")
+        val edgeKeys = buildSet { for (e in edgesMap) add(e.key.let { EdgeKey(it.fromId, it.toId, it.type, hlong.partitionKey(it.fromId)) }) }
+        val adjKeys = buildSet { for (e in adjMap) add(e.key.let { AdjacencyKey(it.nodeId, it.shard, hlong.partitionKey(it.nodeId)) }) }
+        edgeKeys.forEach { assertTrue(edgesMap[it] != null, "routed get with the adapter pk must find $it") }
+        adjKeys.forEach { assertTrue(adjMap[it] != null, "routed get with the adapter pk must find $it") }
         val ps = hz.partitionService
 
         val edgeOwners = mutableSetOf<Any>()

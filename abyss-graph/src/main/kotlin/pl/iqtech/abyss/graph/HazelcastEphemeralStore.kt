@@ -34,6 +34,10 @@ internal class HazelcastEphemeralStore(
 ) : AbyssEphemeralStoreLike {
 
     private val ephEdges: IMap<EdgeKey, EdgeLike<*, *>> = hazelcast.getMap(ephEdgesMapName)
+
+    // This store's own partitioning: the hex fromId, stamped explicitly on every key it routes with. Keys read
+    // back from the map carry no pk (EdgeKey.readBack, TODO 4.14), so loadEdges rebuilds them through here.
+    private fun ephKey(fromId: NodeId, toId: NodeId, type: String) = EdgeKey(fromId, toId, type, fromId.toString())
     private val ephNodes: IMap<NodeId, NodeLike<*>> = hazelcast.getMap(ephNodesMapName)
 
     init {
@@ -67,14 +71,14 @@ internal class HazelcastEphemeralStore(
 
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.catch {
         withContext(Dispatchers.IO) {
-            val key = EdgeKey(fromId, toId, type)
+            val key = ephKey(fromId, toId, type)
             val edge = ephEdges[key] ?: return@withContext null to null
             val remaining = remainingTtl(ephEdges.getEntryView(key)?.expirationTime)
             if (remaining != null && remaining <= Duration.ZERO) null to null else edge to remaining
         }
     }.mapLeft { AbyssError.Unexpected(it) }
 
-    // Single-partition scan (EdgeKey's default partition key is fromId-derived), then a client-side
+    // Single-partition scan (ephKey's partition key is the hex fromId), then a client-side
     // filter — deliberately simpler than the persistent edgesMap's native-field predicate (which
     // needs a schema EdgeAdapter this store doesn't have and doesn't need): ephemeral volume
     // (session keys, tokens) doesn't call for index-level filtering.
@@ -84,7 +88,7 @@ internal class HazelcastEphemeralStore(
             ephEdges.entrySet(part)
                 .filter { it.key.fromId == fromId }
                 .mapNotNull { (key, edge) ->
-                    val remaining = remainingTtl(ephEdges.getEntryView(key)?.expirationTime)
+                    val remaining = remainingTtl(ephEdges.getEntryView(ephKey(key.fromId, key.toId, key.type))?.expirationTime)
                     if (remaining != null && remaining <= Duration.ZERO) null
                     else StoredEdge(key.fromId, key.toId, edge, remaining)
                 }
@@ -116,10 +120,10 @@ internal class HazelcastEphemeralStore(
                     txNodes.put(id, node, ttl.inWholeSeconds, TimeUnit.SECONDS)
                 }
                 override fun saveEdge(fromId: NodeId, toId: NodeId, edge: EdgeLike<*, *>, ttl: Duration, tags: Set<String>) {
-                    txEdges.put(EdgeKey(fromId, toId, edge::class.serialName()), edge, ttl.inWholeSeconds, TimeUnit.SECONDS)
+                    txEdges.put(ephKey(fromId, toId, edge::class.serialName()), edge, ttl.inWholeSeconds, TimeUnit.SECONDS)
                 }
                 override fun deleteNode(id: NodeId) { txNodes.remove(id) }
-                override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { txEdges.remove(EdgeKey(fromId, toId, type)) }
+                override fun deleteEdge(fromId: NodeId, toId: NodeId, type: String) { txEdges.remove(ephKey(fromId, toId, type)) }
             }
             try {
                 receiver.block()

@@ -4,6 +4,7 @@ import com.hazelcast.nio.serialization.compact.CompactReader
 import com.hazelcast.nio.serialization.compact.CompactSerializer
 import com.hazelcast.nio.serialization.compact.CompactWriter
 import pl.iqtech.abyss.graph.AdjacencyKey
+import pl.iqtech.abyss.dsl.ReadBackKeyApi
 import pl.iqtech.abyss.store.api.NodeId
 
 // No EdgeAdapter dependency (unlike EdgeKeySerializer/ReverseEdgeKeySerializer) — nothing predicate-
@@ -17,7 +18,8 @@ class AdjacencyKeySerializer : CompactSerializer<AdjacencyKey> {
         writer.writeInt8("shard", obj.shard)
     }
 
-    override fun read(reader: CompactReader) = AdjacencyKey(
+    @OptIn(ReadBackKeyApi::class)
+    override fun read(reader: CompactReader) = AdjacencyKey.readBack(
         nodeId = reader.readCompact<NodeId>("nodeId")!!,
         shard = reader.readInt8("shard"),
     )
