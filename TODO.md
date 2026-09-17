@@ -1299,14 +1299,16 @@
   traversal/adjacency path. A metric counts only when the old/new min–max ranges don't overlap.
   `df76b70` still reproduces the README numbers on this machine, so the README was right for its code.
   - 3-hop: standalone 0.4–0.5 → 0.9–1.0 ms (~2×); multi-schema 0.4 → 0.8 ms; Astronomy sweep −25..−37%
-    at every N; Long standalone sweep −17..−48%.
+    at every N; Long standalone sweep −17..−48%. **Correction: only the Astronomy figure was real** — every
+    ring-suite 3-hop walk returned 0 nodes on BOTH commits (see "Benchmarks" below); the "2×" compared the
+    cost of an empty first hop.
   - `outEdges`: Astronomy sweep **−50..−66% at every N** (largest); standalone Uuid/Long −24/−21%
     (String unchanged); Long standalone sweep N≥4 −28..−36%. **Correction (same day): the Long figure is
     invalid** — `LongPerformanceTest` seeds only IN adjacency, so on `dev` its `outEdges` returns **0 edges**
     (checked live: 20/20 calls → 0 on `dev`, 5 on `df76b70`). Uuid/String likely the same, unchecked.
   - `inEdges`: standalone Uuid/String −14/−23%; concurrency mixed.
   - Not regressed: serde 4–14% faster (likely `tags` out of the payload); multi-schema
-    `outEdges`/`inEdges` unchanged. Not TODO 1.34 (these suites never call `paths()`).
+    `outEdges`/`inEdges` unchanged (multi-schema `inEdges` was empty on both commits — wrong seed type string). Not TODO 1.34 (these suites never call `paths()`).
 
   **`outEdges` half — DONE 2026-09-17** (`d457369`, `5e5291f`, `8a36752`; plus `OutEdgesDegreeSweepTest`,
   perf-gated, same file dropped into `git archive` exports of both commits; `OutEdgesEvictionTest`).
@@ -1336,19 +1338,60 @@
       store stamps its pk explicitly; the cluster test rebuilds keys with the adapter pk and asserts a routed
       `get` finds every entry. Verified first: Hazelcast itself never asks a deserialized key for its pk.
 
+  **3-hop half — DONE 2026-09-17** (`f5c470c`).
+  - **Profile (JFR + op counts, Astronomy 3-hop):** per walk 11.5 adjacency `getAll` on `dev` vs 3.0 on
+    `df76b70`. Each hop paid the `isEmpty` probe (first window, and for a sparse node the second too) plus
+    `read`'s 2 windows — 4 invocations and 48 serialized keys for a node with ~1 edge. Waiting, not CPU (fewer
+    samples, 2.6× slower at N=8).
+  - **Fix:** `adjacencyHopFlow` reads the direction unfiltered and filters by type itself (a warm node with no
+    edges of the requested type isn't taken for cold); only an empty direction preloads + re-reads.
+    `AdjacencyIndex.isEmpty` removed; `ShardedAdjacencyIndex.readWindow` defaults to `shardCount` (windowing a
+    Set-per-shard layout caps heap by ≤2×; bounded supernode heap is the paged index's job).
+  - **Result:** 3 `getAll` per walk; Astronomy 3-hop 1.46–2.01× faster than before, 1.02–1.16× faster than
+    `df76b70` (N=1..16). `outEdges` sweep unchanged. Measured and dropped: `readWindow = shardCount` alone (6 ops).
+  - `MapOpCounterTest` pins 1 adjacency `getAll`; `HopStreamingPerformanceTest` now pins the window short-circuit
+    at index level with an explicit `readWindow = 8` (negative control with 16 fails).
+
+  **Benchmarks + docs — DONE 2026-09-17** (`c0a80b9`, `c8a8b5a`, `42f107e`).
+  - Probed result sizes on `df76b70` and HEAD: the ring suites (Long/Uuid/String/MultiSchema/
+    LongSchemaConcurrency) hand-seeded the maps — 3-hop returned 0 on every commit (only IN adjacency seeded),
+    `outEdges` 0 since the paged read, MultiSchema `inEdges` 0 always (`"test_edge"` for `LongTestEdge`).
+  - Now: `PerfRing.kt` seeds through chunked `transaction(checkIntegrity = false)` (compiles unchanged in
+    `df76b70` exports) and every timed call asserts its size (`outEdges` 5, `inEdges` 5, 3-hop 13), checked on
+    the returned `Either` — inside the traversal block `from()` would swallow it into a `Left`.
+  - Honest A/B, HEAD vs `df76b70`: 3-hop **1.47–2.36× faster**, `inEdges` **1.26–2.49× faster**, `outEdges`
+    12–18% slower standalone and 26–40% slower under concurrency (N=4..32).
+  - README Performance section moved to `docs/performance.md` (7 suites × 3 runs on `c0a80b9`, median + range,
+    caveats, known gaps, corrections to earlier numbers); unbacked CPU claims removed from README Sizing.
+
+  **`outEdges` under concurrency — investigated, OPEN.**
+  - **Profile at N=6** (`df76b70` 21,967 vs HEAD 14,927 ops/sec, 0.68×): the count's `getAll` always goes
+    through `InvokeOnPartitions` (`PartitionIteratingOperation`, `hz.async.thread` hops) even with all 16 keys
+    in one partition, and hashes/looks up 16 shard keys (≤5 exist on the ring). Partition-operation threads
+    carry 3.1× the CPU samples; `values(partitionPredicate)` is a plain single-partition op. No `getAllAsync`
+    in Hazelcast 5.6.
+  - **Measured and dropped (in-JVM):** expS sequential scan-then-count (harness N=6 0.66× vs HEAD 0.73× of
+    `df76b70`); expX scan + count as one `submitToKeyOwner` task (0.63×; 0.60× at N=1). The cost is the second
+    partition operation itself, however ordered or dispatched.
+  - **Proposed, not implemented:** decide the route once at construction — no store (the startup guard already
+    forbids `edgesMap` eviction) or `edgesMap` eviction verified disabled (`findMapConfig`, embedded member) →
+    plain 1-op scan (C2, ≤ `df76b70` cost); evictable `edgesMap` with a store → keep the count.
+
   **Open:**
-  - **3-hop regression** (the other half): bisect `df76b70..dev` on standalone Uuid 3-hop. Candidates: 1.26
-    adjacency window probe/reads, 2.30/4.12 node resolution; the HexFormat fix may already have moved it —
-    re-run the 3-hop suites first.
-  - **Fix the benchmarks:** `LongPerformanceTest` (and likely Uuid/String) seed only IN adjacency → `outEdges`
-    measures empty results on `dev`; re-seed through transactions or seed OUT too, then re-measure the README
-    table. README perf section stays as is until then. Also: the "Edge count per hop" table has no test
-    (`PerformanceTest.kt` is an empty stub since `df76b70`), and the README contradicts itself on 3-hop (table
-    0.4–0.5 ms vs prose "single-digit milliseconds").
-  - **Typed traversal perf** (`outgoing<E> { pred }`) now pays the count op — unmeasured; no README suite covers it.
-  - **Cache serde** (separate TODO candidate): JSON value decoding is 73% of a high-degree `outEdges` on BOTH
-    commits (`Instant.parseIso` 8%, string alloc 24%). Cache serializer only (`EdgeLikeHzSerializer`) — the
-    store's JSONB stays (2.12 `@AbyssStoreColumn`); binary cache format needs an `UnknownEdge` raw passthrough.
+  - **`outEdges` construction-time route** (above) — waiting for a go; needs a test pinning 1 op in cache-only mode.
+  - **expX on a real network hop:** HEAD vs expX on the in-process 3-member cluster (`-Pcluster`, TCP loopback) —
+    whether one remote invocation beats two once there is a network.
+  - **Ring 3-hop plateaus after N≈4** on both commits (~1.4–1.9k ops/sec to N=32 while `inEdges` reaches ~20k) —
+    not investigated.
+  - **`HeterogeneousSchemaGraph` adjacency map default** is the fixed `"abyss-edges-adjacency"` (since `a8579fb`),
+    not `"$edgesMapName-adjacency"` like `HomogeneousSchemaGraph`/the worker: two containers with different
+    `edgesMapName` share one adjacency index. Intentional? If not, a one-word fix + a two-container test.
+  - **Typed traversal perf** (`outgoing<E> { pred }`) pays the count op — unmeasured; no suite covers it.
+  - **Edge count per hop:** no test exists (`PerformanceTest.kt` empty stub); the old README table is gone.
+  - **Cache serde** (candidate): JSON value decoding is 73% of a high-degree `outEdges` on BOTH commits
+    (`Instant.parseIso` 8%, string alloc 24%). Cache serializer only (`EdgeLikeHzSerializer`) — the store's JSONB
+    stays (2.12 `@AbyssStoreColumn`); a binary cache format needs an `UnknownEdge` raw passthrough.
   - **Flat binary adjacency layout** (candidate): nested Compact `AdjacencyEntry`/`NodeId` make the count and
-    every hop pay full entry deserialization; 13% of low-degree `outEdges` is `AdjacencyKey` serialization.
-  - Unmeasured: node delete is now 3–4 index map ops vs 2–3 (probe + value scan), no value deserialization.
+    every hop pay full entry deserialization; `AdjacencyKey` serialization is 9–13% of `outEdges`.
+  - Unmeasured: node delete now does one key-only index read per direction (2 `getAll` warm) instead of
+    probe + value scan + index read.
