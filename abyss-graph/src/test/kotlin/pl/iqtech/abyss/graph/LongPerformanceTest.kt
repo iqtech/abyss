@@ -2,16 +2,10 @@ package pl.iqtech.abyss.graph
 
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
-import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
-import pl.iqtech.abyss.dsl.typeTag
-import pl.iqtech.abyss.store.api.EdgeLike
-import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
-import pl.iqtech.abyss.store.api.NodeId
-import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.measureTime
@@ -19,54 +13,32 @@ import kotlin.time.measureTime
 class LongPerformanceTest {
 
     companion object {
-        private const val NODE_COUNT = 10_000
-        private const val EDGES_PER_NODE = 5
-
-        // AbyssGraphSchema's standalone constructor is headerless (TODO 1.19); pre-seeded maps must
-        // use the same HeaderlessKeyAdapter wrapper, not the bare (headered) LongKeyAdapter.
-        private val hlong = HeaderlessKeyAdapter(LongKeyAdapter)
-
         private val perfGraph: AbyssGraphSchema<Long> by lazy {
             AbyssGraphSchema(LongKeyAdapter, longTestHz, "perf-long-nodes", "perf-long-edges", module = graphTestModule)
         }
 
-        // Matches AbyssSchemaWorker's default adjacencyShardCount (perfGraph doesn't override it).
-        private const val ADJACENCY_SHARD_COUNT = 16
-
+        // Ring seeded through the real write path (PerfRing.kt, TODO 4.14).
         private val nodeIds: List<Long> by lazy {
-            val ids = (1L..NODE_COUNT.toLong()).toList()
-            val nodesMap = longTestHz.getMap<NodeId, NodeLike<*>>("perf-long-nodes")
-            val edgesMap = longTestHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-long-edges")
-            val adjacencyMap = longTestHz.getMap<AdjacencyKey, AdjacencyValue>("perf-long-edges-adjacency")
-            ids.forEach { id ->
-                nodesMap[hlong.toNodeId(id)] = LongTestNode(id = id, name = id.toString())
-            }
-            val nodeTag = LongTestNode::class.typeTag()
-            val edgeTag = LongTestEdge::class.typeTag()
-            val adjacency = mutableMapOf<AdjacencyKey, MutableSet<AdjacencyEntry>>()
-            ids.forEachIndexed { i, fromId ->
-                repeat(EDGES_PER_NODE) { j ->
-                    val toId = ids[(i + j + 1) % NODE_COUNT]
-                    val fromNid = hlong.toNodeId(fromId)
-                    val toNid   = hlong.toNodeId(toId)
-                    edgesMap[EdgeKey(fromNid, toNid, "long_test_edge", hlong.partitionKey(fromNid))] =
-                        LongTestEdge(fromId = fromId, toId = toId)
-                    val inKey = AdjacencyKey(toNid, packShard(AdjacencyDirection.IN, shardIndexOf(fromNid, ADJACENCY_SHARD_COUNT)), hlong.partitionKey(toNid))
-                    adjacency.getOrPut(inKey) { mutableSetOf() } += AdjacencyEntry(fromNid, nodeTag, edgeTag)
-                }
-            }
-            adjacencyMap.putAll(adjacency.mapValues { AdjacencyValue(it.value) })
+            val ids = (1L..RING_NODES.toLong()).toList()
+            runBlocking { perfGraph.seedRing(ids, { LongTestNode(id = it, name = it.toString()) }, { f, t -> LongTestEdge(fromId = f, toId = t) }) }
             ids
         }
     }
 
+    private suspend fun outEdges(id: Long) = expectSize("outEdges", perfGraph.outEdges(id).toList().size, RING_OUT)
+    private suspend fun inEdges(id: Long) = expectSize("inEdges", perfGraph.inEdges(id).toList().size, RING_IN)
+    private suspend fun threeHop(id: Long) = expectSize("3-hop", perfGraph.from(id) {
+        outgoing<LongTestEdge>(); outgoing<LongTestEdge>(); outgoing<LongTestEdge>()
+        nodes<LongTestNode>(); collectNodes<LongTestNode>().toList()
+    }.fold({ error("3-hop failed: $it") }, { it.size }), RING_3HOP)
+
     @Test fun `outEdges throughput`() {
         if (System.getProperty("perf") == null) return
         val ids = nodeIds
-        runBlocking { repeat(200) { perfGraph.outEdges(ids.random()).toList() } }
+        runBlocking { repeat(200) { outEdges(ids.random()) } }
 
         val n = 2_000
-        val elapsed = measureTime { runBlocking { repeat(n) { perfGraph.outEdges(ids.random()).toList() } } }
+        val elapsed = measureTime { runBlocking { repeat(n) { outEdges(ids.random()) } } }
         val opsPerSec = n * 1000.0 / elapsed.inWholeMilliseconds
         println("\noutEdges: ${opsPerSec.toInt()} ops/sec  ($n queries, ${elapsed.inWholeMilliseconds}ms)")
         assertTrue(opsPerSec > 500)
@@ -75,10 +47,10 @@ class LongPerformanceTest {
     @Test fun `inEdges throughput`() {
         if (System.getProperty("perf") == null) return
         val ids = nodeIds
-        runBlocking { repeat(200) { perfGraph.inEdges(ids.random()).toList() } }
+        runBlocking { repeat(200) { inEdges(ids.random()) } }
 
         val n = 2_000
-        val elapsed = measureTime { runBlocking { repeat(n) { perfGraph.inEdges(ids.random()).toList() } } }
+        val elapsed = measureTime { runBlocking { repeat(n) { inEdges(ids.random()) } } }
         val opsPerSec = n * 1000.0 / elapsed.inWholeMilliseconds
         println("\ninEdges: ${opsPerSec.toInt()} ops/sec  ($n queries, ${elapsed.inWholeMilliseconds}ms)")
         assertTrue(opsPerSec > 500)
@@ -87,26 +59,10 @@ class LongPerformanceTest {
     @Test fun `3-hop traversal throughput`() {
         if (System.getProperty("perf") == null) return
         val ids = nodeIds
-        runBlocking {
-            repeat(20) {
-                perfGraph.from(ids.random()) {
-                    outgoing<LongTestEdge>(); outgoing<LongTestEdge>(); outgoing<LongTestEdge>()
-                    nodes<LongTestNode>(); collectNodes<LongTestNode>().toList()
-                }
-            }
-        }
+        runBlocking { repeat(20) { threeHop(ids.random()) } }
 
         val n = 200
-        val elapsed = measureTime {
-            runBlocking {
-                repeat(n) {
-                    perfGraph.from(ids.random()) {
-                        outgoing<LongTestEdge>(); outgoing<LongTestEdge>(); outgoing<LongTestEdge>()
-                        nodes<LongTestNode>(); collectNodes<LongTestNode>().toList()
-                    }
-                }
-            }
-        }
+        val elapsed = measureTime { runBlocking { repeat(n) { threeHop(ids.random()) } } }
         val msEach = elapsed.inWholeMilliseconds.toDouble() / n
         println("\n3-hop traversal: ${"%.1f".format(msEach)}ms avg  ($n traversals, ${elapsed.inWholeMilliseconds}ms)")
         assertTrue(msEach < 500)

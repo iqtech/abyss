@@ -6,18 +6,11 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.collectNodes
-import pl.iqtech.abyss.dsl.inEdges
 import pl.iqtech.abyss.dsl.nodes
-import pl.iqtech.abyss.dsl.outEdges
 import pl.iqtech.abyss.dsl.outgoing
-import pl.iqtech.abyss.dsl.typeTag
-import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.HeaderlessKeyAdapter
 import pl.iqtech.abyss.store.api.LongKeyAdapter
-import pl.iqtech.abyss.store.api.NodeId
-import pl.iqtech.abyss.store.api.NodeLike
 import kotlin.test.Test
 import kotlin.time.measureTime
 
@@ -32,8 +25,6 @@ class LongSchemaConcurrencyPerformanceTest {
     companion object {
         private val CONCURRENCY_LEVELS = listOf(1, 2, 4, 8, 16, 32)
         private const val OPS_PER_COROUTINE = 200
-        private const val NODE_COUNT = 10_000
-        private const val EDGES_PER_NODE = 5
 
         private val perfHz by lazy {
             System.setProperty("hazelcast.logging.type", "none")
@@ -42,37 +33,14 @@ class LongSchemaConcurrencyPerformanceTest {
                     .registerAbyssSerializers(HeaderlessKeyAdapter(LongKeyAdapter), graphTestModule)
             )
         }
-        private val hlong = HeaderlessKeyAdapter(LongKeyAdapter)
         private val perfGraph: AbyssGraphSchema<Long> by lazy {
             AbyssGraphSchema(LongKeyAdapter, perfHz, "perf-longc-nodes", "perf-longc-edges", module = graphTestModule)
         }
 
-        // Same deterministic ring-wrap seed as LongPerformanceTest, pre-populated directly into the
-        // maps (bypassing transaction{}) purely for fast setup at this scale.
-        // Matches AbyssSchemaWorker's default adjacencyShardCount (perfGraph doesn't override it).
-        private const val ADJACENCY_SHARD_COUNT = 16
-
+        // Same ring as LongPerformanceTest, seeded through the real write path (PerfRing.kt, TODO 4.14).
         private val nodeIds: List<Long> by lazy {
-            val ids = (1L..NODE_COUNT.toLong()).toList()
-            val nodesMap = perfHz.getMap<NodeId, NodeLike<*>>("perf-longc-nodes")
-            val edgesMap = perfHz.getMap<EdgeKey, EdgeLike<*, *>>("perf-longc-edges")
-            val adjacencyMap = perfHz.getMap<AdjacencyKey, AdjacencyValue>("perf-longc-edges-adjacency")
-            ids.forEach { id -> nodesMap[hlong.toNodeId(id)] = LongTestNode(id = id, name = id.toString()) }
-            val nodeTag = LongTestNode::class.typeTag()
-            val edgeTag = LongTestEdge::class.typeTag()
-            val adjacency = mutableMapOf<AdjacencyKey, MutableSet<AdjacencyEntry>>()
-            ids.forEachIndexed { i, fromId ->
-                repeat(EDGES_PER_NODE) { j ->
-                    val toId = ids[(i + j + 1) % NODE_COUNT]
-                    val fromNid = hlong.toNodeId(fromId)
-                    val toNid = hlong.toNodeId(toId)
-                    edgesMap[EdgeKey(fromNid, toNid, "long_test_edge", hlong.partitionKey(fromNid))] =
-                        LongTestEdge(fromId = fromId, toId = toId)
-                    val inKey = AdjacencyKey(toNid, packShard(AdjacencyDirection.IN, shardIndexOf(fromNid, ADJACENCY_SHARD_COUNT)), hlong.partitionKey(toNid))
-                    adjacency.getOrPut(inKey) { mutableSetOf() } += AdjacencyEntry(fromNid, nodeTag, edgeTag)
-                }
-            }
-            adjacencyMap.putAll(adjacency.mapValues { AdjacencyValue(it.value) })
+            val ids = (1L..RING_NODES.toLong()).toList()
+            runBlocking { perfGraph.seedRing(ids, { LongTestNode(id = it, name = it.toString()) }, { f, t -> LongTestEdge(fromId = f, toId = t) }) }
             ids
         }
     }
@@ -90,17 +58,14 @@ class LongSchemaConcurrencyPerformanceTest {
         }
     }
 
-    // Astronomy's fixture is seeded via transaction { addNode/addEdge }, which incidentally JIT-warms
-    // the outEdges/outgoing code paths before its sweep starts. This fixture is seeded via direct map
-    // puts instead (needed for fast setup at 10k-node scale — see nodeIds above), so without an
-    // explicit warm-up here N=1 would pay a cold-JIT tax Astronomy's N=1 doesn't, skewing the
-    // comparison. Matches LongPerformanceTest's own warm-up convention for the same query.
+    // Seeding writes, it doesn't read: without an explicit warm-up N=1 would pay a cold-JIT tax on the read
+    // paths that Astronomy's N=1 doesn't, skewing the comparison. Matches LongPerformanceTest's own warm-up.
     private suspend fun warmUp(body: suspend () -> Unit) = repeat(200) { body() }
 
     @Test fun `outEdges concurrency sweep`() {
         if (System.getProperty("perf") == null) return
         val ids = nodeIds
-        val body: suspend () -> Unit = { perfGraph.outEdges(ids.random()).toList() }
+        val body: suspend () -> Unit = { expectSize("outEdges", perfGraph.outEdges(ids.random()).toList().size, RING_OUT) }
         runBlocking { warmUp(body) }
         concurrentBench("outEdges", body)
     }
@@ -108,7 +73,7 @@ class LongSchemaConcurrencyPerformanceTest {
     @Test fun `inEdges concurrency sweep`() {
         if (System.getProperty("perf") == null) return
         val ids = nodeIds
-        val body: suspend () -> Unit = { perfGraph.inEdges(ids.random()).toList() }
+        val body: suspend () -> Unit = { expectSize("inEdges", perfGraph.inEdges(ids.random()).toList().size, RING_IN) }
         runBlocking { warmUp(body) }
         concurrentBench("inEdges", body)
     }
@@ -117,10 +82,10 @@ class LongSchemaConcurrencyPerformanceTest {
         if (System.getProperty("perf") == null) return
         val ids = nodeIds
         val body: suspend () -> Unit = {
-            perfGraph.from(ids.random()) {
+            expectSize("3-hop", perfGraph.from(ids.random()) {
                 outgoing<LongTestEdge>(); outgoing<LongTestEdge>(); outgoing<LongTestEdge>()
                 nodes<LongTestNode>(); collectNodes<LongTestNode>().toList()
-            }
+            }.fold({ error("3-hop failed: $it") }, { it.size }), RING_3HOP)
         }
         runBlocking { warmUp(body) }
         concurrentBench("3-hop traversal", body)
