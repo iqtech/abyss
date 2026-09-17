@@ -33,4 +33,11 @@ internal interface AdjacencyIndex {
      * Must be **bounded** — it may not materialize the whole adjacency just to answer.
      */
     suspend fun isEmpty(owner: NodeId, direction: AdjacencyDirection): Boolean
+
+    /**
+     * Entry count for this owner/direction, restricted to one edge type when [edgeTypeTag] is set. The
+     * worker's completeness check for a cached value scan (TODO 4.14): the index is authoritative, so a
+     * scan that returns fewer values than this count lost some to cache eviction.
+     */
+    suspend fun count(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short? = null): Int
 }

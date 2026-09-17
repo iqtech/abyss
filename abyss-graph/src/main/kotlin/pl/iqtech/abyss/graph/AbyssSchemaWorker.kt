@@ -202,13 +202,47 @@ internal class AbyssSchemaWorker(
     fun scanEdgeIds(parallelism: Int = 4): Flow<Pair<NodeId, NodeId>> =
         persistentStore?.scanEdgeIds(parallelism) ?: emptyFlow()
 
-    // Bounded/streamed outgoing edges. Persistent edges ride the OUT adjacency index (shard-window
-    // paged, honors pageSize). Ephemeral (TTL) edges are store-only (TODO 1.27) — included only when
-    // includeEphemeral is set, read from ephemeralStore (reliable across cache eviction), concatenated
-    // after the persistent page. Default false keeps the fast persistent-only path.
+    // Outgoing edges. Persistent edges come from cachedOutScan (one partition scan, checked against the
+    // index count); pageSize bounds only its heal path, the scan materializes the node's cached values.
+    // Ephemeral (TTL) edges are store-only (TODO 1.27) — included only when includeEphemeral is set, read
+    // from ephemeralStore (reliable across cache eviction), concatenated after the persistent edges.
+    @Suppress("UNCHECKED_CAST")
     fun outEdges(nid: NodeId, type: String? = null, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<EdgeLike<*, *>> = flow {
-        emitAll(adjacencyEdgeFlow(nid, AdjacencyDirection.OUT, type, batch = pageSize))
+        val map = edgesMap as IMap<EdgeKey, Any>
+        emitAll(cachedOutScan(nid, type,
+            scan = { pred -> map.values(pred) as Collection<EdgeLike<*, *>> },
+            heal = { adjacencyEdgeFlow(nid, AdjacencyDirection.OUT, type, batch = pageSize) }))
         if (includeEphemeral) emitAll(ephemeralStoreHops(nid, type).mapNotNull { it.edge })
+    }
+
+    // TODO 4.14: edgesMap is partitioned by fromId, so a node's cached out-edges are ONE partition scan — but
+    // the cache may evict (TODO 1.27), and a scan only sees what's cached. The adjacency index is never
+    // evicted and authoritative, so its count (fetched in parallel) proves the scan complete. Equal and
+    // non-zero → emit the scan. Otherwise (evicted values, or a cold node) → heal: the index-driven paged
+    // path, which reloads missing values from the store and warms a cold node. No store and an empty index
+    // → nothing. Measured (TODO 4.14 sweep): 2 map ops, 1.07-1.51x the old unchecked scan, 2-3.5x faster
+    // than always paging.
+    // ponytail: count and scan are two reads, not a snapshot — a concurrent add/remove between them shows as a
+    // mismatch and takes the heal path (correct, just slower); a simultaneous add+remove could balance the
+    // count, same class of read skew any non-transactional read here already has.
+    private fun <T> cachedOutScan(
+        nid: NodeId, type: String?,
+        scan: (Predicate<EdgeKey, Any>) -> Collection<T>,
+        heal: () -> Flow<T>,
+    ): Flow<T> = flow {
+        val edgeTag = type?.let { tagRegistry.edgeTagOf(it) }
+        val fromPred = keyEq<EdgeKey, Any>("fromId", nid)
+        val pred = if (type == null) fromPred else Predicates.and(fromPred, Predicates.equal<EdgeKey, Any>("__key.type", type))
+        val part = Predicates.partitionPredicate<EdgeKey, Any>(partitionKey(nid), pred)
+        val (scanned, indexed) = coroutineScope {
+            val values = async(Dispatchers.IO) { scan(part) }
+            val count = async { adjacency.count(nid, AdjacencyDirection.OUT, edgeTag) }
+            values.await() to count.await()
+        }
+        when {
+            indexed > 0 && scanned.size == indexed -> scanned.forEach { emit(it) }
+            indexed > 0 || persistentStore != null -> emitAll(heal())
+        }
     }
 
     // Ephemeral (TTL) out-edges are store-only (TODO 1.27): reliable only from ephemeralStore, since the
@@ -258,16 +292,15 @@ internal class AbyssSchemaWorker(
 
     @Suppress("UNCHECKED_CAST")
     private fun outAtPersistent(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
-        // Already-optimal hottest path (edgesMap is partitioned by fromId, and now holds persistent edges
-        // only) — don't route it through the adjacency index, which would cost 2 round trips for no gain.
-        // Materialized-then-emitted: a partition entrySet can't be paged (PagingPredicate doesn't compose
-        // with PartitionPredicate), and this path's consumers collect-all anyway.
-        if (type != null && needValue) flow {
-            ensureOutWarm(nid)
-            val pred = Predicates.and<EdgeKey, Any>(keyEq<EdgeKey, Any>("fromId", nid), Predicates.equal<EdgeKey, Any>("__key.type", type))
-            val part = Predicates.partitionPredicate<EdgeKey, Any>(partitionKey(nid), pred)
+        // Typed value hop: the checked partition scan (cachedOutScan). Before TODO 4.14 this was an unchecked
+        // scan behind ensureOutWarm, which silently dropped evicted edges from the traversal. entrySet, not
+        // values: the hop needs the key. Materialized-then-emitted: a partition entrySet can't be paged
+        // (PagingPredicate doesn't compose with PartitionPredicate), and this path's consumers collect-all anyway.
+        if (type != null && needValue) {
             val map = edgesMap as IMap<EdgeKey, Any>
-            withContext(Dispatchers.IO) { map.entrySet(part) }.forEach { emit(Hop(it.key.fromId, it.key.toId, it.key.type, it.value as EdgeLike<*, *>)) }
+            cachedOutScan(nid, type,
+                scan = { pred -> map.entrySet(pred).map { Hop(it.key.fromId, it.key.toId, it.key.type, it.value as EdgeLike<*, *>) } },
+                heal = { adjacencyHopFlow(nid, AdjacencyDirection.OUT, type, needValue = true, batch = valueFetchBatch) })
         }
         else adjacencyHopFlow(nid, AdjacencyDirection.OUT, type, needValue, valueFetchBatch)
 
@@ -276,7 +309,7 @@ internal class AbyssSchemaWorker(
 
     // preloadOut warms both edgesMap and the adjacency index together, so an empty adjacency OUT side is
     // also the signal that edgesMap's fast-path scan needs warming — used by callers that bypass
-    // adjacencyRead (outAt's fast path, outEdgeFlow, cascadeEdgeRemovals).
+    // adjacencyRead (cascadeEdgeRemovals).
     private suspend fun ensureOutWarm(nid: NodeId) {
         if (adjacency.isEmpty(nid, AdjacencyDirection.OUT)) preloadOut(nid)
     }

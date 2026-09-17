@@ -64,4 +64,13 @@ internal class ShardedAdjacencyIndex(
         val rest = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys(owner, direction, firstEnd, shardCount, pk)) }
         return rest.values.all { it.entries.isEmpty() }
     }
+
+    // One getAll over every shard — all shards share the owner's partition, so it's a single round trip.
+    // ponytail: deserializes every entry just to count them. An EntryProcessor count was measured (TODO 4.14)
+    // and lost at low degree (runs on all 16 keys) while gaining only 4-9% at high degree, since the member
+    // still deserializes in process(). A flat binary AdjacencyValue layout is the real fix if this shows up.
+    override suspend fun count(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short?): Int {
+        val all = withContext(Dispatchers.IO) { adjacencyMap.getAll(shardKeys(owner, direction, 0, shardCount, partitionKeyOf(owner))) }
+        return all.values.sumOf { v -> if (edgeTypeTag == null) v.entries.size else v.entries.count { it.edgeTypeTag == edgeTypeTag } }
+    }
 }

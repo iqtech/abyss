@@ -17,7 +17,9 @@ import kotlinx.serialization.encoding.Encoder
 class NodeId(val bytes: ByteArray) : Comparable<NodeId> {
     override fun equals(other: Any?) = other is NodeId && bytes.contentEquals(other.bytes)
     override fun hashCode() = bytes.contentHashCode()
-    override fun toString() = bytes.joinToString("") { "%02x".format(it) }
+    // HexFormat, not "%02x".format per byte: String.format parses its pattern (regex) on every call, and this
+    // runs per deserialized EdgeKey/AdjacencyKey (their default pk) — 42% of an outEdges profile (TODO 4.14).
+    override fun toString(): String = HEX.formatHex(bytes)
     override fun compareTo(other: NodeId): Int {
         val len = minOf(bytes.size, other.bytes.size)
         for (i in 0 until len) {
@@ -27,6 +29,7 @@ class NodeId(val bytes: ByteArray) : Comparable<NodeId> {
         return bytes.size.compareTo(other.bytes.size)
     }
     companion object {
+        private val HEX: java.util.HexFormat = java.util.HexFormat.of()   // lowercase, immutable, thread-safe
         fun fromHex(hex: String) = NodeId(ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() })
     }
 }
