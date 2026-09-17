@@ -80,6 +80,29 @@ class OutEdgesEvictionTest {
         assertEquals(edges.map { it.label }.toSet(), g.outEdges(hub).toList().map { (it as TestEdge).label }.toSet())
     }
 
+    // Node delete cascades its edges from the key set it can see. Store deleteNode removes only the node row
+    // (edges go by explicit DeleteEdge), so an outgoing edge the cascade misses stays in the store AND in the
+    // index — every later read heals it back as an edge of a deleted node.
+    @Test fun `partial eviction - deleting a node cascades every outgoing edge`() = runBlocking {
+        listOf("oev5-nodes", "oev5-edges", "oev5-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+        val store = EvictionTestStore()
+        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "oev5-nodes", "oev5-edges", persistentStore = store, module = graphTestModule)
+        val hub = TestNode(id = Uuid.random(), name = "hub")
+        val targets = (1..10).map { TestNode(id = Uuid.random(), name = "t$it") }
+        val edges = targets.mapIndexed { i, t -> TestEdge(fromId = hub.id, toId = t.id, label = "e${i + 1}") }
+        check(g.transaction(checkIntegrity = false) { addNode(hub); targets.forEach { addNode(it) }; edges.forEach { addEdge(it) } }.isRight())
+        val map: IMap<EdgeKey, EdgeLike<*, *>> = graphTestHz.getMap("oev5-edges")
+        val victims = edges.take(3).map { it.label }.toSet()
+        map.removeAll(com.hazelcast.query.Predicate<EdgeKey, EdgeLike<*, *>> { (it.value as TestEdge).label in victims })
+        assertEquals(7, map.size)
+
+        check(g.transaction { removeNode(hub.id) }.isRight())
+
+        assertEquals(emptyList(), store.edges.map { (it.edge as TestEdge).label }, "no edge rows left in the store")
+        assertEquals(emptyList(), targets.flatMap { g.inEdges(it.id).toList() }.map { (it as TestEdge).label }, "no target still sees an incoming edge")
+        assertEquals(emptyList(), g.outEdges(hub.id).toList().map { (it as TestEdge).label }, "deleted hub has no outgoing edges")
+    }
+
     // outAtPersistent's typed value fast path (type != null && needValue, i.e. outgoing<E> { predicate }) is a
     // partition scan behind ensureOutWarm — the C1 shape. Existence-only outgoing<E>() rides the index: control.
     @Test fun `partial eviction - typed traversal with edge predicate still reaches every target`() = runBlocking {

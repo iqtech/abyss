@@ -307,13 +307,6 @@ internal class AbyssSchemaWorker(
     override fun inAt(nid: NodeId, type: String?, needValue: Boolean): Flow<Hop> =
         adjacencyHopFlow(nid, AdjacencyDirection.IN, type, needValue, valueFetchBatch)
 
-    // preloadOut warms both edgesMap and the adjacency index together, so an empty adjacency OUT side is
-    // also the signal that edgesMap's fast-path scan needs warming — used by callers that bypass
-    // adjacencyRead (cascadeEdgeRemovals).
-    private suspend fun ensureOutWarm(nid: NodeId) {
-        if (adjacency.isEmpty(nid, AdjacencyDirection.OUT)) preloadOut(nid)
-    }
-
     // Bounded, streamed hop flow off the adjacency index (self-healing from the store on a cold miss).
     // The index emits in bounded windows (see ShardedAdjacencyIndex); needValue batches the edge-value
     // getAll every [batch] hops (peak heap ~[batch] edges regardless of degree). needValue=false emits
@@ -526,21 +519,21 @@ internal class AbyssSchemaWorker(
         return null
     }
 
-    // TODO 1.20 fix: preloadOut/preloadIn warm the cache from the store first (same self-heal
-    // preloadOut/preloadIn already give outAt/inAt), so a cold cache after a restart or partition
-    // eviction can't make this scan silently miss a node's durable edges and leave them dangling.
+    // Both directions come from the adjacency index, key-only: a cascade needs (from, to, type), never the
+    // values. The index is authoritative and never evicted (TODO 1.27), and a cold node self-heals (an empty
+    // index side preloads from the store). TODO 4.14: the OUT side used to scan edgesMap behind a warm probe —
+    // under partial value eviction the probe saw a non-empty index, the scan missed the evicted edges, and
+    // with no DeleteEdge for them (store deleteNode removes only the node row) they stayed in the store and
+    // the index, healing back as edges of a deleted node.
     // Schema-agnostic by design: an edge lives in these same shared maps and this same store
     // regardless of whether its other endpoint shares nid's schema tag, so cascade removes it either
     // way — a cross-schema edge left dangling after its endpoint is deleted is exactly the bug this
     // used to have (a since-removed `sameSchema(...)` filter excluded cross-schema edges here).
     private suspend fun cascadeEdgeRemovals(nid: NodeId): List<NodeOp.RemoveEdge> {
-        ensureOutWarm(nid)
-        val pk = partitionKey(nid)
-        val out = withContext(Dispatchers.IO) {
-            edgesMap.entrySet(Predicates.partitionPredicate(pk, keyEq<EdgeKey, EdgeLike<*, *>>("fromId", nid)))
-        }.map { NodeOp.RemoveEdge(it.key.fromId, it.key.toId, it.key.type) }
-        // ponytail: ephemeral edges are outgoing-only (TODO 1.13) — no adjacency IN entry, so deleting
-        // the TO-node can't cascade them; they expire via TTL. Deleting the FROM-node still cascades (out).
+        val out = outAt(nid, type = null, needValue = false).toList()
+            .map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
+        // ponytail: ephemeral (TTL) edges are store-only since TODO 1.27 — not in edgesMap or the index — so
+        // this cascade can't see them in either direction; they expire via TTL (unchanged by TODO 4.14).
         val inc = inAt(nid, type = null, needValue = false).toList()
             .map { NodeOp.RemoveEdge(it.fromId, it.toId, it.type) }
         return (out + inc).distinctBy { Triple(it.fromId, it.toId, it.type) }
