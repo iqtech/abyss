@@ -1292,3 +1292,34 @@
   `MultiSchemaTransactionLike`/`MultiSchemaTransactionBuffer` with an added `on(schema)` accessor,
   rather than adding a second parallel transaction method. Full plan in
   `ai-scripts/multi-schema-transaction.md`.
+
+- **➡️ 4.14 Performance regression since `df76b70`: find the cause(s), starting with `outEdges` by degree**
+  Same-machine A/B (2026-09-17, Ryzen 5 2600, the 7 README perf suites × 3 alternating rounds, benchmark
+  files byte-identical, same Hazelcast/coroutines/Kotlin): `dev` (`1f89cbd`) is slower on every
+  traversal/adjacency path. A metric counts only when the old/new min–max ranges don't overlap.
+  `df76b70` still reproduces the README numbers on this machine, so the README was right for its code.
+  - 3-hop: standalone 0.4–0.5 → 0.9–1.0 ms (~2×); multi-schema 0.4 → 0.8 ms; Astronomy sweep −25..−37%
+    at every N; Long standalone sweep −17..−48%.
+  - `outEdges`: Astronomy sweep **−50..−66% at every N** (largest); standalone Uuid/Long −24/−21%
+    (String unchanged); Long standalone sweep N≥4 −28..−36%.
+  - `inEdges`: standalone Uuid/String −14/−23%; concurrency mixed.
+  - Not regressed: serde 4–14% faster (likely `tags` out of the payload); multi-schema
+    `outEdges`/`inEdges` unchanged. Not TODO 1.34 (these suites never call `paths()`).
+  **First suspect, unverified: TODO 1.26 `outEdges` paging.** Old: `preloadOut` + ONE
+  `edgesMap.values(partitionPredicate(fromId))` — cost ∝ edges in the hub's *partition*, all values at
+  once. New: `adjacencyEdgeFlow` — `isEmpty` probe (1–2 `getAll`) + 2 shard windows + 1 value `getAll`
+  per `pageSize` (100) → ~3–4 + ⌈d/100⌉ map ops. At degree 5 that is ~4 ops vs 1; at high degree the new
+  path should catch up (bounded heap was 1.26's goal). The crossover degree is unmeasured.
+  **Planned test:** one file dropped unchanged into both exports (`git archive`), using only API common
+  to both (`AbyssGraphSchema` ctor, `transaction(checkIntegrity = false) { addEdge }` — not direct map
+  seeding, the adjacency layout may differ — and `outEdges(id).toList()`). Sweep hub degree
+  d ∈ {1, 5, 20, 100, 500, 2,000, 10,000} × background partition population {small, 10k nodes × 5
+  edges ≈ 185 edges/partition}; warm ops/sec, 3 alternating rounds; a copy of `MapOpCounter` for map
+  ops and returned elements per call. Caveat: one in-JVM member *understates* the new path — each extra
+  `getAll` is a network round trip in a real cluster (check whether `-Pcluster` fits).
+  Then: bisect `df76b70..dev` (84 commits) on the two cleanest signals — standalone Uuid 3-hop and
+  Astronomy `outEdges` — which may land on different commits (3-hop candidates: 1.26 adjacency window
+  probe/reads, 2.30/4.12 node resolution). README perf section stays as is until fix-vs-document is
+  decided. Also found: the "Edge count per hop" table has no test (`PerformanceTest.kt` has been an
+  empty stub since `df76b70`), and the README contradicts itself on 3-hop (table 0.4–0.5 ms vs prose
+  "single-digit milliseconds").
