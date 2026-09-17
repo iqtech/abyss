@@ -949,7 +949,6 @@ With graph cache active: ~500 MB app + 2.0 GB data + GC headroom → **`-Xmx7g`*
 | 5,000 | ~13.5 GB | 15.5 GB | 25 GB | ✗ RAM exceeded |
 
 Real ceiling: **~4,700 users** before needing more RAM (was ~5,000 before the reverse edge map was added).
-CPU stays well under 50% past that point.
 
 ---
 
@@ -972,7 +971,7 @@ Same data model — only the RAM envelope changes.
 | 10,000 | ~21 GB | 42 GB | 60 GB | ✓ tight |
 | 11,000 | ~23 GB | 46 GB | 64 GB | ✗ RAM exceeded |
 
-Real ceiling: **~10,500 users**. At that scale (~1,050 concurrent at 3 ms avg across 16 cores) CPU sits at ~20% peak — RAM is the constraint, not CPU.
+Real ceiling: **~10,500 users**.
 
 ---
 
@@ -1002,7 +1001,6 @@ single-node because coordinator work is distributed).
 | 37,000 | ~74 GB | ~24.7 GB | 51 GB | 65 GB | ✗ RAM exceeded |
 
 Real ceiling: **~36,000 users** (3 × 25 GB usable live data at 2× GC ratio = 75 GB total / 2 GB per 1,000 users).
-At that scale (~3,600 concurrent across 48 cores) CPU peaks at ~22% — RAM is still the constraint.
 
 ---
 
