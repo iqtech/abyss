@@ -35,7 +35,7 @@ built for exactly that job.
 It's a targeted library, not a platform: the entire public surface is `suspend fun`, non-blocking
 end to end (`IMap.getAsync()`, `async`/`awaitAll` fan-out, `Either<AbyssError, T>`/`Flow` results),
 running on your app's own dispatcher — no reactor, no thread pool to tune. Optimized for throughput
-on hardware you already have (see [Performance](#performance)), not feature breadth.
+on hardware you already have (see [Performance](docs/performance.md)), not feature breadth.
 
 One thing you won't find in most graph databases: **first-class ephemeral (TTL) elements.**
 `ephemeral { }` writes nodes/edges that expire on their own — no cleanup job, no expiry sweep, no
@@ -277,7 +277,7 @@ coexistence is not free for `HeterogeneousSchemaGraph` — its shared layout is 
 `tag` + kind + `hi`/`lo` + nullable `str`) and its `outEdges`/`inEdges` predicate compares two fields (the
 tag plus the value) instead of one, since two different `ID` shapes can otherwise collide on `lo`
 within a partition. `HomogeneousSchemaGraph` avoids even that cost — see below. See
-[Performance](#performance) for the measured overhead versus a standalone schema.
+[Performance](docs/performance.md) for the measured overhead versus a standalone schema.
 
 ---
 
@@ -897,181 +897,6 @@ node visited anywhere terminates all future visits to it) — path-local uniquen
 distinct routes through a node are still found, just without revisiting the same node within one
 route. Cycles are handled as a consequence: a back-edge to an already-visited ancestor is skipped,
 so traversal always terminates.
-
----
-
-## Performance
-
-Measured on a single JVM, pure in-memory mode (no persistent store), 10,000 nodes × 5 edges/node.
-Hardware: AMD Ryzen 5 2600 (6-core/12-thread), 32 GB RAM.
-All queries run single-threaded; real throughput scales linearly with available cores.
-
-These numbers reflect the sharded adjacency index (TODO 2.21) and the shared bounded traversal
-dispatcher (TODO 2.19) — both supersede the figures in earlier revisions of this table, which were
-measured against the old single reverse-key map and an unbounded per-hop coroutine fan-out.
-
-| Adapter | `outEdges` | `inEdges` | 3-hop traversal |
-|---|---|---|---|
-| `UuidKeyAdapter` | **3,129 ops/sec** | **1,605 ops/sec** | **0.4 ms avg** |
-| `LongKeyAdapter` | **2,525 ops/sec** | **1,721 ops/sec** | **0.5 ms avg** |
-| `StringKeyAdapter` | **2,341 ops/sec** | **1,264 ops/sec** | **0.4 ms avg** |
-
-`outEdges`/`inEdges` predicates compare `fromId`/`toId` in each adapter's native encoding (see
-[Edge key encoding](#edge-key-encoding)) rather than the hex strings used previously — a fixed
-`Int64` (or `Int64` pair for UUID) compare, or a native (non-hex) `String` compare, instead of a
-char-by-char hex scan at 2× the byte length. This closed most of the gap between adapters:
-`StringKeyAdapter` now trails `LongKeyAdapter` only because its field is still variable-length
-(10–50 chars, the ID itself) rather than a fixed 8 bytes, not because of a hex-expansion penalty.
-
-`inEdges` and 3-hop traversal (which chains existence-only typed hops, not value-needed ones) now
-route through the sharded adjacency index (see [Partition layout](#partition-layout)) instead of an
-unindexed partition-predicate scan — a batched `IMap.getAll` across a node's precomputed shard keys
-(point gets) rather than scanning a partition for matching entries. That's why 3-hop traversal in
-particular dropped from single-digit milliseconds to sub-millisecond: each hop is now a handful of
-point gets instead of a scan. `inEdges` stays the slower of the pair because it still pays a second
-`IMap.getAll` to resolve edge values from `edgesMap` after the adjacency read. `outEdges<E>()` (typed,
-value-needed) is unaffected by any of this — it was already, and remains, a direct single-partition
-`edgesMap` scan.
-
-### Multi-schema container overhead
-
-A schema registered *inside* a `HeterogeneousSchemaGraph` container does not match its standalone
-throughput. The shared `MultiSchemaAdapter` layout is a fixed superset (`tag`/kind/`hi`/`lo`/`str`),
-and `outEdges` evaluates a two-field predicate (`fromIdTag` + `fromIdLo`) over that wider record
-instead of a single-field compare. Measured same-JVM against a standalone `LongKeyAdapter` schema
-(`MultiSchemaPerformanceTest`): `outEdges` runs at **~0.6×** standalone throughput (1,522 vs 2,525
-ops/sec), while `inEdges` (1,904 ops/sec) and 3-hop traversal (0.5 ms avg) are **within noise** of
-the standalone numbers — both go through the same adjacency-index read path regardless of
-container tier, so the per-key predicate cost that hurts `outEdges` doesn't apply there.
-
-The `tag` clause is not optional — two different `ID` shapes can collide on `lo` within a partition,
-so it is what keeps a `Long` query from matching a `Uuid` edge whose low 64 bits coincide. This means
-`HeterogeneousSchemaGraph` trades the previous uniform-hex encoding for a superset-predicate cost of a
-**similar** order on `outEdges`, rather than a clear win — the native encoding's decisive advantage is
-on the **standalone** single-schema path (the table above), where the key is a single native field.
-`HomogeneousSchemaGraph` doesn't pay this cost: its adapter shape is fixed for the whole container
-(one descriptor computed once, not re-derived per key), and its keys carry no header byte at all.
-
-Earlier revisions of this table showed Long/String 3-hop pinned at a flat ~0.7ms versus Uuid's
-~3.6ms — a benchmark bug (`TODO.md` 4.6), not a real cost difference: `LongPerformanceTest`/
-`StringPerformanceTest` seeded their edges with the wrong type string, so their typed 3-hop hops
-silently matched nothing and measured an empty traversal every time. With that fixed, all three
-adapters land in the same single-digit-millisecond range for a real 3-hop × 5-fanout traversal at
-10k nodes — `LongKeyAdapter` modestly fastest (a fixed 8-byte key, no `Uuid` hashCode/equals
-overhead), `UuidKeyAdapter`/`StringKeyAdapter` statistically indistinguishable from each other
-run-to-run. `NodeLike`/`EdgeLike` payloads go through a custom JSON `StreamSerializer`
-(`NodeLikeHzSerializer`/`EdgeLikeHzSerializer`), not Hazelcast Compact — only `NodeId`/`EdgeKey`/
-`ReverseEdgeKey` use real Compact — and isolating that JSON roundtrip entirely
-(`SerdeRoundtripPerformanceTest`) still measures a small (~1.8x edge / ~1.2x node) Uuid cost,
-consistent with `LongKeyAdapter`'s modest edge. See `TODO.md` 3.5/3.6 for the (now-corrected)
-investigation history.
-
-To reproduce:
-
-```
-./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.UuidPerformanceTest" -Pperf
-./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongPerformanceTest" -Pperf
-./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.StringPerformanceTest" -Pperf
-./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.SerdeRoundtripPerformanceTest" -Pperf
-./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.MultiSchemaPerformanceTest" -Pperf
-```
-
-### Concurrency scaling
-
-Sweeping concurrent callers (N = 1, 2, 4, 8, 16, 32, each firing 200 ops/caller) against the
-2×-enlarged astronomy schema of the Universe fixture, same 6-core/12-thread machine as above
-(`AstronomyConcurrencyPerformanceTest`). The Universe fixture is a `HeterogeneousSchemaGraph`
-container, so — per [Multi-schema container overhead](#multi-schema-container-overhead) above —
-this is the **worst-case tier**: every key pays the superset (`tag`/kind/`hi`/`lo`/`str`) decode and
-two-field predicate cost. A standalone schema or a `HomogeneousSchemaGraph` schema, paying neither
-that cost nor a header byte, would scale further before hitting the same core-bound flattening
-below:
-
-| N callers | `outEdges` | `inEdges` | 3-hop traversal |
-|---|---|---|---|
-| 1  | 892 ops/sec | 930 ops/sec | 754 ops/sec |
-| 2  | 3,225 ops/sec | 3,478 ops/sec | 1,492 ops/sec |
-| 4  | 7,547 ops/sec | 6,837 ops/sec | 2,797 ops/sec |
-| 8  | 11,034 ops/sec | 10,126 ops/sec | 4,134 ops/sec |
-| 16 | 13,617 ops/sec | 15,311 ops/sec | 5,351 ops/sec |
-| 32 | 16,666 ops/sec | 17,777 ops/sec | 6,195 ops/sec |
-
-Throughput scales close to linearly up to N=4 — roughly this machine's physical core count — then
-the curve bends: each doubling past N=8 buys a shrinking fraction more (`outEdges` N=16→32: +22%,
-not +100%). The flattening isn't purely server-side saturation, either: this benchmark runs its
-callers as coroutines in the *same* JVM as the code being measured, so once N exceeds the hardware
-thread count, some of those 12 threads are busy driving the load rather than serving it — the
-benchmark's own clients are competing with Abyss for the CPU they're both measured on. A real
-deployment with callers on separate hosts from the graph would push this knee out further; this
-number is the worst case a single co-located JVM sees, not a hard ceiling.
-
-To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.AstronomyConcurrencyPerformanceTest" -Pperf`
-
-#### The best case: a standalone schema
-
-Same sweep, same machine, but the architectural opposite tier: a standalone `SingleSchemaGraph`/
-`LongKeyAdapter` (no schema tag, no header byte), at `LongPerformanceTest`'s 10,000-node/5-edges-per-
-node ring-wrap scale instead of Astronomy's ~28-node fixture (`LongSchemaConcurrencyPerformanceTest`):
-
-| N callers | `outEdges` | `inEdges` | 3-hop traversal |
-|---|---|---|---|
-| 1  | 1,398 ops/sec | 1,408 ops/sec | 2,500 ops/sec |
-| 2  | 2,877 ops/sec | 3,539 ops/sec | 1,785 ops/sec |
-| 4  | 7,407 ops/sec | 6,201 ops/sec | 4,188 ops/sec |
-| 8  | 12,030 ops/sec | 10,062 ops/sec | 9,195 ops/sec |
-| 16 | 15,686 ops/sec | 12,851 ops/sec | 13,223 ops/sec |
-| 32 | 19,393 ops/sec | 15,533 ops/sec | 17,777 ops/sec |
-
-**The two fixtures differ in topology, not just scale**, so only `outEdges` is a clean read on the
-architecture cost in isolation: it's at or above the Heterogeneous table at every N (and pulls
-further ahead at N=32: 19,393 vs 16,666), consistent with paying no tag/header decode.
-
-3-hop traversal here no longer flattens early the way it used to: each hop is `outgoing<LongTestEdge>()`
-with no predicate — existence-only — so, same as the single-schema table above, it now routes through
-the sharded adjacency index (batched point-gets) instead of an unindexed `edgesMap` partition scan.
-Long's ring-wrap graph is a uniform 5-fan-out at every hop (a 3-hop traversal touches up to 155
-nodes), so it used to be dominated by that per-hop scan cost; with the scan gone, 3-hop throughput
-tracks `outEdges`/`inEdges` far more closely and keeps climbing through N=32 instead of pinning at
-~920 ops/sec past N=4 the way it did against the old reverse-key map.
-
-To reproduce: `./gradlew :abyss-graph:test --tests "pl.iqtech.abyss.graph.LongSchemaConcurrencyPerformanceTest" -Pperf`
-
-### Edge count per hop
-
-`outgoing<E>()`/`incoming<E>()` fan out one `async { }` coroutine per frontier node in a single wave
-(`TraversalBuilder.addHop`), so a hop's cost scales with how many edges it touches. A frontier-size
-sweep (K = 1 to 10,000 concurrent per-node lookups, same machine as above) found per-edge cost
-essentially **flat**, not degrading, as K grows:
-
-| K (edges in the hop) | Total time | Per-edge cost |
-|---|---|---|
-| 10 | 2 ms | 218 µs |
-| 100 | 10 ms | 109 µs |
-| 1,000 | 51 ms | 51 µs |
-| 5,000 | 273 ms | 55 µs |
-| 10,000 | 513 ms | 51 µs |
-
-**A reasonable ceiling for a single hop is around 1,000 edges** if you want that hop to finish in
-tens of milliseconds — comfortably cheap up to ~100 (single-digit ms), noticeable but fine at
-500-1,000 (~40-50 ms), and worth a second look past 5,000-10,000 (a quarter to half a second for
-that one hop). Scaling past 10,000 wasn't measured, but the near-linear trend suggests extrapolating
-linearly is reasonable (e.g. ~50,000 edges ≈ 2.5 s).
-
-The ceiling that actually matters in production isn't a single hop's fan-out, though — it's
-**aggregate concurrent load**. Per-edge cost doesn't rise with K in isolation because Hazelcast's
-local predicate scan and the coroutine dispatcher have room to spare; the flattening seen in
-[Concurrency scaling](#concurrency-scaling) above came from *many simultaneous callers* each doing
-their own fan-out, all sharing the same dispatcher/thread pool — not from any one hop touching a lot
-of edges. A single supernode-sized hop is cheap; many concurrent traversals each hitting one is what
-saturates the machine. `TraversalBuilder`'s per-frontier-node fan-out (`addHop` and its siblings) now
-routes through a `Dispatchers.IO.limitedParallelism(hopFanoutParallelism)` dispatcher (TODO 2.19,
-default 256) instead of an unbounded wave, so one supernode-heavy traversal can occupy at most that
-many execution slots at a time — leaving room for concurrently-running traversals against the same
-graph to interleave instead of queuing behind it. The dispatcher is owned per engine (one per
-`AbyssGraphSchema`/`SingleSchemaGraph`, or per `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`
-container — every schema registered in the same container shares its one dispatcher), not a single
-JVM-wide instance, so different graphs in the same process can be tuned independently. Set it via
-the `hopFanoutParallelism` constructor parameter, alongside `adjacencyShardCount`.
 
 ---
 
