@@ -1378,7 +1378,16 @@
     plain 1-op scan (C2, ≤ `df76b70` cost); evictable `edgesMap` with a store → keep the count.
 
   **Open:**
-  - **`outEdges` construction-time route** (above) — waiting for a go; needs a test pinning 1 op in cache-only mode.
+  - ~~**`outEdges` construction-time route**~~ — **DONE 2026-09-17, cache-only arm only.** `cachedOutScan` with no
+    `persistentStore`: one partition scan, no count (`outEdges` and the typed value hop). The proposed second arm
+    (store + `edgesMap` eviction verified off) is **rejected**: a point read (`loadAndCacheEdge`) caches ONE edge of a
+    cold node, so the cache is partial with nothing evicted — forced on, `outEdges` returned `[e1]` of 10.
+    Tests: `MapOpCounterTest` pins 1 edges op + 0 adjacency ops (failed before: 1+1); `OutEdgesEvictionTest` "store,
+    nothing evicted - a point read caches one edge…" (fails with the store arm forced on). 3 alternating rounds,
+    median ops/sec, same files in all trees — post vs pre / vs `df76b70`: `LongPerformanceTest.outEdges` 1.52× / 1.25×;
+    time-based single-member sweep (4 s per N) N=1..32 **1.22–1.94×** / **1.19–1.32×**, no range overlap anywhere;
+    `LongSchemaConcurrency` sweep (short, noisy) 1.17–1.95× / 0.97–1.26×. Cache-only `outEdges` is now faster than
+    `df76b70` at every N; with a store it still pays the count.
   - ~~**expX on a real network hop**~~ — **measured 2026-09-17, dropped.** 3-member in-process cluster over TCP
     loopback, 10k-node ring, timed bursts, 3 alternating rounds (scratch `ClusterOutEdgesBenchTest`, same file in
     both trees); expX/HEAD median ops/sec, no range overlap anywhere: embedded-member caller N=1/6/16

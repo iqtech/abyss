@@ -6,6 +6,7 @@ import com.hazelcast.map.IMap
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.collectNodes
+import pl.iqtech.abyss.dsl.edge
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.EdgeKey
@@ -74,6 +75,18 @@ class OutEdgesEvictionTest {
         val (g, hub, edges) = setup("oev2")
         graphTestHz.getMap<Any, Any>("oev2-edges").clear()
         graphTestHz.getMap<Any, Any>("oev2-edges-adjacency").clear()
+        assertEquals(edges.map { it.label }.toSet(), g.outEdges(hub).toList().map { (it as TestEdge).label }.toSet())
+    }
+
+    // Why the 1-op cache-only scan (TODO 4.14) is NOT taken with a store, even with edgesMap eviction off: a point
+    // read (edge()/edgeExists) caches ONE edge of a cold node, so the cache holds 1 of 10 values with nothing evicted.
+    @Test fun `store, nothing evicted - a point read caches one edge of a cold node, outEdges still returns every edge`() = runBlocking {
+        val (g, hub, edges) = setup("oev7")
+        graphTestHz.getMap<Any, Any>("oev7-edges").clear()
+        graphTestHz.getMap<Any, Any>("oev7-edges-adjacency").clear()
+        assertTrue(g.edge<TestEdge>(hub, edges.first().toId).isRight())
+        assertEquals(1, graphTestHz.getMap<Any, Any>("oev7-edges").size, "the point read cached exactly one edge")
+
         assertEquals(edges.map { it.label }.toSet(), g.outEdges(hub).toList().map { (it as TestEdge).label }.toSet())
     }
 

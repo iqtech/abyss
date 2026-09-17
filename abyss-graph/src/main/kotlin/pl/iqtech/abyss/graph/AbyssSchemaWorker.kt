@@ -234,6 +234,13 @@ internal class AbyssSchemaWorker(
         val fromPred = keyEq<EdgeKey, Any>("fromId", nid)
         val pred = if (type == null) fromPred else Predicates.and(fromPred, Predicates.equal<EdgeKey, Any>("__key.type", type))
         val part = Predicates.partitionPredicate<EdgeKey, Any>(partitionKey(nid), pred)
+        // Cache-only (no store): the startup guard forbids edgesMap eviction and nothing reads through, so the
+        // cached values ARE the edges — one partition op, no count. With a store, a point read (loadAndCacheEdge)
+        // caches single edges of a cold node, so a partial cache exists even with eviction off: keep the count.
+        if (persistentStore == null) {
+            withContext(Dispatchers.IO) { scan(part) }.forEach { emit(it) }
+            return@flow
+        }
         val (scanned, indexed) = coroutineScope {
             val values = async(Dispatchers.IO) { scan(part) }
             val count = async { adjacency.count(nid, AdjacencyDirection.OUT, edgeTag) }
