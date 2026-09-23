@@ -1,3 +1,15 @@
+## [0.35.0] - 2026-09-23
+
+- Iterative DFS `paths()` (TODO 1.34): explicit frame stack with backtracking replaces the recursion — fixes lost paths when an already-expanded sibling blocked a route (a→b, a→c, c→b dropped a-c-b), O(depth²) heap (OOM at ~5k links), and a swallowed `StackOverflowError` that hung the walk at ~3k+ links
+- Fix edge loss under store-backed cache eviction: `resolveEdges` now heals evicted values from the store (key-only `flushHopEdges`/`collectSubgraph`/`exhaustReachable` returned 7 of 10), and `pathTo` searches on index hops, resolving values only for the returned path — it previously returned a detour or `null`
+- Fix typed traversal (`outgoing<E> { pred }`) and `outEdges` dropping evicted edges: checked partition scan against the authoritative adjacency index count, index path on mismatch (TODO 4.14)
+- Fix node delete leaving evicted edges in the store and index: cascade now reads keys from the adjacency index (TODO 4.14)
+- Fix read-back `EdgeKey`/`AdjacencyKey` routing to the wrong partition: they now refuse to route (`@ReadBackKeyApi`); `HazelcastEphemeralStore` stamps its partition key explicitly; the cluster co-location test no longer passes regardless of placement
+- Fix `HeterogeneousSchemaGraph` default adjacency map name — containers with different `edgesMapName` shared one index; now `"$edgesMapName-adjacency"`
+- Performance (TODO 4.14): one adjacency read per hop (3-hop 1.46–2.01× faster), cache-only `outEdges` as one partition scan (1.19–1.32× faster than `df76b70`), `HexFormat` `NodeId.toString`
+- New API: `crossEdgeExists` on schema containers and batched `existingNodeIds(ids): Set<ID>` on `AbyssEngineLike` (TODO 2.33)
+- Benchmarks: ring perf suites seeded through transactions and every timed result asserted (they measured empty work); results moved to `docs/performance.md`, re-measured
+
 ## [0.34.0] - 2026-09-14
 
 - Batched node loading (TODO 2.30): new `NodeIdEngine.nodesAt` and `AbyssStoreLike`/`AbyssEphemeralStoreLike.loadNodes` (both with defaults, no implementor breaks); `AbyssSchemaWorker` resolves node sets with one `IMap.getAll` plus one batched store heal, `YugabytePersistentStore` with `WHERE id = ANY(?)` — `flushFrontierNodes`, `filterFrontierByNode`, `collectSubgraph`, `exhaustReachable`, `paths` origin and `pathTo` converted (`flushFrontierNodes` 300 round trips → 3)
