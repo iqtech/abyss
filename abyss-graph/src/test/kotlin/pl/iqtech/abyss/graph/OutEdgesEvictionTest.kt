@@ -10,6 +10,7 @@ import pl.iqtech.abyss.dsl.edge
 import pl.iqtech.abyss.dsl.nodes
 import pl.iqtech.abyss.dsl.outgoing
 import pl.iqtech.abyss.dsl.EdgeKey
+import pl.iqtech.abyss.dsl.Path
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
@@ -149,5 +150,121 @@ class OutEdgesEvictionTest {
         val withPredicate = g.from(hub.id) { outgoing<TestEdge> { true }; nodes<TestNode>(); collectNodes<TestNode>().toList() }
         assertEquals(10, existenceOnly.getOrNull()?.size, "control: index path")
         assertEquals(10, withPredicate.getOrNull()?.size, "typed value fast path under partial eviction")
+    }
+
+    // TODO 1.34 note 2: key-only hops (no edge predicate) get their values from resolveEdges — one getAll,
+    // misses dropped — while adjacencyHopFlow's flush heals the same misses from the store.
+    private fun evictThree(prefix: String, edges: List<TestEdge>) {
+        val map: IMap<EdgeKey, EdgeLike<*, *>> = graphTestHz.getMap("$prefix-edges")
+        val victims = edges.take(3).map { it.label }.toSet()
+        map.removeAll(com.hazelcast.query.Predicate<EdgeKey, EdgeLike<*, *>> { (it.value as TestEdge).label in victims })
+        assertEquals(7, map.size, "3 values evicted from the cache")
+    }
+
+    @Test fun `partial eviction - flushHopEdges after a key-only hop returns every edge`() = runBlocking {
+        val (g, hub, edges) = setup("oev8")
+        evictThree("oev8", edges)
+        val got = g.from(hub) { outgoing<TestEdge>(); flushHopEdges().toList() }.getOrNull()!!
+        assertEquals(edges.map { it.label }.toSet(), got.map { (it as TestEdge).label }.toSet())
+    }
+
+    @Test fun `partial eviction - collectSubgraph after a key-only hop returns every edge`() = runBlocking {
+        val (g, hub, edges) = setup("oev9")
+        evictThree("oev9", edges)
+        val got = g.from(hub) { outgoing<TestEdge>(); collectSubgraph() }.getOrNull()!!
+        assertEquals(edges.map { it.label }.toSet(), got.edges.map { (it as TestEdge).label }.toSet())
+    }
+
+    @Test fun `partial eviction - exhaustReachable after a key-only hop returns every edge`() = runBlocking {
+        val (g, hub, edges) = setup("oev10")
+        evictThree("oev10", edges)
+        val got = g.from(hub) { exhaustReachable { outgoing<TestEdge>() } }.getOrNull()!!
+        assertEquals(edges.map { it.label }.toSet(), got.edges.map { (it as TestEdge).label }.toSet())
+    }
+
+    // Removed ≠ evicted: gone from cache AND store while the index still lists it (a remove racing the read).
+    // Healing must not resurrect it — the store says null, so the hop is dropped, as before.
+    @Test fun `removed edge the index still lists is dropped, evicted ones are healed`() = runBlocking {
+        listOf("oev11-nodes", "oev11-edges", "oev11-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+        val store = EvictionTestStore()
+        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "oev11-nodes", "oev11-edges", persistentStore = store, module = graphTestModule)
+        val hub = Uuid.random()
+        val edges = (1..10).map { TestEdge(fromId = hub, toId = Uuid.random(), label = "e$it") }
+        check(g.transaction(checkIntegrity = false) { edges.forEach { addEdge(it) } }.isRight())
+        evictThree("oev11", edges)                                   // e1..e3: evicted, still stored
+        val removed = edges[3]                                       // e4: gone from cache and store
+        graphTestHz.getMap<EdgeKey, EdgeLike<*, *>>("oev11-edges")
+            .removeAll(com.hazelcast.query.Predicate<EdgeKey, EdgeLike<*, *>> { (it.value as TestEdge).label == removed.label })
+        store.edges.removeAll { (it.edge as TestEdge).label == removed.label }
+
+        val got = g.from(hub) { outgoing<TestEdge>(); flushHopEdges().toList() }.getOrNull()!!
+        assertEquals((edges - removed).map { it.label }.toSet(), got.map { (it as TestEdge).label }.toSet())
+    }
+
+    // pathTo: A→B→T is the shortest route, A→C→D→T the detour. Its search must run on the index; an edge's
+    // value only matters for the returned Path.
+    private class PathGraph(val g: AbyssGraphSchema<Uuid>, val store: EvictionTestStore, val a: Uuid, val t: Uuid)
+
+    private fun pathGraph(prefix: String, withDetour: Boolean): PathGraph = runBlocking {
+        listOf("$prefix-nodes", "$prefix-edges", "$prefix-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+        val store = EvictionTestStore()
+        val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "$prefix-nodes", "$prefix-edges", persistentStore = store, module = graphTestModule)
+        val (a, b, c, d, t) = List(5) { Uuid.random() }
+        check(g.transaction {
+            listOf(a to "A", b to "B", c to "C", d to "D", t to "T").forEach { (id, n) -> addNode(TestNode(id, name = n)) }
+            addEdge(TestEdge(fromId = a, toId = b, label = "ab")); addEdge(TestEdge(fromId = b, toId = t, label = "bt"))
+            if (withDetour) {
+                addEdge(TestEdge(fromId = a, toId = c, label = "ac")); addEdge(TestEdge(fromId = c, toId = d, label = "cd"))
+                addEdge(TestEdge(fromId = d, toId = t, label = "dt"))
+            }
+        }.isRight())
+        PathGraph(g, store, a, t)
+    }
+
+    private fun evictLabel(prefix: String, label: String) {
+        val map: IMap<EdgeKey, EdgeLike<*, *>> = graphTestHz.getMap("$prefix-edges")
+        map.removeAll(com.hazelcast.query.Predicate<EdgeKey, EdgeLike<*, *>> { (it.value as TestEdge).label == label })
+        check(map.values.none { (it as TestEdge).label == label })
+    }
+
+    private fun Path.labels() = edges.map { (it as TestEdge).label }
+    private fun Path.names() = nodes.map { (it as TestNode).name }
+
+    @Test fun `pathTo - evicted edge on the shortest route still yields the shortest path`() = runBlocking {
+        val p = pathGraph("oev12", withDetour = true)
+        evictLabel("oev12", "ab")
+        val path = p.g.from(p.a) { pathTo(p.t) { outgoing<TestEdge>() } }.getOrNull()
+        assertEquals(listOf("A", "B", "T"), path?.names())
+        assertEquals(listOf("ab", "bt"), path?.labels(), "edge values, the evicted one healed from the store")
+    }
+
+    @Test fun `pathTo - evicted edge on the only route still finds it`() = runBlocking {
+        val p = pathGraph("oev13", withDetour = false)
+        evictLabel("oev13", "ab")
+        val path = p.g.from(p.a) { pathTo(p.t) { outgoing<TestEdge>() } }.getOrNull()
+        assertEquals(listOf("ab", "bt"), path?.labels())
+    }
+
+    @Test fun `pathTo - removed edge the index still lists is routed around, never returned`() = runBlocking {
+        val p = pathGraph("oev14", withDetour = true)
+        evictLabel("oev14", "ab")
+        p.store.edges.removeAll { (it.edge as TestEdge).label == "ab" }
+        val path = p.g.from(p.a) { pathTo(p.t) { outgoing<TestEdge>() } }.getOrNull()
+        assertEquals(listOf("A", "C", "D", "T"), path?.names())
+        assertEquals(listOf("ac", "cd", "dt"), path?.labels())
+    }
+
+    @Test fun `pathTo - removed edge on the only route means no path`() = runBlocking {
+        val p = pathGraph("oev15", withDetour = false)
+        evictLabel("oev15", "ab")
+        p.store.edges.removeAll { (it.edge as TestEdge).label == "ab" }
+        assertEquals(null, p.g.from(p.a) { pathTo(p.t) { outgoing<TestEdge>() } }.getOrNull())
+    }
+
+    @Test fun `pathTo - steady state, nothing evicted`() = runBlocking {
+        val p = pathGraph("oev16", withDetour = true)
+        val path = p.g.from(p.a) { pathTo(p.t) { outgoing<TestEdge>() } }.getOrNull()
+        assertEquals(listOf("A", "B", "T"), path?.names())
+        assertEquals(listOf("ab", "bt"), path?.labels())
     }
 }

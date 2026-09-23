@@ -548,8 +548,18 @@
   production DFS 2k–40k links on 512 MB (10k: ~79 MB peak; 40k: ~232–379 MB depending on other tests' seeded
   maps in the same JVM — not isolated). Chain route cost unchanged (5.51 / 5.00 map ops/link).
   Left open, not logged (untested): callback `Path` contract — snapshot per call (current, O(d) each) vs
-  fail-fast live view; worker `resolveEdges` does not self-heal evicted edges, so `flushHopEdges` /
-  `collectSubgraph` may drop evicted-but-persistent edges; where the swallowed error was finally caught.
+  fail-fast live view; where the swallowed error was finally caught.
+  ~~`resolveEdges` does not self-heal evicted edges~~ — **confirmed and fixed 2026-09-23.** Key-only hops
+  (`outgoing<E>()`, no predicate) got values from one `getAll` that dropped misses; with a store, eviction is
+  allowed, so evicted-but-persistent edges vanished: `flushHopEdges`/`collectSubgraph`/`exhaustReachable`
+  returned 7 of 10, and `pathTo` answered wrong — the detour `A-C-D-T` over the shortest `A-B-T`, or `null` when
+  the evicted edge was the only route. Fix: `worker.resolveEdges` heals misses from the store
+  (`loadAndCacheEdge`, store-null = removed → still dropped); `adjacencyHopFlow`'s flush now reuses it. `pathTo`
+  searches on index hops alone (parent pointers, no Path copy per node) and resolves values only for the
+  returned path; an edge removed mid-read is excluded and the search reruns, so a Path never holds a removed
+  edge. 10 tests in `OutEdgesEvictionTest` (6 red before; mutation-checked the rerun), 404 green.
+  `NodeBatchLoadPerformanceTest` pre/post: all scenarios unchanged except `pathTo` supernode 307 → 305 round
+  trips (unreachable target: no value fetch at all now).
 
 ## 2. Medium
 

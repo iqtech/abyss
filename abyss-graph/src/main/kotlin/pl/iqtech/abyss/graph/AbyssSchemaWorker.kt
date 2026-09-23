@@ -345,24 +345,11 @@ internal class AbyssSchemaWorker(
             readEntries { emit(hopOf(it)) }
             return@flow
         }
-        val map = edgesMap as IMap<EdgeKey, Any>
         val buffer = ArrayList<Hop>(batch)
         suspend fun FlowCollector<Hop>.flush() {
             if (buffer.isEmpty()) return
-            val keys = buffer.associateWith { edgeKey(it.fromId, it.toId, it.type) }
-            val values = withContext(Dispatchers.IO) { map.getAll(keys.values.toSet()) }
-            // Index-always-alive (TODO 1.27): the adjacency index is authoritative, so a null value is an
-            // EVICTED persistent edge, not a removed one — self-heal it from the persistent store (per
-            // missing edge, in parallel; loadAndCacheEdge re-warms edgesMap). A store-null means the edge
-            // was genuinely removed → skip. In steady state (nothing evicted) `missing` is empty, no store hit.
-            val missing = buffer.filter { values[keys.getValue(it)] == null }
-            val healed: Map<Hop, EdgeLike<*, *>> = if (missing.isEmpty()) emptyMap() else coroutineScope {
-                missing.map { hop -> async(Dispatchers.IO) { loadAndCacheEdge(hop.fromId, hop.toId, hop.type)?.let { hop to it } } }.awaitAll()
-            }.filterNotNull().toMap()
-            for (hop in buffer) {
-                val edge = (values[keys.getValue(hop)] as EdgeLike<*, *>?) ?: healed[hop]
-                if (edge != null) emit(Hop(hop.fromId, hop.toId, hop.type, edge, hop.nodeTypeTag))
-            }
+            val values = resolveEdges(buffer)
+            for (hop in buffer) values[hop]?.let { emit(Hop(hop.fromId, hop.toId, hop.type, it, hop.nodeTypeTag)) }
             buffer.clear()
         }
         readEntries { entry ->
@@ -376,13 +363,27 @@ internal class AbyssSchemaWorker(
     private fun adjacencyEdgeFlow(nid: NodeId, direction: AdjacencyDirection, type: String?, batch: Int): Flow<EdgeLike<*, *>> =
         adjacencyHopFlow(nid, direction, type, needValue = true, batch = batch).mapNotNull { it.edge }
 
+    // Values for key-only hops: one getAll, then self-heal the misses. Index-always-alive (TODO 1.27): a hop
+    // comes from the authoritative adjacency index, so a null value is an EVICTED persistent edge, not a
+    // removed one — reload it from the store (per miss, in parallel; loadAndCacheEdge re-warms edgesMap). A
+    // store-null means it was genuinely removed (a remove racing this read) → absent from the result. Steady
+    // state (nothing evicted): no misses, no store hit. Shared by adjacencyHopFlow's value batches and every
+    // TraversalBuilder value fetch (TODO 1.34: this used to drop the misses, losing evicted edges).
+    // ponytail: one store point-read per miss; a batched store loadEdges(keys) (like 2.30's loadNodes) if an
+    // eviction-heavy workload makes that show up.
     @Suppress("UNCHECKED_CAST")
     override suspend fun resolveEdges(hops: List<Hop>): Map<Hop, EdgeLike<*, *>> {
         if (hops.isEmpty()) return emptyMap()
         val keyByHop = hops.associateWith { edgeKey(it.fromId, it.toId, it.type) }
         val map = edgesMap as IMap<EdgeKey, Any>
         val values = withContext(Dispatchers.IO) { map.getAll(keyByHop.values.toSet()) }
-        return keyByHop.mapNotNull { (hop, key) -> (values[key] as EdgeLike<*, *>?)?.let { hop to it } }.toMap()
+        val resolved = HashMap<Hop, EdgeLike<*, *>>(keyByHop.size)
+        val missing = ArrayList<Hop>()
+        for ((hop, key) in keyByHop) (values[key] as EdgeLike<*, *>?)?.let { resolved[hop] = it } ?: missing.add(hop)
+        if (missing.isNotEmpty()) coroutineScope {
+            missing.map { hop -> async(Dispatchers.IO) { loadAndCacheEdge(hop.fromId, hop.toId, hop.type)?.let { hop to it } } }.awaitAll()
+        }.forEach { it?.let { (hop, edge) -> resolved[hop] = edge } }
+        return resolved
     }
 
     // See allNodeIds() above — same full-materialization caveat and dispatcher fix apply here.

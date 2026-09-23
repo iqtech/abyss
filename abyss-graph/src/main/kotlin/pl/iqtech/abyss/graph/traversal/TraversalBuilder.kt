@@ -363,8 +363,8 @@ class TraversalBuilder<ID>(
     // expanded first). Emission order is the recursive order: a natural terminal is emitted when its frame is
     // exhausted, before the parent's next hop. headNid = last included node; fromNid = physical position (differs
     // after EXCLUDE_AND_CONTINUE). Callbacks and emissions get a snapshot Path (callers may keep it).
-    // Cost vs recursion: a frame holds its node's full hop list WITH values (read once at push — the worker's
-    // resolveEdges doesn't self-heal evicted edges, so key-only hops + a later value fetch would drop them), and a
+    // Cost vs recursion: a frame holds its node's full hop list WITH values (read once at push; since TODO 1.34's
+    // resolveEdges heals evicted values, key-only hops + a batched value fetch would also be correct — unmeasured), and a
     // level is read fully before descending. Equivalence to the recursive backtracking oracle and equal map-op
     // counts are gated in IterativeDfsPrototypeTest.
     private suspend fun FlowCollector<Path>.dfsLoop(
@@ -530,41 +530,77 @@ class TraversalBuilder<ID>(
     // visited. Trade-off: like checkReaches, the target is only checked once the whole level's
     // fetches are in, not mid-level — a few extra fetches in exchange for the level no longer costing
     // one round trip per node (or per neighbor of one node).
+    //
+    // The search runs on hops alone (TODO 1.34): whether a neighbour is reachable is the adjacency index's
+    // answer, never an edge value's. Values are resolved once, for the returned path's d edges only — not for
+    // every hop of every level, and an evicted value can no longer hide a route (resolveEdges heals it). A
+    // path edge that doesn't resolve was removed between the index read and the resolve: its hop is excluded
+    // and the search reruns, so a returned Path never holds a removed edge and a detour is still found. The
+    // excluded set only grows, so this terminates. Parent pointers replace a Path copy per reached node.
     override suspend fun pathTo(targetId: ID, block: suspend TraversalScope<ID>.() -> Unit): Path? {
         val target = homeAdapter.toNodeId(targetId)
-        data class Entry(val nid: NodeId, val path: Path)
-        data class Candidate(val neighborNid: NodeId, val edge: EdgeLike<*, *>, val fromPath: Path)
-
-        var current = engine.nodesAt(frontier).let { fetched ->
-            frontier.mapNotNull { nid -> fetched[nid]?.let { Entry(nid, Path(listOf(it), emptyList())) } }
+        val origins = engine.nodesAt(frontier)
+        val excluded = HashSet<Triple<NodeId, NodeId, String>>()
+        while (true) {
+            val route = shortestRoute(target, origins, excluded, block) ?: return null
+            val values = resolveHopEdges(route.hops)
+            val gone = route.hops.filter { it !in values }
+            if (gone.isEmpty()) return Path(route.nodes, route.hops.map { values.getValue(it) })
+            gone.mapTo(excluded) { Triple(it.fromId, it.toId, it.type) }
         }
+    }
+
+    private class Route(val nodes: List<NodeLike<*>>, val hops: List<Hop>)
+
+    // Level-order BFS over key-only hops. Order and tie-breaking are the original's: entries in level order,
+    // hops in each entry's order, first reach wins; a neighbour whose node is gone is dropped before it can be
+    // marked visited.
+    private suspend fun shortestRoute(
+        target: NodeId,
+        origins: Map<NodeId, NodeLike<*>>,
+        excluded: Set<Triple<NodeId, NodeId, String>>,
+        block: suspend TraversalScope<ID>.() -> Unit,
+    ): Route? {
+        val nodeOf = HashMap<NodeId, NodeLike<*>>()
+        val parent = HashMap<NodeId, Pair<NodeId, Hop>>()   // reached node -> (previous node, hop that reached it)
+        var current = frontier.filter { nid -> origins[nid]?.also { nodeOf[nid] = it } != null }
         val visited = frontier.toMutableSet()
+
+        fun routeTo(end: NodeId): Route {
+            val nodes = ArrayList<NodeLike<*>>(); val hops = ArrayList<Hop>()
+            var n = end
+            while (true) {
+                nodes += nodeOf.getValue(n)
+                val (prev, hop) = parent[n] ?: break
+                hops += hop; n = prev
+            }
+            return Route(nodes.asReversed(), hops.asReversed())
+        }
+
         while (current.isNotEmpty()) {
             val candidates = coroutineScope {
-                current.map { entry ->
+                current.map { nid ->
                     async(engine.hopDispatcher) {
-                        val sub = TraversalBuilder(engine, setOf(entry.nid), homeAdapter)
+                        val sub = TraversalBuilder(engine, setOf(nid), homeAdapter)
                         TraversalScope(sub).block()
-                        val edgesByHop = resolveHopEdges(sub.traversedHops)
-                        sub.traversedHops.mapNotNull { hop ->
-                            edgesByHop[hop]?.let { edge ->
-                                Candidate(if (hop.fromId == entry.nid) hop.toId else hop.fromId, edge, entry.path)
-                            }
-                        }
+                        sub.traversedHops
+                            .filter { Triple(it.fromId, it.toId, it.type) !in excluded }
+                            .map { hop -> Triple(if (hop.fromId == nid) hop.toId else hop.fromId, nid, hop) }
                     }
                 }.awaitAll()
             }.flatten()
 
-            val neighborNodes = engine.nodesAt(candidates.mapTo(mutableSetOf()) { it.neighborNid })
+            val neighborNodes = engine.nodesAt(candidates.mapTo(mutableSetOf()) { it.first })
 
-            val next = mutableListOf<Entry>()
-            for (c in candidates) {
-                if (c.neighborNid in visited) continue
-                val neighborNode = neighborNodes[c.neighborNid] ?: continue
-                visited += c.neighborNid
-                val extended = Path(c.fromPath.nodes + neighborNode, c.fromPath.edges + c.edge)
-                if (c.neighborNid == target) return extended
-                next += Entry(c.neighborNid, extended)
+            val next = mutableListOf<NodeId>()
+            for ((neighbor, from, hop) in candidates) {
+                if (neighbor in visited) continue
+                val node = neighborNodes[neighbor] ?: continue
+                visited += neighbor
+                nodeOf[neighbor] = node
+                parent[neighbor] = from to hop
+                if (neighbor == target) return routeTo(neighbor)
+                next += neighbor
             }
             current = next
         }

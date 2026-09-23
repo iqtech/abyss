@@ -47,8 +47,8 @@ fun iterativeDfsPaths(
         var emitted = false
     }
 
-    // Hops read once, at push, WITH values: the worker's resolveEdges does not self-heal evicted edges the way
-    // adjacencyHopFlow's flush does, so key-only hops + a later batched value fetch would silently drop them.
+    // Hops read once, at push, WITH values — chosen when resolveEdges still dropped evicted values (healed since
+    // TODO 1.34; key-only + a batched value fetch would now be correct too).
     suspend fun hopsOf(nid: NodeId, depth: Int): Iterator<Hop> =
         if (depth >= maxDepth) emptyList<Hop>().iterator() else edgesFrom(engine, nid, direction).toList().iterator()
 
