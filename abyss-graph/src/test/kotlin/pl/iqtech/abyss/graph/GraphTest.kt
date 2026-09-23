@@ -168,6 +168,28 @@ class GraphTest {
         }
     }
 
+    // ── existingNodeIds ───────────────────────────────────────────────────────
+
+    @Test fun `existingNodeIds() returns only the present ids, cache and store alike`() {
+        runBlocking {
+            val cached = TestNode(id = Uuid.random(), name = "cached")
+            val stored = TestNode(id = Uuid.random(), name = "stored") // store-only: must come back via the batch store load
+            val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "ne-nodes", "ne-edges",
+                persistentStore = WarmingFakeStore(nodes = listOf(stored)), module = graphTestModule)
+            try {
+                g.transaction { addNode(cached) }
+                val absent = Uuid.random()
+                assertEquals(Either.Right(setOf(cached.id, stored.id)), g.existingNodeIds(listOf(cached.id, stored.id, absent, cached.id)))
+            } finally {
+                listOf("ne-nodes", "ne-edges", "ne-edges-adjacency").forEach { graphTestHz.getMap<Any, Any>(it).clear() }
+            }
+        }
+    }
+
+    @Test fun `existingNodeIds() on empty input returns empty set`() {
+        runBlocking { assertEquals(Either.Right(emptySet()), graphTest.existingNodeIds(emptyList())) }
+    }
+
     // ── edge ─────────────────────────────────────────────────────────────────
 
     @Test fun `edge() returns Right when present`() {

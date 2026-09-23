@@ -13,6 +13,8 @@ interface AbyssEngineLike<ID> {
     suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>>
     suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, EdgeLike<ID, ID>>
     suspend fun nodeExists(id: ID): Either<AbyssError, Boolean>
+    // Batch nodeExists: the subset of ids that exist. Missing = ids - result.
+    suspend fun existingNodeIds(ids: Collection<ID>): Either<AbyssError, Set<ID>>
     suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean>
 
     // includeEphemeral: also include ephemeral (TTL) out-edges, read reliably from the ephemeral store

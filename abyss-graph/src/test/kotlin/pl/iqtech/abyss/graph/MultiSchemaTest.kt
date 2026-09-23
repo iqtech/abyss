@@ -12,6 +12,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import pl.iqtech.abyss.dsl.collectNodes
 import pl.iqtech.abyss.dsl.edge
+import pl.iqtech.abyss.dsl.edgeExists
 import pl.iqtech.abyss.dsl.incoming
 import pl.iqtech.abyss.dsl.node
 import pl.iqtech.abyss.dsl.outEdges
@@ -354,6 +355,21 @@ class MultiSchemaTest {
         assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())
     }
 
+    @Test fun crossEdgeExistsTracksAddAndRemove() = runBlocking {
+        val c = newContainer(allowCross = true)
+        val u = Uuid.random()
+        c.longS.transaction { addNode(LongTestNode(1L)) }
+        c.uuidS.transaction { addNode(TestNode(u, name = "e")) }
+        assertEquals(false, c.g.crossEdgeExists<LivesIn>(u, 1L).getOrNull())
+
+        c.g.transaction { addCrossEdge(LivesIn(u, 1L)) }
+        assertEquals(true, c.g.crossEdgeExists<LivesIn>(u, 1L).getOrNull())
+        assertEquals(true, c.g.crossEdgeExists(uuidNodeId(u), longNodeId(1L), "lives_in").getOrNull())
+
+        c.g.transaction { removeCrossEdge<LivesIn>(u, 1L) }
+        assertEquals(false, c.g.crossEdgeExists<LivesIn>(u, 1L).getOrNull())
+    }
+
     @Test fun containerLevelTransactionAddsCrossEdgeAtomically() = runBlocking {
         val c = newContainer(allowCross = true)
         c.longS.transaction { addNode(LongTestNode(1L)) }
@@ -488,6 +504,23 @@ class MultiSchemaTest {
             assertTrue(rejected.isLeft())
         } finally {
             listOf("hg2-nodes", "hg2-edges", "hg2-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
+        }
+    }
+
+    @Test fun homogeneousCrossEdgeExistsWhereSchemaEdgeExistsCannotSeeIt() = runBlocking {
+        val g = HomogeneousSchemaGraph(homogeneousCrossHz, SchemaTagWidth.BYTE, LongKeyAdapter, "hg4-nodes", "hg4-edges", allowCrossSchemaEdges = true, module = graphTestModule)
+        val a = g.forTag(SchemaTag(501L))
+        val b = g.forTag(SchemaTag(502L))
+        try {
+            a.transaction { addNode(LongTestNode(1L)) }
+            b.transaction { addNode(LongTestNode(2L)) }
+            a.transaction { addCrossEdge(TenantLink(1L, 2L)) }
+
+            assertEquals(true, g.crossEdgeExists<TenantLink>(1L, 2L).getOrNull())
+            // Schema-scoped edgeExists encodes toId with tag 501, not 502 — misses the cross edge.
+            assertEquals(false, a.edgeExists<TenantLink>(1L, 2L).getOrNull())
+        } finally {
+            listOf("hg4-nodes", "hg4-edges", "hg4-edges-adjacency").forEach { homogeneousCrossHz.getMap<Any, Any>(it).clear() }
         }
     }
 

@@ -962,6 +962,32 @@
   the baseline recorded in the plan's "Phase 0 results". Next: Phase 1.
   Design plan: `ai-scripts/TypedChainWalkPlan.md`.
 
+- **✅ 2.33 Existence reads: `crossEdgeExists` (containers) and `existingNodeIds` (typed batch)**
+  **`crossEdgeExists`** on `HomogeneousSchemaGraph` and `HeterogeneousSchemaGraph`, next to
+  `addCrossEdge`/`removeCrossEdge`. A schema's own `edgeExists` can't see a cross edge: it encodes
+  both ids with its own tag, so `toId` resolves to the wrong key and the call returns `false` on a live
+  edge. Three overloads: raw `(NodeId, NodeId, type)`; `(edgeClass, fromId, toId)`, which resolves
+  endpoints via `crossSchemaEndpoints` from `@CrossSchemaEdge` (headerless on Homogeneous, headered on
+  Heterogeneous); and `reified E`. All three delegate to `worker.edgeExists`: cache first, store heal
+  on a miss. No new read path. Ungated by `allowCrossSchemaEdges`, like `removeCrossEdge`, because a
+  read shouldn't fail on a write-policy flag. Container-only, not on `AbyssEngineLike`: a standalone
+  schema can't resolve the other endpoint's tag.
+  Tests (`MultiSchemaTest`): add → true (both overloads), remove → false; on Homogeneous,
+  `crossEdgeExists` true while schema `edgeExists` is false for the same pair (pins the reason it exists).
+  **`existingNodeIds(ids: Collection<ID>): Either<AbyssError, Set<ID>>`** on `AbyssEngineLike<ID>`,
+  implemented in `AbyssGraphSchema` over `worker.nodesAt` (2.30): one chunked `getAll`, plus one
+  batch store load per chunk for the misses. Returns the subset that exists (missing = `ids - result`);
+  `Set` over `Map<ID, Boolean>` to avoid a boxed entry per absent id. Hits map back through a
+  prebuilt NodeId→ID map, with no `fromNodeId` decode. Named as a noun, not `nodesExist`: it returns
+  ids, not a `Boolean`. Existence sibling of 2.31's `nodes(ids)`.
+  Known ceiling (`ponytail:` comment): `getAll` ships full node values just to test presence, same
+  as `nodeExists`. A read-only `executeOnKeys` EntryProcessor returning a boolean avoids that, but
+  measure first.
+  Tests (`GraphTest`): cached + store-only + absent + duplicate → exactly {cached, store-only}; empty input → empty set.
+  Follow-up: `ensureSubgraph` (`Extensions.kt:199`) still makes one `nodeExists` call per node, the
+  obvious first caller. Switching is a perf change (baseline → switch → pre/post). Its edge loop has
+  the same N-round-trip shape and no batch `edgeExists` to move to.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

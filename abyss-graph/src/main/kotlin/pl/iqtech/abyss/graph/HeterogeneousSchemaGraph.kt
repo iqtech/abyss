@@ -18,6 +18,7 @@ import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
+import kotlin.reflect.KClass
 import kotlin.time.Duration
 
 /**
@@ -130,6 +131,20 @@ class HeterogeneousSchemaGraph(
 
     suspend fun removeCrossEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Unit> =
         worker.transaction(listOf(NodeOp.RemoveEdge(fromId, toId, type)), checkIntegrity = false)
+
+    // Existence reads — ungated (like removeCrossEdge). A schema's own edgeExists can't see a cross edge:
+    // it would encode toId with its own tag, not the other endpoint's.
+    suspend fun crossEdgeExists(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Boolean> =
+        Either.catch { worker.edgeExists(fromId, toId, type) }.mapLeft { AbyssError.Unexpected(it) }
+
+    suspend fun crossEdgeExists(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?): Either<AbyssError, Boolean> =
+        Either.catch {
+            val (f, t) = crossSchemaEndpoints(edgeClass, fromId, toId, tagWidth, headerless = false)
+            worker.edgeExists(f, t, crossSchemaEdgeType(edgeClass))
+        }.mapLeft { AbyssError.Unexpected(it) }
+
+    suspend inline fun <reified E : EdgeLike<*, *>> crossEdgeExists(fromId: Any?, toId: Any?): Either<AbyssError, Boolean> =
+        crossEdgeExists(E::class, fromId, toId)
 
     // Unconditional (not gated by checkIntegrity) — matches the pre-existing addCrossEdge asymmetry.
     private fun crossEdgeGateFailure(): AbyssError? =

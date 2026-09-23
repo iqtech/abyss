@@ -122,6 +122,15 @@ class AbyssGraphSchema<ID> internal constructor(
     override suspend fun nodeExists(id: ID): Either<AbyssError, Boolean> =
         Either.catch { worker.nodeExists(adapter.toNodeId(id)) }.mapLeft { AbyssError.Unexpected(it) }
 
+    // One chunked getAll + one batch store load per chunk (worker.nodesAt), not N round trips.
+    // Hits map back through byNid rather than adapter.fromNodeId — no decode per hit.
+    // ponytail: getAll ships full node values just to test presence (same as nodeExists); a read-only
+    // executeOnKeys EntryProcessor returning a boolean avoids that if nodes are fat — measure first.
+    override suspend fun existingNodeIds(ids: Collection<ID>): Either<AbyssError, Set<ID>> = Either.catch {
+        val byNid = ids.associateBy(adapter::toNodeId)
+        worker.nodesAt(byNid.keys).keys.mapTo(HashSet()) { byNid.getValue(it) }
+    }.mapLeft { AbyssError.Unexpected(it) }
+
     override suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean> =
         Either.catch { worker.edgeExists(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }.mapLeft { AbyssError.Unexpected(it) }
 
