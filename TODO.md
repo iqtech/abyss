@@ -561,6 +561,16 @@
   `NodeBatchLoadPerformanceTest` pre/post: all scenarios unchanged except `pathTo` supernode 307 → 305 round
   trips (unreachable target: no value fetch at all now).
 
+- **➡️ 1.35 `paths {}` silent-drop audit: store failures read as "absent"; BFS extra emissions**
+  Full findings, repros and fix directions: `ai-scripts/paths-problem-ISSUE.md`; probe
+  `PathsSilentDropAuditTest` (prints, asserts nothing). (1) REAL silent drop: `.getOrNull()` in
+  `AbyssSchemaWorker` `loadAndCacheNode/Nodes/Edge`, `preloadOut/In` (and `AbyssStoreLike.loadNodes`
+  default) turns a failed store read into "absent" — cache miss (eviction or cold start) + store failure
+  returns `Right` with a truncated or plausible-but-wrong result (a>b>c → `[a>b]`). Affects every read,
+  not only `paths`. (2) BFS emits non-maximal prefixes and duplicates (`bfsLoop` natural terminal, 481/36k
+  fuzz cases; DFS exact) — fix and gate BFS against the contract oracle. (3) Contract decisions:
+  parallel-edge collapse; excluded-gap `Path` misaligns in `toEitherList()`. Ephemerals out of scope.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
