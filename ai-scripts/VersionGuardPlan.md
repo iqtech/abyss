@@ -4,6 +4,10 @@ Closes `IoT.md` findings **2** (silent lost update on `modifyNode`), **B** (stal
 and **3** (cache and DB disagree on who won). Written 2026-09-08 after TODO 1.32 closed finding 1;
 rewritten 2026-09-09 after a code audit found three blocking defects in the first draft (§9).
 
+**Consumer (parked):** [`NodeHistoryRFC.md`](NodeHistoryRFC.md) §4.2 uses Phase 1's `version`
+column as the ordering key for its fallback history shape (N). Any write path that misses the
+`version = n.version + 1` increment breaks that history silently.
+
 ---
 
 ## 1. The defect, in current code
