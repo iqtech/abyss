@@ -143,7 +143,7 @@ class MultiSchemaTest {
     private fun uuidNodeId(id: Uuid) = SchemaKeyAdapter(UUID_TAG, SchemaTagWidth.BYTE, UuidKeyAdapter).toNodeId(id)
 
     @BeforeTest fun clear() {
-        listOf("ms-nodes", "ms-edges", "ms-edges-adjacency", "ms-edges-cross", "ms-edges-cross-adjacency")
+        listOf("ms-nodes", "ms-edges", "ms-edges-adjacency")
             .forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
     }
 
@@ -353,6 +353,39 @@ class MultiSchemaTest {
         c.longS.transaction { removeNode(1L) }
 
         assertEquals(0, c.g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())
+    }
+
+    // Loaded flag, cross-schema: one worker, ONE adjacency map for every schema, so a node's cross-schema entries
+    // and its loaded flag sit under its own NodeId there and RemoveNode's drop takes them all. The surviving
+    // endpoint stays loaded-and-empty — correct: it still exists and has no edges.
+    @Test fun removeNodeDropsCrossSchemaAdjacencyAndLoadedFlag() = runBlocking {
+        val maps = listOf("msx-nodes", "msx-edges", "msx-edges-adjacency")
+        maps.forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        try {
+            val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "msx-nodes", "msx-edges", allowCrossSchemaEdges = true,
+                persistentStore = PartialProbeStore(), module = graphTestModule)
+            val longS = g.register(LONG_TAG, LongKeyAdapter)
+            val uuidS = g.register(UUID_TAG, UuidKeyAdapter)
+            val u = Uuid.random()
+            check(uuidS.transaction(checkIntegrity = false) { addCrossEdge(LivesIn(u, 1L)) }.isRight())
+            maps.forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }                            // restart: store only
+            assertEquals(1, g.outAt(uuidNodeId(u), "lives_in", needValue = false).count())       // preload + mark u OUT
+            assertEquals(1, g.inAt(longNodeId(1L), "lives_in", needValue = false).count())       // preload + mark 1L IN
+            val adj = multiSchemaHz.getMap<AdjacencyKey, AdjacencyValue>("msx-edges-adjacency")
+            assertTrue(adj.entries.any { it.key.nodeId == uuidNodeId(u) && it.value.loaded })
+
+            check(uuidS.transaction(checkIntegrity = false) { removeNode(u) }.isRight())
+
+            assertEquals(emptyList(), adj.entries.filter { it.key.nodeId == uuidNodeId(u) }.map { it.key }, "deleted node's adjacency dropped")
+            val survivor = adj.entries.filter { it.key.nodeId == longNodeId(1L) }
+            // Survivor: no entries left, flag intact on shard 0 (plus the emptied shard u lived in — a Remove on a live
+            // node leaves an empty Set; only RemoveNode drops keys).
+            assertTrue(survivor.all { it.value.entries.isEmpty() }, "survivor has no entries: $survivor")
+            assertEquals(1, survivor.count { it.value.loaded }, "survivor keeps its loaded flag: $survivor")
+            assertEquals(0, g.inAt(longNodeId(1L), "lives_in", needValue = false).count())
+        } finally {
+            maps.forEach { multiSchemaHz.getMap<Any, Any>(it).clear() }
+        }
     }
 
     @Test fun crossEdgeExistsTracksAddAndRemove() = runBlocking {

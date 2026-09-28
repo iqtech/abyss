@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.uuid.Uuid
 
-private class PartialProbeStore : AbyssStoreLike {
+internal class PartialProbeStore : AbyssStoreLike {
     val edges = java.util.concurrent.CopyOnWriteArrayList<StoredEdge>()
     @Volatile var failLoads = false
     private fun fail() = Either.Left(AbyssError.Unexpected(IllegalStateException("store down")))
