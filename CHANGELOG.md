@@ -1,3 +1,11 @@
+## [0.35.1] - 2026-09-28
+
+- Fix traversals and `outEdges`/`inEdges` under-reporting after a cold start: one write to a node made its adjacency index non-empty and the store was never consulted again (1 of 11 edges returned). New per-(node, direction) `loaded` flag on adjacency shard 0, set only after a successful preload; rides the existing read `getAll` (warm hop still one op, cold preload +1 `submitToKey`)
+- Fix node delete leaving orphan edge rows in the store when the node's index was partial; `RemoveNode` now also drops the node's adjacency (entries, empty shards, flag), cross-schema included
+- A failed store preload no longer poses as complete: served partial, retried on next read
+- Zero-degree nodes hit the store once per cluster lifetime instead of on every read
+- TODO 1.36 recorded: preload-vs-remove race can resurrect a removed index entry
+
 ## [0.35.0] - 2026-09-23
 
 - Iterative DFS `paths()` (TODO 1.34): explicit frame stack with backtracking replaces the recursion — fixes lost paths when an already-expanded sibling blocked a route (a→b, a→c, c→b dropped a-c-b), O(depth²) heap (OOM at ~5k links), and a swallowed `StackOverflowError` that hung the walk at ~3k+ links
