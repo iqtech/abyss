@@ -571,6 +571,14 @@
   fuzz cases; DFS exact) — fix and gate BFS against the contract oracle. (3) Contract decisions:
   parallel-edge collapse; excluded-gap `Path` misaligns in `toEitherList()`. Ephemerals out of scope.
 
+- **➡️ 1.36 Adjacency preload-vs-remove race: a preload can resurrect a removed index entry**
+  `preloadOut/In` read the store, a concurrent `RemoveEdge` commits and runs its index remove, then the
+  preload's `addAsync` re-inserts the entry — a ghost index entry for an edge no longer in the store.
+  Pre-existing; the adjacency loaded-flag (partial-index gate fix) makes the ghost live until cluster
+  restart instead of until the next cold read. Value-carrying hops drop it (`resolveEdges` store-null), but
+  key-only hops (`needValue=false`: traversal existence, delete cascade) still emit it. Real fix: tombstones
+  (or a remove-generation check) so a preload add cannot resurrect a removed entry.
+
 ## 2. Medium
 
 - **➡️ 2.1 Single Hazelcast node**
