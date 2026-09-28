@@ -4,6 +4,8 @@ import com.hazelcast.nio.serialization.compact.CompactReader
 import com.hazelcast.nio.serialization.compact.CompactSerializer
 import com.hazelcast.nio.serialization.compact.CompactWriter
 import pl.iqtech.abyss.graph.AdjacencyEntry
+import pl.iqtech.abyss.graph.AdjacencyLifecycle
+import pl.iqtech.abyss.graph.AdjacencyLifecycleProcessor
 import pl.iqtech.abyss.graph.AdjacencyMutation
 import pl.iqtech.abyss.graph.AdjacencyMutationProcessor
 import pl.iqtech.abyss.store.api.NodeId
@@ -47,4 +49,11 @@ class AdjacencyMutationProcessorSerializer : CompactSerializer<AdjacencyMutation
         const val KIND_ADD: Byte = 0
         const val KIND_REMOVE: Byte = 1
     }
+}
+
+class AdjacencyLifecycleProcessorSerializer : CompactSerializer<AdjacencyLifecycleProcessor> {
+    override fun getTypeName() = "AdjacencyLifecycleProcessor"
+    override fun getCompactClass() = AdjacencyLifecycleProcessor::class.java
+    override fun write(writer: CompactWriter, obj: AdjacencyLifecycleProcessor) = writer.writeString("action", obj.action.name)
+    override fun read(reader: CompactReader) = AdjacencyLifecycleProcessor(AdjacencyLifecycle.valueOf(reader.readString("action")!!))
 }

@@ -807,10 +807,9 @@ class GraphTest {
         }
     }
 
-    // Accepted ceiling (see AbyssSchemaWorker.adjacencyRead): a genuinely edgeless node can't be told
-    // apart from a never-preloaded one without a dedicated warm marker, so it retries the store on
-    // every call. Locked in here so a future change to that behavior is a deliberate decision.
-    @Test fun `outEdges retries the store on every call for a node with no adjacency data`() {
+    // Was an accepted ceiling (a genuinely edgeless node looked never-preloaded, retrying the store on every
+    // call). The adjacency loaded flag tells them apart: loaded-and-empty, one store hit per cluster lifetime.
+    @Test fun `outEdges hits the store once for a node with no edges`() {
         runBlocking {
             val fake = WarmingFakeStore()
             val g = AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "wempty-nodes", "wempty-edges", persistentStore = fake, module = graphTestModule)
@@ -818,7 +817,7 @@ class GraphTest {
 
             repeat(3) { g.outEdges(nid).toList() }
 
-            assertEquals(3, fake.loadEdgesCalls)
+            assertEquals(1, fake.loadEdgesCalls)
             graphTestHz.getMap<Any, Any>("wempty-nodes").clear()
             graphTestHz.getMap<Any, Any>("wempty-edges").clear()
             graphTestHz.getMap<Any, Any>("wempty-edges-adjacency").clear()

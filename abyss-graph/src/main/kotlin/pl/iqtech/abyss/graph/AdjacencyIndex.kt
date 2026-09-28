@@ -25,14 +25,28 @@ internal interface AdjacencyIndex {
      * Streamed read of every entry for this owner/direction; an [edgeTypeTag] restricts to a single edge
      * type. How much it materializes at once is the implementation's trade-off: [ShardedAdjacencyIndex]
      * reads all shards in one round trip by default (TODO 4.14); a paged implementation bounds heap for
-     * supernodes. An empty result is also the worker's cold-node signal (it then preloads from the store).
+     * supernodes. Unchecked: says nothing about completeness — see [readIfLoaded].
      */
     fun read(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short? = null): Flow<AdjacencyEntry>
 
     /**
-     * Entry count for this owner/direction, restricted to one edge type when [edgeTypeTag] is set. The
-     * worker's completeness check for a cached value scan (TODO 4.14): the index is authoritative, so a
-     * scan that returns fewer values than this count lost some to cache eviction.
+     * [read], but only when this owner/direction was [markLoadedAsync]-ed: null means never preloaded from the
+     * store (cold, or partial — writes add entries without making the index complete), so the worker preloads.
+     * A non-empty index is NOT a completeness signal: after a cold start one write makes it non-empty.
+     * Must cost no extra round trip over [read].
      */
-    suspend fun count(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short? = null): Int
+    suspend fun readIfLoaded(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short? = null): Flow<AdjacencyEntry>?
+
+    /**
+     * Entry count for this owner/direction, restricted to one edge type when [edgeTypeTag] is set; null when not
+     * loaded (see [readIfLoaded]). The worker's completeness check for a cached value scan (TODO 4.14): the index
+     * is authoritative, so a scan that returns fewer values than this count lost some to cache eviction.
+     */
+    suspend fun count(owner: NodeId, direction: AdjacencyDirection, edgeTypeTag: Short? = null): Int?
+
+    /** Record that this owner/direction now holds every store edge (called after a successful preload). */
+    fun markLoadedAsync(owner: NodeId, direction: AdjacencyDirection): CompletionStage<*>
+
+    /** Drop everything for [owner], both directions, entries and loaded flag (node removal). */
+    fun dropAsync(owner: NodeId): CompletionStage<*>
 }

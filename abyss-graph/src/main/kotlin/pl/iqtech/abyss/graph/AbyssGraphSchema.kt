@@ -23,6 +23,7 @@ import pl.iqtech.abyss.graph.traversal.TraversalBuilder
 import pl.iqtech.abyss.graph.serialization.AdjacencyEntrySerializer
 import pl.iqtech.abyss.graph.serialization.AdjacencyKeySerializer
 import pl.iqtech.abyss.graph.serialization.AdjacencyMutationProcessorSerializer
+import pl.iqtech.abyss.graph.serialization.AdjacencyLifecycleProcessorSerializer
 import pl.iqtech.abyss.graph.serialization.AdjacencyValueSerializer
 import pl.iqtech.abyss.graph.serialization.EdgeKeySerializer
 import pl.iqtech.abyss.graph.serialization.EdgeLikeHzSerializer
@@ -287,6 +288,7 @@ fun Config.registerAbyssSerializers(adapter: EdgeAdapter, module: SerializersMod
     serializationConfig.compactSerializationConfig.addSerializer(AdjacencyEntrySerializer())
     serializationConfig.compactSerializationConfig.addSerializer(AdjacencyValueSerializer())
     serializationConfig.compactSerializationConfig.addSerializer(AdjacencyMutationProcessorSerializer())
+    serializationConfig.compactSerializationConfig.addSerializer(AdjacencyLifecycleProcessorSerializer())
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(NodeLike::class.java).setImplementation(NodeLikeHzSerializer(module)))
     serializationConfig.addSerializerConfig(SerializerConfig().setTypeClass(EdgeLike::class.java).setImplementation(EdgeLikeHzSerializer(module)))
 }

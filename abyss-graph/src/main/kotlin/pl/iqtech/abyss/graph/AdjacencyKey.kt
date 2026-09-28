@@ -47,4 +47,6 @@ class AdjacencyKey(
 // edges, or a preload racing ahead of the node's own store row) — the edge write must still succeed
 // and stay reachable through the index, so a missing tag degrades to "unknown" rather than failing.
 data class AdjacencyEntry(val neighborId: NodeId, val nodeTypeTag: Short?, val edgeTypeTag: Short)
-data class AdjacencyValue(val entries: Set<AdjacencyEntry>)
+// `loaded` lives on shard 0 only: the (owner, direction) was preloaded from the store, so its index is
+// complete — writes since then arrived through the write path. Never true on any other shard.
+data class AdjacencyValue(val entries: Set<AdjacencyEntry>, val loaded: Boolean = false)

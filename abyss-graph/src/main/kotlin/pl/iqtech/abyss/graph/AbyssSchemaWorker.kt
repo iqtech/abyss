@@ -246,10 +246,8 @@ internal class AbyssSchemaWorker(
             val count = async { adjacency.count(nid, AdjacencyDirection.OUT, edgeTag) }
             values.await() to count.await()
         }
-        when {
-            indexed > 0 && scanned.size == indexed -> scanned.forEach { emit(it) }
-            indexed > 0 || persistentStore != null -> emitAll(heal())
-        }
+        // indexed == null: not loaded (cold or partial) → heal preloads. Loaded-and-empty with an empty scan emits nothing.
+        if (indexed != null && scanned.size == indexed) scanned.forEach { emit(it) } else emitAll(heal())
     }
 
     // Ephemeral (TTL) out-edges are store-only (TODO 1.27): reliable only from ephemeralStore, since the
@@ -321,20 +319,17 @@ internal class AbyssSchemaWorker(
     @Suppress("UNCHECKED_CAST")
     private fun adjacencyHopFlow(nid: NodeId, direction: AdjacencyDirection, type: String?, needValue: Boolean, batch: Int): Flow<Hop> = flow {
         val edgeTag = type?.let { tagRegistry.edgeTagOf(it) }
-        // Read first, warm only when cold (TODO 4.14): no separate empty-probe round trip, so a warm hop is ONE
-        // index read (was probe 1-2 + read windows 2). The direction is read unfiltered and filtered here, so a
-        // warm node with no entries of THIS edge type isn't mistaken for cold and sent to the store every call.
-        // Entries are consumed as they arrive; only a direction with no entries at all preloads and reads again.
-        // ponytail: a node with genuinely zero edges in this direction is indistinguishable from
-        // "never preloaded" (no shard entry to tell them apart) — it retries the store on every
-        // call instead of caching "confirmed empty". Upgrade to a dedicated warm-marker key if a
-        // hot zero-degree node's repeated store hits ever show up in profiling.
+        // Read first, warm only when not loaded (TODO 4.14): the loaded flag rides the read's own getAll, so a warm
+        // hop is ONE index read. "Non-empty" is NOT "complete": after a cold start one write makes the index
+        // non-empty with the rest still only in the store — the old gate served that partial view forever.
+        // A zero-degree node is loaded-and-empty, so it no longer hits the store on every read.
+        // Cache-only (no store): the index is complete by construction, nothing to load or mark.
+        // A failed preload doesn't mark: the partial index is served and the next read retries.
         suspend fun readEntries(consume: suspend (AdjacencyEntry) -> Unit) {
-            var sawAny = false
-            adjacency.read(nid, direction).collect { e -> sawAny = true; if (edgeTag == null || e.edgeTypeTag == edgeTag) consume(e) }
-            if (sawAny) return
-            if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
-            adjacency.read(nid, direction, edgeTag).collect { consume(it) }
+            val entries = if (persistentStore == null) adjacency.read(nid, direction, edgeTag)
+                else adjacency.readIfLoaded(nid, direction, edgeTag)
+                    ?: run { preload(nid, direction); adjacency.readIfLoaded(nid, direction, edgeTag) ?: adjacency.read(nid, direction, edgeTag) }
+            entries.collect { consume(it) }
         }
         // nodeTypeTag is the neighbor's (== target's) type — carried so typed filters skip a fetch.
         fun hopOf(entry: AdjacencyEntry): Hop {
@@ -398,8 +393,14 @@ internal class AbyssSchemaWorker(
     // returns both endpoint NodeIds (from its PK columns), so the cache key rebuilds untyped. Also
     // warms the OUT-direction adjacency entry — an adjacency self-heal preloadOut never needed before
     // there was an outgoing index at all.
+    private suspend fun preload(nid: NodeId, direction: AdjacencyDirection) =
+        if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
+
+    // Both preloads mark the direction loaded only after every add landed, and only on a store Right: a failed
+    // load (TODO 1.35) marked as loaded would pin the partial index until cluster restart.
     private suspend fun preloadOut(nid: NodeId) = withContext(Dispatchers.IO) {
-        persistentStore?.loadEdges(nid)?.getOrNull()?.forEach { e ->
+        val loaded = persistentStore?.loadEdges(nid)?.getOrNull() ?: return@withContext
+        loaded.forEach { e ->
             val type = edgeType(e.edge)
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
             // Neighbor tag rides the edge scan (StoredEdge.neighborType) — no per-neighbor node read.
@@ -407,19 +408,22 @@ internal class AbyssSchemaWorker(
             val toTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
             adjacency.addAsync(e.fromId, AdjacencyDirection.OUT, AdjacencyEntry(e.toId, toTag, e.edge::class.typeTag())).asDeferred().await()
         }
+        adjacency.markLoadedAsync(nid, AdjacencyDirection.OUT).asDeferred().await()
         // Ephemeral edges are store-only (TODO 1.27): not cached, not indexed — traversal reaches them
         // via includeEphemeral, which reads ephemeralStore directly. Nothing to warm here.
     }
 
     // Only persistent edges have an adjacency index to warm (ephemeral edges are outgoing-only, TODO 1.13).
     private suspend fun preloadIn(nid: NodeId) = withContext(Dispatchers.IO) {
-        persistentStore?.loadInEdges(nid)?.getOrNull()?.forEach { e ->
+        val loaded = persistentStore?.loadInEdges(nid)?.getOrNull() ?: return@withContext
+        loaded.forEach { e ->
             val type = edgeType(e.edge)
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
             // Neighbor (the from-node) tag rides the loadInEdges scan; see preloadOut.
             val fromTag = e.neighborType?.let { tagRegistry.nodeTagOf(it) }
             adjacency.addAsync(e.toId, AdjacencyDirection.IN, AdjacencyEntry(e.fromId, fromTag, e.edge::class.typeTag())).asDeferred().await()
         }
+        adjacency.markLoadedAsync(nid, AdjacencyDirection.IN).asDeferred().await()
     }
 
     // --- Commit pipelines ---------------------------------------------------------------------------
@@ -593,7 +597,9 @@ internal class AbyssSchemaWorker(
         is NodeOp.AddNode ->
             if (op.ttl != null) listOf(nodesMap.setAsync(op.id, op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS))
             else listOf(nodesMap.setAsync(op.id, op.node))
-        is NodeOp.RemoveNode -> listOf(nodesMap.removeAsync(op.id))
+        // The cascade's RemoveEdge ops run concurrently with the drop; a Remove on a dropped (absent) shard is a
+        // no-op, so any interleaving ends with the node's adjacency gone — entries, empty shards and loaded flag.
+        is NodeOp.RemoveNode -> listOf(nodesMap.removeAsync(op.id), adjacency.dropAsync(op.id))
         is NodeOp.AddEdge -> {
             // Ephemeral (TTL) edges are store-only (TODO 1.27): the ephemeral() commit persists them to
             // ephemeralStore; they are NOT cached in edgesMap nor indexed. This keeps the persistent

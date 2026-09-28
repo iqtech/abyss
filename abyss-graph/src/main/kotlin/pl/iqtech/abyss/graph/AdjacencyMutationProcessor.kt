@@ -20,7 +20,25 @@ class AdjacencyMutationProcessor(val mutation: AdjacencyMutation) : EntryProcess
                 it.neighborId == mutation.neighborId && it.edgeTypeTag == mutation.edgeTypeTag
             }.toSet()
         }
-        if (updated != current) entry.setValue(AdjacencyValue(updated))
+        if (updated != current) entry.setValue(AdjacencyValue(updated, entry.value?.loaded ?: false))
+        return null
+    }
+}
+
+// Per-(owner, direction) lifecycle, separate from AdjacencyMutationProcessor on purpose: that serializer decodes
+// an unknown kind as Remove, so an older member would misread a new kind. A new Compact type fails to
+// deserialize there instead — the flag just isn't set, and the node preloads again (the safe direction).
+enum class AdjacencyLifecycle { MARK_LOADED, DROP }
+
+class AdjacencyLifecycleProcessor(val action: AdjacencyLifecycle) : EntryProcessor<AdjacencyKey, AdjacencyValue, Void> {
+    override fun process(entry: MutableMap.MutableEntry<AdjacencyKey, AdjacencyValue>): Void? {
+        when (action) {
+            // Creates shard 0 when absent: a zero-degree node is marked loaded too (no store hit per read).
+            AdjacencyLifecycle.MARK_LOADED -> if (entry.value?.loaded != true) entry.setValue(AdjacencyValue(entry.value?.entries ?: emptySet(), loaded = true))
+            // setValue(null) is Hazelcast's in-processor delete; the map's V is non-null, hence the cast.
+            @Suppress("UNCHECKED_CAST")
+            AdjacencyLifecycle.DROP -> if (entry.value != null) (entry as MutableMap.MutableEntry<AdjacencyKey, AdjacencyValue?>).setValue(null)
+        }
         return null
     }
 }
