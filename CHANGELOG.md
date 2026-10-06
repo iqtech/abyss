@@ -1,3 +1,10 @@
+## [0.35.2] - 2026-10-06
+
+- New `AbyssGraphSchema.scanPersistentNodes<N>(): Either<AbyssError, Flow<N>>` (TODO 1.33): streams every persistent node of exactly class `N` as whole values from the store's type index (`idx_nodes_type`, until now written on every upsert and read by nothing). Persistent only, exact class only, no cache read or write-through
+- New store seam `AbyssStoreLike.scanNodesOfType(type)` returning `Either`; the default is `Left(ScanUnsupported)`, not an empty flow, so a store without the capability cannot pass for "no rows". New `AbyssError.ScanUnsupported`, also returned when no `persistentStore` is configured
+- `YugabytePersistentStore` streams the scan with autocommit off + `fetchSize` (0.2 MB held vs 58.9 MB materialized for 129,800 rows); one transaction and one pooled connection for as long as the flow is collected
+- TODO 1.37 recorded: 1.23's YSQL id scans materialize each result set (`fetchSize` without autocommit off)
+
 ## [0.35.1] - 2026-09-28
 
 - Fix traversals and `outEdges`/`inEdges` under-reporting after a cold start: one write to a node made its adjacency index non-empty and the store was never consulted again (1 of 11 edges returned). New per-(node, direction) `loaded` flag on adjacency shard 0, set only after a successful preload; rides the existing read `getAll` (warm hop still one op, cold preload +1 `submitToKey`)
