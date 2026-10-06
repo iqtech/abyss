@@ -161,6 +161,38 @@ Caveats: a single tserver on a dev box sharing CPU with the client. On a real cl
 spreads over tablets while one type's index range sits on one index tablet, which should move the
 crossover toward the fan-out. Unmeasured. B8 beat B4 at every share ≥5%; the best N is unmeasured.
 
+### 5.3 Keyset paging needs `(type HASH, id ASC)` (2026-10-06)
+
+Scratch table with `abyss.nodes`' DDL, 100,003 rows, single `EXPLAIN (ANALYZE, DIST)` runs.
+Query: `WHERE type = ? AND id > ? ORDER BY id LIMIT 500`.
+
+| index | plan | rows read | time |
+|---|---|---|---|
+| current `(type)` | reads the whole type (30,002), `Storage Filter` on id, top-N sort | 30,002 | 166 ms |
+| `(type HASH, id ASC)` | `Index Cond` on type and id, no sort | 500 | 5 ms |
+| `(type HASH, id ASC)`, rare type, first page | same | 100 | 2 ms |
+| `(type HASH, id ASC)`, id bounded on both sides | both bounds in the `Index Cond` | 114 | 2 ms |
+
+On the current index every page re-reads the whole type: a paged scan is O(matches² / page size).
+
+### 5.4 Write cost of the index shape (2026-10-06)
+
+`TypeIndexWriteCostTest` (`-Pperf`): three tables differing only in the type index, the store's own node
+upsert, YB smart driver, variants interleaved per round with rotated order, median of 5 rounds after a
+warm-up. Tables grow to 150k rows. Median ms (range):
+
+| workload | no type index | `(type)` | `(type HASH, id ASC)` | proposed vs current |
+|---|---|---|---|---|
+| 1000 single-row txns, sequential | 1747 | 1757 (1731..1795) | 1771 (1731..1784) | +0.8% |
+| 4000 single-row txns, 8 connections | 1381 | 1682 (1568..1792) | 1714 (1568..1722) | +1.9% |
+| 20k rows, 1000 per txn | 14271 | 15506 (15062..15580) | 15342 (15246..15630) | -1.1% |
+| 1000 upsert-updates of existing rows | 1800 | 1817 (1809..1889) | 1804 (1743..1843) | -0.7% |
+
+No measurable difference between the two index shapes: every delta is inside the round-to-round range.
+Having a type index at all costs up to 18% under concurrency and 8% in batches; sequentially it is noise.
+Unmeasured: index size on disk (the proposed key carries `id` in addition to the row pointer), and a
+multi-node cluster. Both shapes hash on `type`, so tablet placement is the same.
+
 ## 6. Tests
 
 `ScanCapabilityTest` (fake stores, through the container facade):

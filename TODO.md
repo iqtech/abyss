@@ -1038,6 +1038,40 @@
   obvious first caller. Switching is a perf change (baseline → switch → pre/post). Its edge loop has
   the same N-round-trip shape and no batch `edgeExists` to move to.
 
+- **➡️ 2.34 Keyset-paged type scan: `(type HASH, id ASC)` index + `scanPersistentNodesPage<N>()`**
+  Proposal, not agreed. 1.33's `scanPersistentNodes<N>()` is one streamed query: one transaction on one
+  snapshot (YB history retention, 900 s on the dev container) and one pooled connection held for as long
+  as the caller collects. A small result is easier as a bounded `List`, and a huge one should not hold a
+  transaction open. Make the page the primitive:
+  `scanPersistentNodesPage<N>(after: ID? = null, limit: Int): Either<AbyssError, List<N>>`,
+  query `WHERE type = ? AND id > ? ORDER BY id LIMIT ?`. The cursor is the last returned id, so it is
+  stateless and resumable; order is `NodeId` byte order, not domain order. Each page is a short
+  autocommit query. Cost: no single snapshot across pages (a row present throughout is returned exactly
+  once; rows inserted or deleted mid-scan may or may not appear).
+  - **Needs a different index.** Replace `idx_nodes_type ON nodes (type)` with `(type HASH, id ASC)`.
+    Measured on the live container (scratch table, `abyss.nodes`' DDL, 100,003 rows, page of 500 on a
+    30,002-row type, single `EXPLAIN (ANALYZE, DIST)` runs): the current index reads the whole type and
+    sorts on every page, 30,002 rows / 166 ms, so a paged scan is O(matches² / page size); the proposed
+    index puts type and id in the `Index Cond`, 500 rows / 5 ms, no sort.
+  - **Write cost is the same.** `TypeIndexWriteCostTest` (`-Pperf`): three tables differing only in the
+    type index (none, current, proposed), the store's own node upsert, variants interleaved per round,
+    median of 5 rounds after a warm-up. Proposed vs current: +0.8% (1000 single-row txns, sequential),
+    +1.9% (4000 single-row txns on 8 connections), -1.1% (20k rows, 1000 per txn), -0.7% (1000
+    upsert-updates). Every delta is inside the round-to-round range. Unmeasured: index size on disk (the
+    proposed key also carries `id`) and a multi-node cluster.
+  - **Rebuild the stream on pages** so there is one read path; that removes both 1.33 ceilings. Per-row
+    cost looks similar (about 10 ms per 1k rows paged vs about 9 ms streamed) but was not measured side
+    by side.
+  - Open before building:
+    - Ownership filter vs "short page means end": the store is shared, so a page can hold only another
+      schema's rows of the type and come back empty with data behind it. Bounding `id` by the schema's
+      key prefix in SQL stays an `Index Cond` (114 rows / 2 ms), but only works if the schema tag is the
+      leading bytes of the `NodeId`. Not checked. Otherwise the page needs an explicit end marker.
+    - Replace the index or keep both; migration for existing databases (build new, drop old).
+    - Keep the snapshot stream alongside the paged read, or drop it.
+    - Same for edges (`idx_edges_type`, still without a reader).
+  Numbers and plans: `ai-scripts/TypeIndexScanPlan.md` §5.3, §5.4.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)
