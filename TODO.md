@@ -492,11 +492,23 @@
     plain query. Edges select `data` under `idx_edges_type` the same way.
   - YCQL (`YugabyteEphemeralStore`): no secondary index on `type` (the per-row-TTL conflict from 1.23's
     RFC) → token-range `channelFlow` fan-out with a **client-side** type filter, mirroring exactly how
-    `scanNodeIds` filters `tag` there today.
+    `scanNodeIds` filters `tag` there today. Every row is read. Nodes: `ephemeral_nodes` has a plain
+    `type` column, so `SELECT type, data` and compare the string **before** JSON-decoding — non-matching
+    rows are never deserialized. Edges: `type` is a clustering column but the partition key is `from_id`,
+    so it prunes nothing — still a full sweep, same filter on `type` before decode.
   - `HazelcastEphemeralStore`: cached values are live `NodeLike`/`EdgeLike` instances, so the concrete
     class answers the type directly — unlike `tag`, which is structurally unanswerable there post-1.24
     and returns `emptyFlow()`. This one is genuinely serviceable from the cache.
-  `AbyssSchemaWorker` merges persistent + ephemeral into one flow, same as `scanNodeIds`. Exposed as plain
+  `AbyssSchemaWorker` merges persistent + ephemeral into one flow, same as `scanNodeIds`, **plus a
+  `nodesMap`/`edgesMap` branch when no `persistentStore` is configured**. Source of truth is per layer:
+  persistent layer = YSQL when a store is set (the maps are an evictable partial copy — don't read them),
+  else the Hazelcast `nodesMap`/`edgesMap` themselves; ephemeral layer = whatever `ephemeralStore` is (never
+  null — defaults to `HazelcastEphemeralStore`, `AbyssSchemaWorker.kt:94`). Routing through the store seam
+  alone, as `scanNodeIds` does today (`AbyssSchemaWorker.kt:193`), silently returns zero persistent
+  elements on a store-less graph — the same hole `exportGraphLines` had to patch with
+  `merge(allNodeIds(), scanNodeIds())`. Cost of that branch: every map value is deserialized to check its
+  class (custom JSON `StreamSerializer`, not Compact — no Hazelcast predicate can see the type); acceptable,
+  a store-less graph is memory-bounded by definition. Exposed as plain
   methods on `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`, plus a reified per-schema
   `scanNodesOfType<N>()` on `AbyssGraphSchema` (`ownsNodeId` filter + typed conversion, same shape as
   `AbyssGraphSchema.scanNodeIds`; reified `N` → `@SerialName` via `serialName()`), and deliberately **not**
@@ -510,6 +522,7 @@
   - Single type vs. a set (`type = ANY(?)`) in v1.
   Complements 2.12 (`@AbyssStoreColumn` + attribute-indexed `queryNodeIds`): that one indexes *attributes*,
   this one finally reads the *type* index that has been sitting there unused since the schema was written.
+  Design plan: `ai-scripts/TypeIndexScanPlan.md`.
 
 - **✅ 1.34 DFS `paths()` drops paths depending on edge order; O(depth²) memory — OOM at ~5k depth, sometimes a silent hang**
   `dfsLoop` keeps per-level copies alive on the suspended recursion: `visited.toMutableSet()`,
@@ -578,6 +591,34 @@
   restart instead of until the next cold read. Value-carrying hops drop it (`resolveEdges` store-null), but
   key-only hops (`needValue=false`: traversal existence, delete cascade) still emit it. Real fix: tombstones
   (or a remove-generation check) so a preload add cannot resurrect a removed entry.
+
+- **➡️ 1.37 1.23's YSQL scans materialize whole result sets: `fetchSize` without `autoCommit = false`**
+  `YugabytePersistentStore.scanNodeIds`/`scanEdgeIds` set `fetchSize = 500` on a pooled connection but
+  leave autocommit on (Hikari default). pgjdbc (and the YB smart driver built on it) only opens a
+  server-side cursor when autocommit is **off**; otherwise it reads the whole result before the first
+  `next()`. Measured on the live container (`TypeScanFeasibilityTest`, TODO 1.33 Phase 0), 200k-row
+  `SELECT id, data`, `fetchSize = 500`, heap held after the first row: **~90 MB with autocommit on vs
+  0.2 MB off**, identical for both drivers.
+  Impact:
+  - Each untagged `yb_hash_code` range holds about 1/N of the table's ids in memory.
+  - The tagged GIN query holds its **entire** match.
+  - Ids only, so this is survivable at dev scale, but not at 100M rows: an orphan sweep is exactly the
+    job that runs on the big table.
+  - `scanEdgeIds` holds `(from_id, to_id)` pairs per range, same shape.
+  - YCQL scans are unaffected: the DataStax driver pages natively.
+
+  Fix: wrap each scan query in `conn.autoCommit = false` … `finally { conn.commit() }`. It's per
+  borrowed connection, and Hikari restores autocommit when the connection returns to the pool. This is
+  the same pattern as the write paths (`:282`, `:343`) and the Phase 0 test.
+  The trade that comes with it:
+  - A streamed query becomes one transaction, bounded by
+    `timestamp_history_retention_interval_sec` (900 s).
+  - Fine for hash ranges (short transactions).
+  - The single tagged GIN query inherits the ceiling. Same acceptance as 1.33's §3.5 in
+    `ai-scripts/TypeIndexScanPlan.md`.
+
+  Test: a `LoadTest` case asserting a bounded heap delta after the first emitted id on a seeded table.
+  It fails on the current code.
 
 ## 2. Medium
 

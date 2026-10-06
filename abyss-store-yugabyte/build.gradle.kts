@@ -1,3 +1,7 @@
+tasks.test {
+    if (project.hasProperty("perf")) systemProperty("perf", "true")
+}
+
 dependencies {
     implementation(project(":abyss-store-api"))
     implementation(libs.hikari)
