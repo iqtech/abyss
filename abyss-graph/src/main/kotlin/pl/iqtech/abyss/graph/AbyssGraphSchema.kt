@@ -19,6 +19,7 @@ import pl.iqtech.abyss.dsl.AbyssEphemeralTransactionLike
 import pl.iqtech.abyss.dsl.AbyssTransactionLike
 import pl.iqtech.abyss.dsl.EdgeKey
 import pl.iqtech.abyss.dsl.TraversalScope
+import pl.iqtech.abyss.dsl.serialName
 import pl.iqtech.abyss.graph.traversal.TraversalBuilder
 import pl.iqtech.abyss.graph.serialization.AdjacencyEntrySerializer
 import pl.iqtech.abyss.graph.serialization.AdjacencyKeySerializer
@@ -109,6 +110,24 @@ class AbyssGraphSchema<ID> internal constructor(
     // NodeNotFound and it's silently skipped — a wasted round trip, not a correctness issue.
     fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<ID> =
         worker.scanNodeIds(tag, parallelism).filter { adapter.ownsNodeId(it) }.map { adapter.fromNodeId(it) }
+
+    // TODO 1.33: stream every persistent node of exactly class N, as whole values, straight from the
+    // store's type index — no cache read, no cache write-through.
+    //  - Persistent only: ephemeral nodes of the type are not returned.
+    //  - Exact class only: the stored type is the concrete class's @SerialName, subclasses don't match.
+    //  - Left = the scan can't start: ScanUnsupported (no persistentStore, or the store can't scan) or
+    //    SchemaError (N has no @SerialName). Failures during collection are thrown by the flow.
+    //  - The store is shared by every schema in a container, so ownsNodeId drops other schemas' rows.
+    //  - Ceilings: one store transaction/snapshot and one pooled connection for as long as the flow is
+    //    collected (YB: timestamp_history_retention_interval_sec).
+    // Two functions because a public inline can't reach the private worker/adapter.
+    fun <N : NodeLike<ID>> scanPersistentNodes(type: KClass<N>): Either<AbyssError, Flow<N>> =
+        Either.catch { type.serialName() }
+            .mapLeft { AbyssError.SchemaError(it.message ?: "$type has no @SerialName") }
+            .flatMap { worker.scanPersistentNodes(it) }
+            .map { rows -> rows.filter { adapter.ownsNodeId(it.first) }.map { type.java.cast(it.second) } }
+
+    inline fun <reified N : NodeLike<ID>> scanPersistentNodes(): Either<AbyssError, Flow<N>> = scanPersistentNodes(N::class)
 
     override suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>> =
         Either.catch { worker.readNode(adapter.toNodeId(id)) }

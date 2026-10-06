@@ -202,6 +202,11 @@ internal class AbyssSchemaWorker(
     fun scanEdgeIds(parallelism: Int = 4): Flow<Pair<NodeId, NodeId>> =
         persistentStore?.scanEdgeIds(parallelism) ?: emptyFlow()
 
+    // Whole-value type scan (TODO 1.33), persistent store only — the ephemeral store and the caches are
+    // deliberately not consulted. No store is a typed error, not an empty flow.
+    fun scanPersistentNodes(type: String): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>> =
+        persistentStore?.scanNodesOfType(type) ?: AbyssError.ScanUnsupported("no persistentStore configured").left()
+
     // Outgoing edges. Persistent edges come from cachedOutScan (one partition scan, checked against the
     // index count); pageSize bounds only its heal path, the scan materializes the node's cached values.
     // Ephemeral (TTL) edges are store-only (TODO 1.27) — included only when includeEphemeral is set, read

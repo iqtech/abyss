@@ -7,6 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
@@ -192,6 +194,29 @@ class YugabytePersistentStore(
             }
         }
     }
+
+    // Whole-value type scan (TODO 1.33): one streamed query on idx_nodes_type, O(matches). autoCommit
+    // off is what turns fetchSize into a server-side cursor; with it on the driver materializes the
+    // whole result (TypeScanFeasibilityTest: 58.9 MB vs 0.2 MB held for 129,800 rows). So the scan is
+    // ONE transaction on one snapshot, bounded by timestamp_history_retention_interval_sec, and it holds
+    // one pooled connection for as long as the flow is collected. Read-only, so it ends in a rollback,
+    // on completion, failure and cancellation alike.
+    // ponytail: index path only. Above ~2% type share a pkey-hinted yb_hash_code fan-out is faster
+    // (ai-scripts/TypeIndexScanPlan.md §5.2); route to it when a large-type scan shows up.
+    override fun scanNodesOfType(type: String): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>> = Either.Right(flow {
+        ysql.connection.use { conn ->
+            conn.autoCommit = false
+            try {
+                conn.prepareStatement("SELECT id, data FROM $ysqlSchema.nodes WHERE type = ?").apply { fetchSize = 500 }.use { stmt ->
+                    stmt.setString(1, type)
+                    val rs = stmt.executeQuery()
+                    while (rs.next()) emit(NodeId(rs.getBytes("id")) to json.decodeFromString(nodeSer, rs.getString("data")))
+                }
+            } finally {
+                runCatching { conn.rollback() }
+            }
+        }
+    }.flowOn(Dispatchers.IO))
 
     // yb_hash_code() is bounded 0..65535 (proven in YsqlPartitionScanFeasibilityTest); splits it into
     // `parallelism` disjoint inclusive ranges for a channelFlow fan-out.

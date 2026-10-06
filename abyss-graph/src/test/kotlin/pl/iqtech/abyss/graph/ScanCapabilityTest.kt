@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import pl.iqtech.abyss.dsl.serialName
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreLike
 import pl.iqtech.abyss.store.api.AbyssEphemeralStoreTransactionLike
 import pl.iqtech.abyss.store.api.AbyssError
@@ -23,8 +24,10 @@ import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 // TODO 1.23: admin/orphan-sweep scan capability. Exercised through the public container facade
@@ -38,13 +41,24 @@ private class ScanFakeStore(
     private val nodeIds: List<NodeId> = emptyList(),
     private val edgePairs: List<Pair<NodeId, NodeId>> = emptyList(),
     private val nodesById: Map<NodeId, NodeLike<*>> = emptyMap(),
+    // null = this store does not implement the type scan (the seam default answers)
+    private val typedRows: List<Pair<NodeId, NodeLike<*>>>? = null,
 ) : AbyssStoreLike {
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(nodesById[id] to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Unit.right()
     override fun scanNodeIds(tag: String?, parallelism: Int): Flow<NodeId> = nodeIds.asFlow()
     override fun scanEdgeIds(parallelism: Int): Flow<Pair<NodeId, NodeId>> = edgePairs.asFlow()
+    override fun scanNodesOfType(type: String): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>> =
+        typedRows?.filter { it.second::class.serialName() == type }?.asFlow()?.right() ?: super.scanNodesOfType(type)
 }
+
+// A node class with no @SerialName: scanPersistentNodes can't name its stored type.
+private class UnnamedNode(
+    override val id: Long,
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : NodeLike<Long>
 
 private class ScanFakeEphemeralStore(private val nodeIds: List<NodeId> = emptyList()) : AbyssEphemeralStoreLike {
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(null to null)
@@ -147,5 +161,61 @@ class ScanCapabilityTest {
 
         assertTrue(lines.any { it.contains("\"name\":\"cold\"") }, "expected the store-only node to be exported: $lines")
         assertTrue(lines.any { it.contains("\"name\":\"warm\"") }, "expected the cache-warm node to still be exported: $lines")
+    }
+
+    // ── TODO 1.33: scanPersistentNodes<N>() ─────────────────────────────────────────────────────────
+
+    @Test fun `scanPersistentNodes with no persistentStore is ScanUnsupported, not an empty flow`() {
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "scan8-nodes", "scan8-edges", module = graphTestModule)
+        val schema = g.register(SchemaTag(71L), LongKeyAdapter)
+
+        assertIs<AbyssError.ScanUnsupported>(schema.scanPersistentNodes<LongTestNode>().leftOrNull())
+    }
+
+    @Test fun `scanPersistentNodes on a store that does not implement the scan is ScanUnsupported, not an empty flow`() {
+        val g = HeterogeneousSchemaGraph(
+            multiSchemaHz, SchemaTagWidth.BYTE, "scan9-nodes", "scan9-edges",
+            persistentStore = ScanFakeStore(), module = graphTestModule,
+        )
+        val schema = g.register(SchemaTag(72L), LongKeyAdapter)
+
+        assertIs<AbyssError.ScanUnsupported>(schema.scanPersistentNodes<LongTestNode>().leftOrNull())
+    }
+
+    // Two schemas share one store and one node class. Domain id 5 exists in both, so only the NodeId's
+    // schema tag tells the rows apart; counts are deliberately unequal (3 vs 2). Nothing is written
+    // through the container, so every row is cold: the scan must not depend on the cache.
+    @Test fun `scanPersistentNodes returns exactly this schema's own cold nodes of the type`() = runBlocking {
+        val tagA = SchemaTag(73L)
+        val tagB = SchemaTag(74L)
+        val keyA = SchemaKeyAdapter(tagA, SchemaTagWidth.BYTE, LongKeyAdapter)
+        val keyB = SchemaKeyAdapter(tagB, SchemaTagWidth.BYTE, LongKeyAdapter)
+        val ownA = listOf(5L, 6L, 7L).map { LongTestNode(id = it, name = "a-$it") }
+        val ownB = listOf(5L, 9L).map { LongTestNode(id = it, name = "b-$it") }
+        val g = HeterogeneousSchemaGraph(
+            multiSchemaHz, SchemaTagWidth.BYTE, "scan10-nodes", "scan10-edges",
+            persistentStore = ScanFakeStore(typedRows = ownA.map { keyA.toNodeId(it.id) to it } + ownB.map { keyB.toNodeId(it.id) to it }),
+            module = graphTestModule,
+        )
+        val a = g.register(tagA, LongKeyAdapter)
+        val b = g.register(tagB, LongKeyAdapter)
+
+        val foundA: List<LongTestNode> = a.scanPersistentNodes<LongTestNode>().getOrNull()!!.toList()
+        val foundB = b.scanPersistentNodes<LongTestNode>().getOrNull()!!.toList()
+
+        assertEquals(ownA.toSet(), foundA.toSet())
+        assertEquals(3, foundA.size)
+        assertEquals(ownB.toSet(), foundB.toSet())
+        assertEquals(2, foundB.size)
+    }
+
+    @Test fun `scanPersistentNodes for a class without SerialName is a SchemaError`() {
+        val g = HeterogeneousSchemaGraph(
+            multiSchemaHz, SchemaTagWidth.BYTE, "scan11-nodes", "scan11-edges",
+            persistentStore = ScanFakeStore(typedRows = emptyList()), module = graphTestModule,
+        )
+        val schema = g.register(SchemaTag(75L), LongKeyAdapter)
+
+        assertIs<AbyssError.SchemaError>(schema.scanPersistentNodes<UnnamedNode>().leftOrNull())
     }
 }

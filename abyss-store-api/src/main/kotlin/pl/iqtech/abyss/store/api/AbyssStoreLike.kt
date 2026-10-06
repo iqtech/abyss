@@ -45,6 +45,14 @@ interface AbyssStoreLike {
     // overrides these with real DB scans. `parallelism` is a per-call fan-out knob, not config.
     fun scanNodeIds(tag: String? = null, parallelism: Int = 4): Flow<NodeId> = emptyFlow()
     fun scanEdgeIds(parallelism: Int = 4): Flow<Pair<NodeId, NodeId>> = emptyFlow()
+
+    // Whole-value scan of one node type (TODO 1.33). `type` is the @SerialName of the concrete class
+    // (the stored class discriminator), so a base type matches nothing. The NodeId comes back with the
+    // value because the typed facade needs it for its ownership filter. Left = the scan can't start;
+    // the default is Left(ScanUnsupported), NOT an empty flow like the id scans above, so a store
+    // without the capability can't pass for "no rows". Failures while collecting are thrown by the flow.
+    fun scanNodesOfType(type: String): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>> =
+        Either.Left(AbyssError.ScanUnsupported("${this::class.simpleName} does not implement scanNodesOfType"))
 }
 
 interface AbyssStoreTransactionLike {

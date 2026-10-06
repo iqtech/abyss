@@ -52,8 +52,19 @@ data class YbTestEdge(
     val label: String
 ) : EdgeLike<Uuid, Uuid>
 
+// Second node type, owned by the type-scan tests (TODO 1.33): they purge it first, so they can assert
+// an exact result while yb_test_node rows from every other test sit in the same table.
+@Serializable
+@SerialName("yb_scan_node")
+data class YbScanNode(
+    override val id: Uuid,
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+    val name: String
+) : NodeLike<Uuid>
+
 private val ybModule = SerializersModule {
-    polymorphic(NodeLike::class) { subclass(YbTestNode::class) }
+    polymorphic(NodeLike::class) { subclass(YbTestNode::class); subclass(YbScanNode::class) }
     polymorphic(EdgeLike::class) { subclass(YbTestEdge::class) }
 }
 
@@ -464,6 +475,65 @@ class LoadTest {
 
         val foundTagged = runBlocking { ybEphemeralStore.scanNodeIds(tag = tag).toList() }.toSet()
         assertEquals(tagged.map { nid(it) }.toSet(), foundTagged, "expected exactly the tagged subset via client-side filtering")
+    }
+
+    // ── type scan (TODO 1.33) ────────────────────────────────────────────────────────────────────────
+
+    @Test fun `scanNodesOfType recovers exactly the rows of one type from ysql, whole values`() {
+        purgeYsqlNodeType("yb_scan_node")
+        val planted = List(7) { i -> YbScanNode(id = Uuid.random(), name = "typed-$i") }
+        val noise = List(5) { Uuid.random() }
+        runBlocking {
+            ybPersistentStore.transaction {
+                planted.forEach { saveNode(nid(it.id), it, emptySet()) }
+                noise.forEach { saveNode(nid(it), YbTestNode(id = it, name = "other-type"), emptySet()) }
+            }
+        }
+
+        val found = runBlocking { ybPersistentStore.scanNodesOfType("yb_scan_node").getOrNull()!!.toList() }
+
+        assertEquals(planted.associateBy { nid(it.id) }, found.toMap(), "expected each planted node back under its own NodeId")
+        assertEquals(7, found.size, "no duplicates, no rows of another type")
+    }
+
+    @Test fun `scanNodesOfType for a type with no rows is a Right with an empty flow`() {
+        val found = runBlocking { ybPersistentStore.scanNodesOfType("no-such-type-${Uuid.random()}").getOrNull()!!.toList() }
+        assertEquals(emptyList(), found)
+    }
+
+    // 20k rows x ~1 KB: about 25 MB if the driver materializes the result, under 1 MB if it streams
+    // (fetchSize rows + the flow's buffer). Goes red when the scan's autoCommit = false is removed.
+    @Test fun `scanNodesOfType streams - heap held at the first element is bounded`() {
+        purgeYsqlNodeType("yb_scan_node")
+        val rows = 20_000
+        val payload = "x".repeat(1000)
+        runBlocking {
+            ybPersistentStore.batchTransaction { repeat(rows) { val id = Uuid.random(); saveNode(nid(id), YbScanNode(id = id, name = payload), emptySet()) } }
+        }
+        try {
+            val flow = ybPersistentStore.scanNodesOfType("yb_scan_node").getOrNull()!!
+            var n = 0
+            var held = 0.0
+            val before = usedHeapMb()
+            runBlocking { flow.collect { if (n++ == 0) held = usedHeapMb() - before } }
+
+            assertEquals(rows, n)
+            assertTrue(held < 8.0, "expected a streamed result, but $held MB was held at the first element")
+        } finally {
+            purgeYsqlNodeType("yb_scan_node")
+        }
+    }
+}
+
+private fun usedHeapMb(): Double {
+    repeat(3) { System.gc(); Thread.sleep(50) }
+    val r = Runtime.getRuntime()
+    return (r.totalMemory() - r.freeMemory()) / 1_048_576.0
+}
+
+private fun purgeYsqlNodeType(type: String) {
+    DriverManager.getConnection("jdbc:postgresql://localhost:5433/abyss_test_graph", "abyss", "abyss").use { conn ->
+        conn.prepareStatement("DELETE FROM abyss.nodes WHERE type = ?").use { it.setString(1, type); it.executeUpdate() }
     }
 }
 

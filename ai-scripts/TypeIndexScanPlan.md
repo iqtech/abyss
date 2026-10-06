@@ -1,6 +1,6 @@
 # TODO 1.33 — Type scan: stream whole persistent nodes of a given type
 
-Status: **v1 agreed 2026-10-06.** Scope narrowed from "every layer, nodes and edges" to persistent
+Status: **v1 implemented 2026-10-06.** Scope narrowed from "every layer, nodes and edges" to persistent
 nodes only. The wider scan is parked in §7, not rejected.
 
 ## 1. v1 scope
@@ -180,6 +180,9 @@ crossover toward the fan-out. Unmeasured. B8 beat B4 at every share ≥5%; the b
 
 Perf (`-Pperf`): `TypeScanFeasibilityTest` stays as the record.
 
+Result (2026-10-06): all green, full suite 425 tests. Mutation-checked: without `autoCommit = false`
+the heap test goes red; without the `ownsNodeId` filter the two-schema test goes red.
+
 ## 7. Parked (not rejected)
 
 Findings kept for when the wider scan is picked up.
@@ -215,4 +218,5 @@ Findings kept for when the wider scan is picked up.
 - `abyss-store-api/.../AbyssError.kt`, `AbyssStoreLike.kt`
 - `abyss-store-yugabyte/.../YugabytePersistentStore.kt`
 - `abyss-graph/.../AbyssSchemaWorker.kt`, `AbyssGraphSchema.kt`
-- Tests as §6. README scan section. TODO 1.33 updated with the result.
+- Tests as §6. TODO 1.33 updated with the result. The README has no scan section (1.23 is not in it
+  either), so nothing was added there.

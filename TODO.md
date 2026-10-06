@@ -473,56 +473,37 @@
   concurrent txns writing the same node pair with different edge types in opposite order can still
   cross. See `ai-scripts/IoT.md` finding 1.
 
-- **➡️ 1.33 Type-index scan: stream whole nodes/edges of a given type from the store**
-  `abyss.nodes.type` / `abyss.edges.type` mirror the `@SerialName` discriminator and are written on
-  every upsert (`YugabytePersistentStore.kt:265,270`), and `idx_nodes_type` / `idx_edges_type` are
-  already created in `ysql-schema.sql` — and **read by nothing**. No query in the store filters on
-  `type`: two indexes carrying write cost with zero readers. 1.23's `scanNodeIds(tag)` covers the
-  system-tag column (1.24), not the domain type, and returns ids only.
-  Add a value-returning type scan on the same seam: `scanNodesOfType(type: String): Flow<NodeLike<*>>`
-  and `scanEdgesOfType(type: String): Flow<EdgeLike<*, *>>` on `AbyssStoreLike`/`AbyssEphemeralStoreLike`
-  (safe `= emptyFlow()` defaults, same as 1.23). **Whole elements, not ids** — deliberately unlike
-  `scanNodeIds`: `data` sits in the same row as the indexed `type`, so returning it costs nothing extra
-  and skips the point-get round trip per id that an id-only flow would force on every caller.
-  Per-store shape:
-  - YSQL: `SELECT data FROM $ysqlSchema.nodes WHERE type = ?` (`fetchSize` cursor, `idx_nodes_type`), a
-    single streamed query with **no `yb_hash_code` fan-out** — same structural reason 1.23 proved for the
-    GIN tag path: secondary indexes are sharded by the indexed expression, not the base table's PK hash,
-    so a hash-range predicate can't prune the index scan and N-way fan-out is strictly worse than one
-    plain query. Edges select `data` under `idx_edges_type` the same way.
-  - YCQL (`YugabyteEphemeralStore`): no secondary index on `type` (the per-row-TTL conflict from 1.23's
-    RFC) → token-range `channelFlow` fan-out with a **client-side** type filter, mirroring exactly how
-    `scanNodeIds` filters `tag` there today. Every row is read. Nodes: `ephemeral_nodes` has a plain
-    `type` column, so `SELECT type, data` and compare the string **before** JSON-decoding — non-matching
-    rows are never deserialized. Edges: `type` is a clustering column but the partition key is `from_id`,
-    so it prunes nothing — still a full sweep, same filter on `type` before decode.
-  - `HazelcastEphemeralStore`: cached values are live `NodeLike`/`EdgeLike` instances, so the concrete
-    class answers the type directly — unlike `tag`, which is structurally unanswerable there post-1.24
-    and returns `emptyFlow()`. This one is genuinely serviceable from the cache.
-  `AbyssSchemaWorker` merges persistent + ephemeral into one flow, same as `scanNodeIds`, **plus a
-  `nodesMap`/`edgesMap` branch when no `persistentStore` is configured**. Source of truth is per layer:
-  persistent layer = YSQL when a store is set (the maps are an evictable partial copy — don't read them),
-  else the Hazelcast `nodesMap`/`edgesMap` themselves; ephemeral layer = whatever `ephemeralStore` is (never
-  null — defaults to `HazelcastEphemeralStore`, `AbyssSchemaWorker.kt:94`). Routing through the store seam
-  alone, as `scanNodeIds` does today (`AbyssSchemaWorker.kt:193`), silently returns zero persistent
-  elements on a store-less graph — the same hole `exportGraphLines` had to patch with
-  `merge(allNodeIds(), scanNodeIds())`. Cost of that branch: every map value is deserialized to check its
-  class (custom JSON `StreamSerializer`, not Compact — no Hazelcast predicate can see the type); acceptable,
-  a store-less graph is memory-bounded by definition. Exposed as plain
-  methods on `HomogeneousSchemaGraph`/`HeterogeneousSchemaGraph`, plus a reified per-schema
-  `scanNodesOfType<N>()` on `AbyssGraphSchema` (`ownsNodeId` filter + typed conversion, same shape as
-  `AbyssGraphSchema.scanNodeIds`; reified `N` → `@SerialName` via `serialName()`), and deliberately **not**
-  on `AbyssEngineLike<ID>`/`SingleSchemaGraph` — the same boundary 1.23 drew.
-  Open questions:
-  - **Dedup across stores.** `AbyssSchemaWorker.scanNodeIds`'s merge doesn't dedup (`GraphExport` keeps its
-    own `seen` set). With whole values a double emission is a visible duplicate object, not just a repeated
-    id — decide whether the worker dedups by id or the contract states "at-least-once, dedup is the caller's".
-  - **Cache interaction.** Should scanned values write through to the Hazelcast maps? A bulk type sweep could
-    evict the hot working set. Default assumption: emit straight from the store, no write-through.
-  - Single type vs. a set (`type = ANY(?)`) in v1.
-  Complements 2.12 (`@AbyssStoreColumn` + attribute-indexed `queryNodeIds`): that one indexes *attributes*,
-  this one finally reads the *type* index that has been sitting there unused since the schema was written.
-  Design plan: `ai-scripts/TypeIndexScanPlan.md`.
+- **✅ 1.33 Type-index scan: stream whole nodes/edges of a given type from the store**
+  Done as a narrowed v1 (agreed 2026-10-06): **persistent nodes only**.
+  `AbyssGraphSchema.scanPersistentNodes<N>(): Either<AbyssError, Flow<N>>` streams every node of exactly
+  class `N` as whole values from `idx_nodes_type`, which finally has a reader. Plan, measurements and
+  parked scope: `ai-scripts/TypeIndexScanPlan.md`.
+  - Seam: `AbyssStoreLike.scanNodesOfType(type): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>>`.
+    The default is `Left(ScanUnsupported)`, not `emptyFlow()` as in 1.23, so a store without the
+    capability can't pass for "no rows". New `AbyssError.ScanUnsupported`, also returned when no
+    `persistentStore` is configured.
+  - `YugabytePersistentStore`: one `SELECT id, data FROM nodes WHERE type = ?`, `autoCommit = false` +
+    `fetchSize = 500`. Streaming measured on the live container (`TypeScanFeasibilityTest`, 129,800
+    rows of one type): 0.2 MB held with autocommit off vs 58.9 MB on.
+  - Typed facade resolves `N` → `@SerialName` (no annotation → `Left(SchemaError)`), filters by
+    `ownsNodeId` (the store is shared across schemas), casts. No cache read, no write-through.
+  - Contract: persistent only (ephemeral nodes of the type are not returned); exact class only (the
+    stored type is the concrete class discriminator); `Left` = can't start, failures during collection
+    are thrown by the flow.
+  - Ceilings: one transaction/snapshot per scan, bounded by `timestamp_history_retention_interval_sec`
+    (900 s on the dev container, "snapshot too old" not yet reproduced), and one pooled connection held
+    for as long as the flow is collected.
+  - Index path only. It is O(matches); a pkey-hinted `yb_hash_code` fan-out is O(table) and faster above
+    ~2% type share (1188 vs 133 ms at 65% of 200k rows, 5 vs 42 ms at 0.1%). The original "no fan-out"
+    claim in this entry was an extrapolation from 1.23's GIN result and did not survive Phase 0.
+  - Tests: `ScanCapabilityTest` (store-less and non-implementing store → `ScanUnsupported`; two schemas
+    sharing a store, a class and a domain id, 3 vs 2 cold rows; no `@SerialName` → `SchemaError`),
+    `LoadTest` on live YB (exact recovery with another type present; unknown type → empty; heap held at
+    the first element under 8 MB on a 20k x 1 KB result). Mutation-checked: removing `autoCommit = false`
+    turns the heap test red, removing the `ownsNodeId` filter turns the two-schema test red.
+  - Parked, not rejected (plan §7): edges via `idx_edges_type` (still without a reader), fan-out routing
+    with a `LIMIT`-bounded count probe, subclass expansion, the store-less and ephemeral layers, and the
+    cross-layer dedup they need (must be persistent-wins, matching `loadAndCacheNode`).
 
 - **✅ 1.34 DFS `paths()` drops paths depending on edge order; O(depth²) memory — OOM at ~5k depth, sometimes a silent hang**
   `dfsLoop` keeps per-level copies alive on the suspended recursion: `visited.toMutableSet()`,
