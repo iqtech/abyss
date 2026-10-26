@@ -97,7 +97,7 @@ class HeterogeneousSchemaGraph(
     // able to span every schema registered on this container in one commit.
     suspend fun transaction(checkIntegrity: Boolean = true, block: suspend MultiSchemaTransactionLike.() -> Unit): Either<AbyssError, Unit> {
         val buffer = MultiSchemaTransactionBuffer(this)
-        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        try { buffer.block() } catch (e: Throwable) { return e.toAbyssError().left() }
 
         val crossOps = buffer.crossOps
         if (crossOps.isNotEmpty()) {
@@ -135,13 +135,13 @@ class HeterogeneousSchemaGraph(
     // Existence reads — ungated (like removeCrossEdge). A schema's own edgeExists can't see a cross edge:
     // it would encode toId with its own tag, not the other endpoint's.
     suspend fun crossEdgeExists(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Boolean> =
-        Either.catch { worker.edgeExists(fromId, toId, type) }.mapLeft { AbyssError.Unexpected(it) }
+        Either.catch { worker.edgeExists(fromId, toId, type) }.mapLeft { it.toAbyssError() }
 
     suspend fun crossEdgeExists(edgeClass: KClass<out EdgeLike<*, *>>, fromId: Any?, toId: Any?): Either<AbyssError, Boolean> =
         Either.catch {
             val (f, t) = crossSchemaEndpoints(edgeClass, fromId, toId, tagWidth, headerless = false)
             worker.edgeExists(f, t, crossSchemaEdgeType(edgeClass))
-        }.mapLeft { AbyssError.Unexpected(it) }
+        }.mapLeft { it.toAbyssError() }
 
     suspend inline fun <reified E : EdgeLike<*, *>> crossEdgeExists(fromId: Any?, toId: Any?): Either<AbyssError, Boolean> =
         crossEdgeExists(E::class, fromId, toId)

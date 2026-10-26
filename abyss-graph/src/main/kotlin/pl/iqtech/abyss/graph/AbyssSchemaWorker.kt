@@ -1,6 +1,7 @@
 package pl.iqtech.abyss.graph
 
 import arrow.core.Either
+import arrow.core.getOrElse
 import arrow.core.left
 import arrow.core.right
 import com.hazelcast.config.EvictionPolicy
@@ -259,7 +260,7 @@ internal class AbyssSchemaWorker(
     // cache holds none. Empty when no ephemeral store is configured. nodeTypeTag is null (YCQL loadEdges
     // carries no neighbor-type JOIN) so typed filters fetch-fall-back. Expired entries are skipped.
     private fun ephemeralStoreHops(nid: NodeId, type: String?): Flow<Hop> = flow {
-        val loaded = withContext(Dispatchers.IO) { ephemeralStore.loadEdges(nid).getOrNull() } ?: return@flow
+        val loaded = withContext(Dispatchers.IO) { ephemeralStore.loadEdges(nid) }.getOrElse { it.unavailable() }
         for (e in loaded) {
             if (type != null && edgeType(e.edge) != type) continue
             val remaining = e.remaining
@@ -402,9 +403,11 @@ internal class AbyssSchemaWorker(
         if (direction == AdjacencyDirection.OUT) preloadOut(nid) else preloadIn(nid)
 
     // Both preloads mark the direction loaded only after every add landed, and only on a store Right: a failed
-    // load (TODO 1.35) marked as loaded would pin the partial index until cluster restart.
+    // load (TODO 1.35) marked as loaded would pin the partial index until cluster restart. A failed load throws
+    // StoreUnavailableException (TODO 1.38) instead of serving the partial index as complete.
     private suspend fun preloadOut(nid: NodeId) = withContext(Dispatchers.IO) {
-        val loaded = persistentStore?.loadEdges(nid)?.getOrNull() ?: return@withContext
+        val store = persistentStore ?: return@withContext
+        val loaded = store.loadEdges(nid).getOrElse { it.unavailable() }
         loaded.forEach { e ->
             val type = edgeType(e.edge)
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
@@ -420,7 +423,8 @@ internal class AbyssSchemaWorker(
 
     // Only persistent edges have an adjacency index to warm (ephemeral edges are outgoing-only, TODO 1.13).
     private suspend fun preloadIn(nid: NodeId) = withContext(Dispatchers.IO) {
-        val loaded = persistentStore?.loadInEdges(nid)?.getOrNull() ?: return@withContext
+        val store = persistentStore ?: return@withContext
+        val loaded = store.loadInEdges(nid).getOrElse { it.unavailable() }
         loaded.forEach { e ->
             val type = edgeType(e.edge)
             edgesMap.putIfAbsent(edgeKey(e.fromId, e.toId, type), e.edge)
@@ -439,12 +443,22 @@ internal class AbyssSchemaWorker(
     private fun AbyssError.cause(): Throwable? = when (this) {
         is AbyssError.Unexpected -> cause
         is AbyssError.BatchPartiallyCommitted -> cause
+        is AbyssError.StoreUnavailable -> error.cause()
         else -> null
     }
 
+    // TODO 1.38: everything that reads the store before the commit (cascade expansion, integrity check, edge
+    // endpoint tags) runs here, so a failed read is a Left with nothing committed. Nothing after the commit
+    // reads the store.
+    private inline fun <T> preCommit(block: () -> T): Either<AbyssError, T> =
+        try { block().right() } catch (e: StoreUnavailableException) { e.error.left() }
+
     suspend fun transaction(baseOps: List<NodeOp>, checkIntegrity: Boolean): Either<AbyssError, Unit> {
-        val ops = expandCascades(baseOps)
-        integrityError(ops, checkIntegrity)?.let { return it.left() }
+        val (ops, nodeTags) = preCommit {
+            val ops = expandCascades(baseOps)
+            integrityError(ops, checkIntegrity)?.let { return it.left() }
+            ops to resolveEdgeEndpointTags(ops)
+        }.getOrElse { return it.left() }
 
         if (persistentStore != null) {
             val storeResult = persistentStore.transaction { ops.forEach { applyPersistentOp(it) } }
@@ -460,7 +474,7 @@ internal class AbyssSchemaWorker(
                 .onLeft { log.warn("Ephemeral delete fanout failed during transaction; stale ephemeral data possible [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, it, it.cause()) }
         }
 
-        populateCache(ops, "Cache update failed after store commit; cache may be stale")
+        populateCache(ops, nodeTags, "Cache update failed after store commit; cache may be stale")
         log.debug("Transaction committed [{} op(s), nodes={}, edges={}]", ops.size, nodesMapName, edgesMapName)
         return Unit.right()
     }
@@ -472,15 +486,18 @@ internal class AbyssSchemaWorker(
     // cascade-deleted edges must never be split across chunks, and integrity's addedInTx map needs
     // every add in the batch visible regardless of which chunk it lands in.
     suspend fun batchTransaction(baseOps: List<NodeOp>, batchSize: Int, checkIntegrity: Boolean): Either<AbyssError, Unit> {
-        val ops = expandCascades(baseOps)
-        integrityError(ops, checkIntegrity)?.let { return it.left() }
+        val (ops, nodeTags) = preCommit {
+            val ops = expandCascades(baseOps)
+            integrityError(ops, checkIntegrity)?.let { return it.left() }
+            ops to resolveEdgeEndpointTags(ops)
+        }.getOrElse { return it.left() }
 
         if (persistentStore != null) {
             val storeResult = persistentStore.batchTransaction(batchSize) { ops.forEach { applyPersistentOp(it) } }
             if (storeResult.isLeft()) {
                 val err = storeResult.leftOrNull()
                 val committed = (err as? AbyssError.BatchPartiallyCommitted)?.committedOps ?: 0
-                if (committed > 0) populateCache(ops.take(committed), "Cache update failed after partial batch store commit; cache may be stale")
+                if (committed > 0) populateCache(ops.take(committed), nodeTags, "Cache update failed after partial batch store commit; cache may be stale")
                 log.error("Batch transaction failed partway; {} of {} op(s) committed and cache-synced before the failure [nodes={}, edges={}, error={}]", committed, ops.size, nodesMapName, edgesMapName, err, err?.cause())
                 return storeResult
             }
@@ -491,14 +508,17 @@ internal class AbyssSchemaWorker(
                 .onLeft { log.warn("Ephemeral delete fanout failed during batch transaction; stale ephemeral data possible [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, it, it.cause()) }
         }
 
-        populateCache(ops, "Cache update failed after batch store commit; cache may be stale")
+        populateCache(ops, nodeTags, "Cache update failed after batch store commit; cache may be stale")
         log.debug("Batch transaction committed [{} op(s), batchSize={}, nodes={}, edges={}]", ops.size, batchSize, nodesMapName, edgesMapName)
         return Unit.right()
     }
 
     suspend fun ephemeral(baseOps: List<NodeOp>, checkIntegrity: Boolean): Either<AbyssError, Unit> {
-        val ops = expandCascades(baseOps)
-        integrityError(ops, checkIntegrity)?.let { return it.left() }
+        val (ops, nodeTags) = preCommit {
+            val ops = expandCascades(baseOps)
+            integrityError(ops, checkIntegrity)?.let { return it.left() }
+            ops to resolveEdgeEndpointTags(ops)
+        }.getOrElse { return it.left() }
 
         val storeResult = ephemeralStore.transaction { ops.forEach { applyEphemeralOp(it) } }
         if (storeResult.isLeft()) {
@@ -512,7 +532,7 @@ internal class AbyssSchemaWorker(
                 .onLeft { log.warn("Persistent delete fanout failed during ephemeral commit; stale persistent data possible [nodes={}, edges={}, error={}]", nodesMapName, edgesMapName, it, it.cause()) }
         }
 
-        populateCache(ops, "Cache update failed after ephemeral store commit; cache may be stale")
+        populateCache(ops, nodeTags, "Cache update failed after ephemeral store commit; cache may be stale")
         log.debug("Ephemeral committed [{} op(s), nodes={}, edges={}]", ops.size, nodesMapName, edgesMapName)
         return Unit.right()
     }
@@ -578,11 +598,8 @@ internal class AbyssSchemaWorker(
         is NodeOp.RemoveEdge -> deleteEdge(op.fromId, op.toId, op.type)
     }
 
-    private suspend fun populateCache(ops: List<NodeOp>, warnMsg: String) {
-        // A node added in the same transaction as its edge resolves its type tag from here rather
-        // than a (not-yet-committed-to-cache) readNode lookup.
-        val addedInTx = ops.filterIsInstance<NodeOp.AddNode>().associate { it.id to it.node }
-        val stages = ops.flatMap { applyToCacheAsync(it, addedInTx) }
+    private suspend fun populateCache(ops: List<NodeOp>, nodeTags: Map<NodeId, Short?>, warnMsg: String) {
+        val stages = ops.flatMap { applyToCacheAsync(it, nodeTags) }
         if (asyncCachePopulation) {
             // ponytail: fire-and-forget — no thread pinned during network wait
             stages.forEach { it.exceptionally { ex -> log.warn(warnMsg, ex); null } }
@@ -592,13 +609,19 @@ internal class AbyssSchemaWorker(
         }
     }
 
+    // Type tags of every cached (non-TTL) AddEdge endpoint, resolved BEFORE the store commit (TODO 1.38): a
+    // failed read here must fail the transaction, not surface after the data is committed. A node added in the
+    // same transaction resolves from addedInTx rather than a (not-yet-committed-to-cache) readNode lookup.
     // Nullable, not error(): checkIntegrity=false explicitly allows edges to a node that doesn't exist
     // (a supported, tested scenario) — the edge write must still succeed, just without a resolvable
     // nodeTypeTag hint (AdjacencyEntry.nodeTypeTag degrades to "unknown" rather than failing the write).
-    private suspend fun resolveNodeTag(nid: NodeId, addedInTx: Map<NodeId, NodeLike<*>>): Short? =
-        (addedInTx[nid] ?: readNode(nid))?.let { it::class.typeTag() }
+    private suspend fun resolveEdgeEndpointTags(ops: List<NodeOp>): Map<NodeId, Short?> {
+        val addedInTx = ops.filterIsInstance<NodeOp.AddNode>().associate { it.id to it.node }
+        val endpoints = ops.filterIsInstance<NodeOp.AddEdge>().filter { it.ttl == null }.flatMapTo(HashSet()) { listOf(it.fromId, it.toId) }
+        return endpoints.associateWith { nid -> (addedInTx[nid] ?: readNode(nid))?.let { it::class.typeTag() } }
+    }
 
-    private suspend fun applyToCacheAsync(op: NodeOp, addedInTx: Map<NodeId, NodeLike<*>>): List<CompletionStage<*>> = when (op) {
+    private fun applyToCacheAsync(op: NodeOp, nodeTags: Map<NodeId, Short?>): List<CompletionStage<*>> = when (op) {
         is NodeOp.AddNode ->
             if (op.ttl != null) listOf(nodesMap.setAsync(op.id, op.node, op.ttl.inWholeSeconds, TimeUnit.SECONDS))
             else listOf(nodesMap.setAsync(op.id, op.node))
@@ -615,8 +638,8 @@ internal class AbyssSchemaWorker(
                 val type = edgeType(op.edge)
                 val key  = edgeKey(op.fromId, op.toId, type)
                 val edgeTag = op.edge::class.typeTag()
-                val toTag = resolveNodeTag(op.toId, addedInTx)
-                val fromTag = resolveNodeTag(op.fromId, addedInTx)
+                val toTag = nodeTags[op.toId]
+                val fromTag = nodeTags[op.fromId]
                 listOf(
                     edgesMap.setAsync(key, op.edge),
                     adjacency.addAsync(op.fromId, AdjacencyDirection.OUT, AdjacencyEntry(op.toId, toTag, edgeTag)),
@@ -638,8 +661,8 @@ internal class AbyssSchemaWorker(
 
     private suspend fun loadAndCacheNode(nid: NodeId): NodeLike<*>? {
         val (node, remaining) = coroutineScope {
-            val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadNode(nid)?.getOrNull() }
-            val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore.loadNode(nid).getOrNull() }
+            val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadNode(nid)?.getOrElse { it.unavailable() } }
+            val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore.loadNode(nid).getOrElse { it.unavailable() } }
             val p = fromPersistent.await()
             if (p?.first != null) p else fromEphemeral.await()
         } ?: return null
@@ -658,8 +681,8 @@ internal class AbyssSchemaWorker(
     // doesn't deserve the collection allocations.
     private suspend fun loadAndCacheNodes(nids: List<NodeId>): Map<NodeId, NodeLike<*>> {
         val (persistent, ephemeral) = coroutineScope {
-            val p = async(Dispatchers.IO) { persistentStore?.loadNodes(nids)?.getOrNull() ?: emptyMap() }
-            val e = async(Dispatchers.IO) { ephemeralStore.loadNodes(nids).getOrNull() ?: emptyMap() }
+            val p = async(Dispatchers.IO) { persistentStore?.loadNodes(nids)?.getOrElse { it.unavailable() } ?: emptyMap() }
+            val e = async(Dispatchers.IO) { ephemeralStore.loadNodes(nids).getOrElse { it.unavailable() } }
             p.await() to e.await()
         }
         return buildMap {
@@ -679,8 +702,8 @@ internal class AbyssSchemaWorker(
 
     private suspend fun loadAndCacheEdge(fromNid: NodeId, toNid: NodeId, type: String): EdgeLike<*, *>? {
         val (edge, remaining) = coroutineScope {
-            val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadEdge(fromNid, toNid, type)?.getOrNull() }
-            val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore.loadEdge(fromNid, toNid, type).getOrNull() }
+            val fromPersistent = async(Dispatchers.IO) { persistentStore?.loadEdge(fromNid, toNid, type)?.getOrElse { it.unavailable() } }
+            val fromEphemeral  = async(Dispatchers.IO) { ephemeralStore.loadEdge(fromNid, toNid, type).getOrElse { it.unavailable() } }
             val p = fromPersistent.await()
             if (p?.first != null) p else fromEphemeral.await()
         } ?: return null

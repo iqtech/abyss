@@ -19,6 +19,8 @@ interface AbyssEngineLike<ID> {
 
     // includeEphemeral: also include ephemeral (TTL) out-edges, read reliably from the ephemeral store
     // (TODO 1.27). Default false keeps the fast persistent-only path.
+    // A failed store read throws StoreUnavailableException (abyss-graph) on collect (TODO 1.38): a Flow
+    // can't return Left, and an empty or partial result would read as "no edges".
     fun outEdges(nodeId: ID, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<EdgeLike<ID, ID>>
     fun outEdges(nodeId: ID, type: String, pageSize: Int = 100, includeEphemeral: Boolean = false): Flow<EdgeLike<ID, ID>>
     fun inEdges(nodeId: ID, pageSize: Int = 100): Flow<EdgeLike<ID, ID>>

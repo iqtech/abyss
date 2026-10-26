@@ -131,16 +131,16 @@ class AbyssGraphSchema<ID> internal constructor(
 
     override suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>> =
         Either.catch { worker.readNode(adapter.toNodeId(id)) }
-            .mapLeft { AbyssError.Unexpected(it) }
+            .mapLeft { it.toAbyssError() }
             .flatMap { n -> @Suppress("UNCHECKED_CAST") (n as NodeLike<ID>?)?.right() ?: AbyssError.NodeNotFound(id as Any).left() }
 
     override suspend fun edge(fromId: ID, toId: ID, type: String): Either<AbyssError, EdgeLike<ID, ID>> =
         Either.catch { worker.readEdge(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }
-            .mapLeft { AbyssError.Unexpected(it) }
+            .mapLeft { it.toAbyssError() }
             .flatMap { e -> @Suppress("UNCHECKED_CAST") (e as EdgeLike<ID, ID>?)?.right() ?: AbyssError.EdgeNotFound(fromId as Any, toId as Any, type).left() }
 
     override suspend fun nodeExists(id: ID): Either<AbyssError, Boolean> =
-        Either.catch { worker.nodeExists(adapter.toNodeId(id)) }.mapLeft { AbyssError.Unexpected(it) }
+        Either.catch { worker.nodeExists(adapter.toNodeId(id)) }.mapLeft { it.toAbyssError() }
 
     // One chunked getAll + one batch store load per chunk (worker.nodesAt), not N round trips.
     // Hits map back through byNid rather than adapter.fromNodeId — no decode per hit.
@@ -149,10 +149,10 @@ class AbyssGraphSchema<ID> internal constructor(
     override suspend fun existingNodeIds(ids: Collection<ID>): Either<AbyssError, Set<ID>> = Either.catch {
         val byNid = ids.associateBy(adapter::toNodeId)
         worker.nodesAt(byNid.keys).keys.mapTo(HashSet()) { byNid.getValue(it) }
-    }.mapLeft { AbyssError.Unexpected(it) }
+    }.mapLeft { it.toAbyssError() }
 
     override suspend fun edgeExists(fromId: ID, toId: ID, type: String): Either<AbyssError, Boolean> =
-        Either.catch { worker.edgeExists(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }.mapLeft { AbyssError.Unexpected(it) }
+        Either.catch { worker.edgeExists(adapter.toNodeId(fromId), adapter.toNodeId(toId), type) }.mapLeft { it.toAbyssError() }
 
     override fun outEdges(nodeId: ID, pageSize: Int, includeEphemeral: Boolean): Flow<EdgeLike<ID, ID>> =
         worker.outEdges(adapter.toNodeId(nodeId), pageSize = pageSize, includeEphemeral = includeEphemeral).typed()
@@ -168,15 +168,15 @@ class AbyssGraphSchema<ID> internal constructor(
 
     override suspend fun <T> from(nodeId: ID, block: suspend TraversalScope<ID>.() -> T): Either<AbyssError, T> =
         Either.catch { TraversalScope(TraversalBuilder(traversalEngine, setOf(adapter.toNodeId(nodeId)), adapter)).block() }
-            .mapLeft { AbyssError.Unexpected(it) }
+            .mapLeft { it.toAbyssError() }
 
     override suspend fun <T> from(nodeIds: Set<ID>, block: suspend TraversalScope<ID>.() -> T): Either<AbyssError, T> =
         Either.catch { TraversalScope(TraversalBuilder(traversalEngine, nodeIds.map(adapter::toNodeId).toSet(), adapter)).block() }
-            .mapLeft { AbyssError.Unexpected(it) }
+            .mapLeft { it.toAbyssError() }
 
     override suspend fun transaction(checkIntegrity: Boolean, block: suspend AbyssTransactionLike<ID>.() -> Unit): Either<AbyssError, Unit> {
         val buffer = newBuffer()
-        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        try { buffer.block() } catch (e: Throwable) { return e.toAbyssError().left() }
         val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
         val width = crossEdgeTagWidth()
         crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }
@@ -205,7 +205,7 @@ class AbyssGraphSchema<ID> internal constructor(
             readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
             readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
         )
-        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        try { buffer.block() } catch (e: Throwable) { return e.toAbyssError().left() }
         val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
         val width = crossEdgeTagWidth()
         crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }
@@ -221,7 +221,7 @@ class AbyssGraphSchema<ID> internal constructor(
             readNode = { @Suppress("UNCHECKED_CAST") (worker.readNode(adapter.toNodeId(it)) as NodeLike<ID>?) },
             readEdge = { f, t, type -> @Suppress("UNCHECKED_CAST") (worker.readEdge(adapter.toNodeId(f), adapter.toNodeId(t), type) as EdgeLike<ID, ID>?) }
         )
-        try { buffer.block() } catch (e: Throwable) { return AbyssError.Unexpected(e).left() }
+        try { buffer.block() } catch (e: Throwable) { return e.toAbyssError().left() }
         val headerless = adapter is HeaderlessSchemaKeyAdapter<*>
         val width = crossEdgeTagWidth()
         crossEdgeCheck(buffer.ops, checkIntegrity, width, headerless)?.let { return it.left() }

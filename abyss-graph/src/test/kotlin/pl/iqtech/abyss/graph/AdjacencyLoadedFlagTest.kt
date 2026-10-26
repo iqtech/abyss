@@ -20,6 +20,7 @@ import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -85,7 +86,8 @@ class AdjacencyLoadedFlagTest {
     @Test fun `failed preload does not mark loaded, the next read retries and heals`() = runBlocking {
         val (g, hub, store) = coldAfterOneWrite("pip4", inbound = false)
         store.failLoads = true
-        assertEquals(1, g.outEdges(hub).toList().size, "store down: the partial index is served")
+        // TODO 1.38: store down fails the read instead of serving the 1-of-11 partial index as complete.
+        assertFailsWith<StoreUnavailableException> { g.outEdges(hub).toList() }
         assertTrue(adjacencyOf("pip4", hub).none { it.value.loaded }, "a failed load must not mark")
         store.failLoads = false
         assertEquals(11, g.outEdges(hub).toList().size)

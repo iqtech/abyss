@@ -599,7 +599,7 @@
   Test: a `LoadTest` case asserting a bounded heap delta after the first emitted id on a seeded table.
   It fails on the current code.
 
-- **➡️ 1.38 Self-heal reads swallow store errors: `getOrNull()` turns a failed read into "absent"**
+- **✅ 1.38 Self-heal reads swallow store errors: `getOrNull()` turns a failed read into "absent"**
   Split from 1.35 item (1); repro in `ai-scripts/paths-problem-ISSUE.md`. A cache miss (eviction or cold
   start) plus a store `Left` returns `Right` with a truncated or plausible-but-wrong result (a>b>c →
   `[a>b]`), with no log line. Affects every read path. Sites:
@@ -616,6 +616,20 @@
   TODO 2.35).
   Test: a store returning `Left` on a cold read must make the read surface `Left`. It fails on the current
   code (it returns `Right` with the value missing). Unlike the 1.35 probe, it asserts.
+
+  Done 2026-10-26 (`ai-scripts/StoreReadFailurePlan.md`). New `AbyssError.StoreUnavailable(error)`; any
+  `Left` on either store side fails the read. Flows and the traversal engine throw the public
+  `StoreUnavailableException` (abyss-graph, carries the driver `Throwable` as cause); every `Either` entry
+  point unwraps it via `toAbyssError()`. Found during the fix:
+  - A 7th site, `ephemeralStoreHops` (`includeEphemeral`), dropped a failed ephemeral `loadEdges`.
+  - `modifyNode`/`modifyEdge` ran `transform(null)` on a failed read and overwrote the stored value.
+  - Cache population resolved edge endpoint tags with `readNode` AFTER the store commit; moved before it,
+    so a failed read commits nothing instead of reporting `Left` for committed data.
+  - `AdjacencyLoadedFlagTest` asserted the old "partial index is served" behaviour; now asserts the throw.
+  `StoreReadFailureTest`: 18 probes, red on the pre-fix code; each of the 14 guards removed in turn turns at
+  least one red. Full suite 444/444. Perf A/B vs `cc1ff4e` (9 `-Pperf` suites, interleaved, 3 rounds; 8 for
+  the two noisiest): no measurable change; store-backed miss paths (`AdjacencyPreload`, `NodeBatchLoad`) at
+  0.94–1.07x, paired-round deltas split both ways. Commit throughput has no suite and was not measured.
 
 ## 2. Medium
 

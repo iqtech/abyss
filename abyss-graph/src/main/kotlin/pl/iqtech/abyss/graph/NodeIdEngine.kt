@@ -22,6 +22,8 @@ data class Hop(val fromId: NodeId, val toId: NodeId, val type: String, val edge:
 // (standalone / single-schema) or by a HomogeneousSchemaGraph/HeterogeneousSchemaGraph container
 // that resolves each NodeId to its schema — so one frontier can span schemas and cross-hops are
 // ordinary hops over the shared edge map.
+// Absent is null/empty; a failed store read is never absent: every method throws StoreUnavailableException
+// (TODO 1.38), and the Either-returning entry points unwrap it to Left(StoreUnavailable).
 interface NodeIdEngine {
     suspend fun nodeAt(nid: NodeId): NodeLike<*>?
 
