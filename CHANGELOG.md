@@ -1,3 +1,14 @@
+## [0.36.0] - 2026-10-26
+
+- Store read failures now surface as the new `AbyssError.StoreUnavailable(error)` instead of reading as "absent" (TODO 1.38). Every self-heal read collapsed a store `Left` to null: on a cache miss with the store failing, `nodeExists` returned `Right(false)`, `node`/`edge` returned `NodeNotFound`/`EdgeNotFound`, traversals returned truncated results, and `existingNodeIds` dropped ids. Any `Left` on either store side (persistent or ephemeral) fails the read
+- **Breaking:** `AbyssError` gains a variant, so an exhaustive `when` without `else` no longer compiles. `Flow` reads (`outEdges`, `inEdges`) and the `NodeIdEngine` methods throw the new public `StoreUnavailableException` on collect (carries the driver exception as cause); every `Either`-returning method returns `Left(StoreUnavailable)`
+- **Behaviour change vs 0.35.1:** a failed adjacency preload is no longer "served partial, retried on next read" — the read fails; the node is still not marked loaded and the next read retries
+- Fix `modifyNode`/`modifyEdge` overwriting the stored value when the store was down: the failed read became `transform(null)`. Now `Left`, nothing committed
+- Fix node delete with a cold index and the store down committing an empty cascade and leaving the node's edges dangling. Cascade, integrity check and edge-endpoint tag reads now run before the store commit; a failed read commits nothing, and nothing after the commit reads the store
+- Default `loadNodes` (both store interfaces) returns the first `Left` instead of dropping the failed id
+- Perf: no measurable change across 9 `-Pperf` suites vs `cc1ff4e`; `docs/performance.md` re-measured at `29d746d` (`outEdges` 1.3–2.3× faster than the previous edition's `c0a80b9`; an `inEdges` regression since `c0a80b9` recorded as TODO 2.36)
+- Recorded: TODO 2.35 metrics callback plan (`ai-scripts/MetricsCallbackPlan.md`)
+
 ## [0.35.2] - 2026-10-06
 
 - New `AbyssGraphSchema.scanPersistentNodes<N>(): Either<AbyssError, Flow<N>>` (TODO 1.33): streams every persistent node of exactly class `N` as whole values from the store's type index (`idx_nodes_type`, until now written on every upsert and read by nothing). Persistent only, exact class only, no cache read or write-through
