@@ -555,15 +555,13 @@
   `NodeBatchLoadPerformanceTest` pre/post: all scenarios unchanged except `pathTo` supernode 307 → 305 round
   trips (unreachable target: no value fetch at all now).
 
-- **➡️ 1.35 `paths {}` silent-drop audit: store failures read as "absent"; BFS extra emissions**
+- **➡️ 1.35 `paths {}` audit: BFS extra emissions, contract decisions**
   Full findings, repros and fix directions: `ai-scripts/paths-problem-ISSUE.md`; probe
-  `PathsSilentDropAuditTest` (prints, asserts nothing). (1) REAL silent drop: `.getOrNull()` in
-  `AbyssSchemaWorker` `loadAndCacheNode/Nodes/Edge`, `preloadOut/In` (and `AbyssStoreLike.loadNodes`
-  default) turns a failed store read into "absent" — cache miss (eviction or cold start) + store failure
-  returns `Right` with a truncated or plausible-but-wrong result (a>b>c → `[a>b]`). Affects every read,
-  not only `paths`. (2) BFS emits non-maximal prefixes and duplicates (`bfsLoop` natural terminal, 481/36k
-  fuzz cases; DFS exact) — fix and gate BFS against the contract oracle. (3) Contract decisions:
-  parallel-edge collapse; excluded-gap `Path` misaligns in `toEitherList()`. Ephemerals out of scope.
+  `PathsSilentDropAuditTest` (prints, asserts nothing). The store-failure silent drop that was item (1)
+  here affects every read, not only `paths`, and moved to 1.38. (2) BFS emits non-maximal prefixes and
+  duplicates (`bfsLoop` natural terminal, 481/36k fuzz cases; DFS exact) — fix and gate BFS against the
+  contract oracle. (3) Contract decisions: parallel-edge collapse; excluded-gap `Path` misaligns in
+  `toEitherList()`. Ephemerals out of scope.
 
 - **➡️ 1.36 Adjacency preload-vs-remove race: a preload can resurrect a removed index entry**
   `preloadOut/In` read the store, a concurrent `RemoveEdge` commits and runs its index remove, then the
@@ -600,6 +598,24 @@
 
   Test: a `LoadTest` case asserting a bounded heap delta after the first emitted id on a seeded table.
   It fails on the current code.
+
+- **➡️ 1.38 Self-heal reads swallow store errors: `getOrNull()` turns a failed read into "absent"**
+  Split from 1.35 item (1); repro in `ai-scripts/paths-problem-ISSUE.md`. A cache miss (eviction or cold
+  start) plus a store `Left` returns `Right` with a truncated or plausible-but-wrong result (a>b>c →
+  `[a>b]`), with no log line. Affects every read path. Sites:
+  - `AbyssSchemaWorker` `loadAndCacheNode`, `loadAndCacheNodes`, `loadAndCacheEdge` (persistent and
+    ephemeral side each).
+  - `preloadOut`/`preloadIn`: correctly skip `markLoaded` on failure, but the caller still gets the empty
+    or partial index.
+  - The default `loadNodes` in `AbyssStoreLike` and `AbyssEphemeralStoreLike`: loops
+    `loadNode(id).getOrNull()`, so a store without an override drops per-id failures before the worker
+    sees them. A worker-only fix leaves this silent.
+
+  Fix: propagate a typed `AbyssError` through the read path instead of collapsing `Left` to null. At
+  minimum, until then, log it and report it through the metrics callback (`storeLoad(failed = true)`,
+  TODO 2.35).
+  Test: a store returning `Left` on a cold read must make the read surface `Left`. It fails on the current
+  code (it returns `Right` with the value missing). Unlike the 1.35 probe, it asserts.
 
 ## 2. Medium
 
@@ -1071,6 +1087,16 @@
     - Keep the snapshot stream alongside the paged read, or drop it.
     - Same for edges (`idx_edges_type`, still without a reader).
   Numbers and plans: `ai-scripts/TypeIndexScanPlan.md` §5.3, §5.4.
+
+- **➡️ 2.35 Metrics callback: `AbyssMetrics` for persistence and cache population**
+  A plain callback interface with default no-op methods and `AbyssMetrics.NONE`; no Micrometer
+  dependency, the host wires its own backend. Fires only on slow/semantic paths: store self-heal loads,
+  adjacency preloads, the `cachedOutScan` verdict (the eviction-health signal), evicted-edge heals,
+  commits, cache population (async mode reported once on completion), delete-fanout failures, partial
+  batch commits. Raw cache hits and raw store latency are left to Hazelcast map stats and a host-side
+  `AbyssStoreLike` decorator. Event list agreed 2026-10-26. Read-side `failed` needs the worker sites to
+  inspect the `Either` (the full typed-error fix is 1.38). Plan, call sites, red probes, and the
+  before/after benchmark: `ai-scripts/MetricsCallbackPlan.md`.
 
 ## 3. Low
 
