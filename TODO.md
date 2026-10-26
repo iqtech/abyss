@@ -1112,6 +1112,18 @@
   inspect the `Either` (the full typed-error fix is 1.38). Plan, call sites, red probes, and the
   before/after benchmark: `ai-scripts/MetricsCallbackPlan.md`.
 
+- **➡️ 2.36 Bisect the `inEdges` regression since `c0a80b9`**
+  `docs/performance.md` Known gaps. Same-day interleaved rerun (`c0a80b9` reproduces its own published
+  numbers, so this is code, not machine): `inEdges` under concurrency at 0.53–0.97× of `c0a80b9`,
+  single-threaded 0.88–0.94×, Astronomy 3-hop 0.65–0.99×. Range `c0a80b9..888b870^`: `888b870` (loaded
+  flag) measured on its own made `inEdges` faster (1.08–1.30×). Code commits in range: `d412b3d`, `9aaf3aa`,
+  `225a8ad`, `812fea3`, `03a012c`. Prime suspect, unverified: `03a012c` (TODO 1.34, `resolveEdges` heals
+  evicted values; every value-carrying `inEdges` hop and 3-hop step goes through it).
+  Method: two-point runs per commit (each side a `git archive` export, each suite in its own Gradle
+  invocation with `cleanTest`, sides interleaved per round, 3 rounds): `Long`/`Uuid` ring,
+  `AstronomyConcurrency`, `LongSchemaConcurrency`. Then a probe isolating the cost, the fix, and a
+  before/after measurement.
+
 ## 3. Low
 
 - **✅ 3.1 YSQL connection acquired per cache-miss query** (`queryNodeYsql` / `queryEdgeYsql`)

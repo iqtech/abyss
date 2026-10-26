@@ -6,13 +6,13 @@ Measured results for the performance suites under `abyss-graph/src/test` (gated 
 
 | | |
 |---|---|
-| Commit | `c0a80b9` (2026-09-17) |
+| Commit | `29d746d` (2026-10-26) |
 | CPU | AMD Ryzen 5 2600, 6 cores / 12 threads |
 | RAM | 32 GB |
-| JVM | OpenJDK 21.0.11 |
+| JVM | OpenJDK 21.0.12 |
 | Libraries | Hazelcast 5.6.0, Kotlin 2.3.21, kotlinx-coroutines 1.9.0 |
 | Topology | one embedded Hazelcast member in the test JVM, pure in-memory (no persistent store) |
-| Runs | every suite run 3 times; cells show **median (min–max)** |
+| Runs | every suite run 3 times, each in its own Gradle invocation; cells show **median (min–max)** |
 
 Things to keep in mind when reading them:
 
@@ -26,6 +26,10 @@ Things to keep in mind when reading them:
   `inEdges` 5, 3-hop 13 nodes — see `PerfRing.kt`), so a benchmark cannot silently time empty work.
 - **Coarse 3-hop timing.** The single-threaded 3-hop figure is total elapsed milliseconds divided by
   200 traversals, so its resolution is about 0.1 ms.
+- **Background load.** A YugabyteDB dev container was running during these runs. The previous edition's
+  commit (`c0a80b9`), re-run on the same day under the same conditions, reproduced its published numbers
+  within a few percent (see [Changes since the previous edition](#changes-since-the-previous-edition)), so
+  the two editions are comparable.
 
 ## Fixtures
 
@@ -42,9 +46,9 @@ One caller; `outEdges` and `inEdges` over 2,000 random nodes, 3-hop over 200 ran
 
 | Adapter | `outEdges` (ops/sec) | `inEdges` (ops/sec) | 3-hop traversal (ms avg) |
 |---|---|---|---|
-| `UuidKeyAdapter` | 2,083 (2,008–2,129) | 2,265 (2,087–2,439) | 1.7 (1.7–1.9) |
-| `LongKeyAdapter` | 2,207 (2,159–2,358) | 2,320 (2,197–2,427) | 1.8 (1.8–1.9) |
-| `StringKeyAdapter` | 1,962 (1,945–2,098) | 2,333 (2,222–2,336) | 2.0 (1.9–2.7) |
+| `UuidKeyAdapter` | 2,919 (2,915–3,105) | 2,234 (1,809–2,280) | 1.9 (1.8–2.6) |
+| `LongKeyAdapter` | 2,631 (2,347–3,144) | 2,049 (1,638–2,123) | 2.4 (2.0–2.7) |
+| `StringKeyAdapter` | 2,475 (2,378–2,677) | 2,249 (1,666–2,257) | 1.8 (1.8–2.9) |
 
 ## Single-threaded, schema inside a multi-schema container
 
@@ -52,10 +56,10 @@ The same ring, `LongKeyAdapter`, registered inside a `HeterogeneousSchemaGraph`.
 
 | | `outEdges` (ops/sec) | `inEdges` (ops/sec) | 3-hop traversal (ms avg) |
 |---|---|---|---|
-| Heterogeneous container, `LongKeyAdapter` | 1,524 (1,436–1,600) | 2,844 (2,797–3,053) | 1.6 (1.5–1.7) |
-| Standalone `LongKeyAdapter` (from the table above) | 2,207 (2,159–2,358) | 2,320 (2,197–2,427) | 1.8 (1.8–1.9) |
+| Heterogeneous container, `LongKeyAdapter` | 1,990 (1,787–2,105) | 2,207 (1,947–2,472) | 2.5 (2.4–3.3) |
+| Standalone `LongKeyAdapter` (from the table above) | 2,631 (2,347–3,144) | 2,049 (1,638–2,123) | 2.4 (2.0–2.7) |
 
-`outEdges` inside the container runs at about **0.69×** standalone: its predicate compares the schema tag
+`outEdges` inside the container runs at about **0.76×** standalone: its predicate compares the schema tag
 plus the native value over the container's wider key layout. `inEdges` and 3-hop go through the adjacency
 index, where that predicate isn't evaluated, and are not slower than standalone.
 
@@ -66,8 +70,8 @@ roundtrips each (ns/op).
 
 | Value | `Uuid` ids | `Long` ids | `String` ids | Uuid / Long |
 |---|---|---|---|---|
-| edge | 4,644 (4,590–4,651) | 2,437 (2,376–2,497) | 2,244 (2,174–2,369) | 1.91× |
-| node | 2,468 (2,430–2,512) | 2,179 (2,121–2,249) | 2,241 (2,156–2,243) | 1.13× |
+| edge | 5,181 (4,755–5,805) | 2,596 (2,387–2,760) | 2,337 (2,188–2,397) | 2.0× |
+| node | 2,556 (2,465–2,784) | 2,367 (2,183–2,501) | 2,256 (2,156–2,509) | 1.1× |
 
 ## Concurrency scaling
 
@@ -77,12 +81,12 @@ N concurrent callers, 200 operations each, ops/sec.
 
 | N callers | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| 1 | 680 (666–701) | 2,020 (1,904–2,105) | 925 (896–947) |
-| 2 | 2,312 (2,285–2,500) | 5,063 (4,878–5,194) | 1,532 (1,365–1,724) |
-| 4 | 5,369 (5,298–5,594) | 8,421 (6,611–8,888) | 3,652 (3,404–3,703) |
-| 8 | 7,174 (7,017–7,339) | 12,500 (11,428–12,800) | 5,228 (4,776–5,423) |
-| 16 | 8,533 (7,459–8,602) | 17,777 (17,021–18,181) | 7,223 (6,808–7,710) |
-| 32 | 11,786 (10,596–12,623) | 22,222 (22,068–23,443) | 8,247 (6,794–10,000) |
+| 1 | 970 (925–1,015) | 1,036 (480–1,092) | 722 (615–796) |
+| 2 | 4,255 (3,225–4,347) | 3,030 (2,040–3,539) | 1,538 (1,346–1,587) |
+| 4 | 9,090 (8,602–10,256) | 5,714 (4,848–6,722) | 3,030 (2,424–3,389) |
+| 8 | 15,533 (15,533–17,777) | 9,815 (6,896–10,738) | 4,123 (3,106–4,597) |
+| 16 | 18,181 (16,494–19,047) | 15,165 (11,721–17,679) | 5,673 (4,289–6,165) |
+| 32 | 19,814 (15,802–22,299) | 18,233 (16,326–22,068) | 7,009 (4,996–7,600) |
 
 `outEdges` at N=1 is the first sweep in the suite and carries JIT warm-up; read its N=1 cell as a lower bound.
 
@@ -90,20 +94,46 @@ N concurrent callers, 200 operations each, ops/sec.
 
 | N callers | `outEdges` | `inEdges` | 3-hop traversal |
 |---|---|---|---|
-| 1 | 1,333 (970–1,449) | 2,857 (2,777–2,985) | 800 (790–813) |
-| 2 | 3,333 (2,684–3,361) | 5,405 (5,194–5,479) | 1,257 (1,063–1,257) |
-| 4 | 5,673 (4,597–5,882) | 9,195 (7,843–9,756) | 1,374 (1,292–1,423) |
-| 8 | 7,843 (6,837–7,920) | 13,913 (12,030–16,000) | 1,376 (1,325–1,474) |
-| 16 | 10,666 (8,913–10,702) | 18,497 (17,021–21,192) | 1,581 (1,565–1,641) |
-| 32 | 13,034 (11,428–13,061) | 20,447 (18,390–22,145) | 1,912 (1,850–2,065) |
+| 1 | 930 (865–1,010) | 1,550 (1,526–1,600) | 561 (546–641) |
+| 2 | 3,252 (3,030–4,210) | 3,603 (3,539–3,809) | 833 (763–886) |
+| 4 | 6,611 (5,839–7,272) | 6,504 (6,201–6,779) | 1,156 (1,106–1,331) |
+| 8 | 10,191 (9,638–11,347) | 8,695 (7,960–9,696) | 1,492 (1,428–1,531) |
+| 16 | 16,666 (16,243–16,753) | 12,167 (11,594–15,311) | 1,567 (1,422–1,802) |
+| 32 | 18,338 (17,679–18,934) | 14,746 (14,285–16,452) | 1,650 (1,571–2,034) |
+
+## Changes since the previous edition
+
+The previous edition was measured at `c0a80b9` (2026-09-17). To separate code changes from machine drift,
+`c0a80b9` and the current `HEAD` were re-run on the same day, interleaved per round, 3 rounds each
+(medians). `c0a80b9` reproduced its own published numbers within a few percent (e.g. Astronomy `inEdges`
+N=1: 1,960 now vs 2,020 published), so the differences below are code, not environment.
+
+| Metric | `c0a80b9` | `HEAD` | `HEAD` / `c0a80b9` |
+|---|---|---|---|
+| `outEdges`, Uuid ring | 2,270 | 2,941 | 1.30× |
+| `outEdges`, Astronomy N=8 | 7,305 | 16,842 | 2.31× |
+| `outEdges`, LongSchema N=8 | 7,920 | 15,384 | 1.94× |
+| `inEdges`, Uuid ring | 2,314 | 2,038 | 0.88× |
+| `inEdges`, Astronomy N=1 | 1,960 | 1,219 | 0.62× |
+| `inEdges`, LongSchema N=8 | 13,223 | 6,986 | 0.53× |
+| 3-hop, Astronomy N=4 | 3,703 | 2,395 | 0.65× |
+
+- **`outEdges` is 1.3–2.3× faster** — TODO 4.14 (the checked partition scan, and one scan with no index
+  count in cache-only mode).
+- **`inEdges` and Astronomy 3-hop regressed** — see Known gaps.
+
+The `HEAD` cells in this table come from the same-day comparison run, not from the tables above; the two
+runs differ within the ranges shown there.
 
 ## Known gaps
 
-- **`outEdges` under concurrency.** `outEdges` checks its cached partition scan against the adjacency
-  index's entry count, so a value evicted from the cache is never silently dropped. That check is a second
-  partition operation per call; with many concurrent callers it is the bottleneck, and `outEdges` scales
-  worse than `inEdges` in both sweeps above. Being investigated (TODO 4.14).
-- **3-hop on the ring stops scaling after N≈4.** It stays around 1,400–1,900 ops/sec from N=4 to N=32,
+- **`inEdges` regression since `c0a80b9`.** `inEdges` under concurrency runs at 0.53–0.97× of `c0a80b9`,
+  single-threaded at 0.88–0.94×; Astronomy 3-hop at 0.65–0.99×. Located between `c0a80b9` and `888b870^`:
+  `888b870` (adjacency loaded flag) was measured on its own and made `inEdges` faster (1.08–1.30× on the
+  Astronomy sweep), so it is not the cause. Not yet bisected. The prime suspect, unverified, is `03a012c`
+  (TODO 1.34: `resolveEdges` heals evicted values), since every value-carrying `inEdges` hop and 3-hop step
+  goes through `resolveEdges`.
+- **3-hop on the ring stops scaling after N≈4.** It stays around 1,150–1,650 ops/sec from N=4 to N=32,
   while `inEdges` on the same ring keeps climbing. Not yet investigated.
 - **Edge count per hop.** Earlier documentation published a per-hop fan-out table (K = 10 to 10,000 edges).
   No test in the repository reproduces it (`PerformanceTest.kt` is an empty stub), so it is not included here.
@@ -135,4 +165,5 @@ corrected suites.
 ```
 
 Output is printed to the test's standard out; with Gradle's default logging it lands in
-`abyss-graph/build/test-results/test/TEST-pl.iqtech.abyss.graph.<Suite>.xml`.
+`abyss-graph/build/test-results/test/TEST-pl.iqtech.abyss.graph.<Suite>.xml`. Re-running the same suite
+needs `:abyss-graph:cleanTest` first, or Gradle skips the test task as up to date.
