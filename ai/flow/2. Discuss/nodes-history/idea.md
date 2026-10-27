@@ -38,8 +38,31 @@ The first insert takes `version` from the column default (1), so the first state
    - `ALTER TABLE abyss.nodes ADD COLUMN version BIGINT NOT NULL DEFAULT 1`. 1-based, 0 stays
      reserved as VersionGuardPlan §3.2 says. Existing rows read as 1 and have no history row; that's
      accepted (history starts at the migration).
-   - `abyss.node_history (node_id BYTEA, version BIGINT, type TEXT, data JSONB, updated_at TIMESTAMPTZ,
-     PRIMARY KEY (node_id HASH, version ASC))`. No secondary indexes.
+   - The history table (shape decided 2026-10-27):
+     ```sql
+     CREATE TABLE IF NOT EXISTS abyss.node_history (
+         node_id    BYTEA       NOT NULL,   -- raw NodeId bytes, same as nodes.id
+         version    BIGINT      NOT NULL,   -- nodes.version at commit, 1-based
+         type       TEXT        NOT NULL,   -- stored for consumers; not keyed, not indexed
+         data       JSONB       NOT NULL,   -- the committed node state (store stays JSON)
+         updated_at TIMESTAMPTZ NOT NULL,
+         PRIMARY KEY (node_id HASH, version ASC)
+     );
+     ```
+     Every access already has the id: per-node reads, the item 3 cascade
+     `DELETE … WHERE node_id = ?`, and `ORDER BY version DESC LIMIT 1` for the upgrade path. All
+     single-tablet, with one row per insert and no secondary index.
+     Rejected:
+     - an index on `type`: every history insert also writes an index entry. Measured on `nodes`:
+       +18% at 8 concurrent connections, +8% in batches (`TypeIndexScanPlan.md` §5.4). It also
+       hashes on `type`, so all index entries of one type land on a single tablet.
+     - `(type, node_id)` as the hash key: lookup by `node_id` alone can't compute the hash, so it's
+       a full scan, and it still doesn't serve `WHERE type = ?`.
+     - `type` alone as the hash key: every write of a type goes to one tablet. That kills
+       scale-out.
+     Deleting every node of a type doesn't need type access on history: take the node ids from
+     `nodes` through `idx_nodes_type` (the TODO 2.34 type scan), and item 3 cascades each one by
+     `node_id`.
 2. **Both commit paths** switch to the statement above. If any path still uses the old upsert, history
    silently loses versions, so both paths change in the same commit.
 3. **History is deleted with the node** (decided 2026-10-27; closes RFC open question 6). The counter
@@ -85,13 +108,31 @@ The first insert takes `version` from the column default (1), so the first state
 Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev container, 16 writers.
 
 - **Distributed commit.** `nodes` and `node_history` are separate tables, so separate tablets, and
-  every save becomes a two-tablet transaction. Measured on distinct ids: 3170/s → 2690/s (−15%).
+  every save becomes a two-tablet transaction. RFC measurement on distinct ids: 3170/s → 2690/s (−15%).
+- **History vs the graph-native chain, measured 2026-10-27** (`HistoryVsChainWriteCostTest`, `-Pperf`,
+  dev container, YB smart driver, one event per transaction, median of 5 interleaved rounds after a
+  warm-up). Each variant has its own copy of `nodes`/`edges` with the production DDL and every index.
+  The chain is: live upsert + event node + `has-next` edge + tail pointer moved as `RemoveEdge` +
+  `AddEdge`. Database only, so the chain's Hazelcast puts and adjacency processors are **not**
+  included and the chain comes out cheaper than it really is. Assertions: row counts per variant;
+  each entity's history is exactly versions 1..n, with the node on version n.
+
+  | workload | plain | history | chain |
+  |---|---|---|---|
+  | 1 writer, 1 entity, 1000 events | 512/s (1954 ms) | 500/s (1999 ms), **+2.3%** | 154/s (6512 ms), +233% |
+  | 16 writers, own entity each, 200 events each | 3754/s (852 ms) | 3035/s (1054 ms), **+23.7%** | 860/s (3721 ms), +337% |
+
+  - The single-writer case, the expected ingest shape, is nearly free: +2.3%, inside the noise of
+    one dev box. That closes RFC §6 step 2's open measurement.
+  - With concurrency it's +23.7%, worse than the RFC's −15% (that's +18% on time). The history range
+    was wide (980..1450 ms) against plain's 834..889, so this number is noisy. Re-measure on a real
+    cluster before reading anything into the gap.
+  - The chain costs 3.3× plain with one writer and 4.4× with 16. It's 3.3× (one writer) to 3.5×
+    (16 writers) history's time, before any cache cost.
 - **Hot ids get worse.** Contended writes to one row already top out around 16–25/s at p50 ~1 s
   (`ConflictResolution_WaitOnConflictingTxns`, suspected `wait_queue_poll_interval_ms=100`, not
   confirmed). N measured 6–8/s, about 2× worse. Hot nodes (counters, aggregates) need their own fix
   first; history should probably stay off for them.
-- **Single-writer throughput is unmeasured.** The −15% is a contended-ish number. One writer per
-  id, the expected IoT ingest shape, hasn't been compared against the plain upsert (RFC §6 step 2).
 - **Batched path may lose insert rewriting.** Production sets `reWriteBatchedInserts=true`
   (`YugabytePersistentStore.kt:476`). pgjdbc rewrites plain `INSERT … VALUES` batches into
   multi-row inserts; a `WITH … INSERT … SELECT` statement is most likely not rewritten, so
