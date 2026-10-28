@@ -409,14 +409,28 @@ class YugabytePersistentStore(
                 }
             }
 
+            // Conflict key of an upsert op, null for deletes. reWriteBatchedInserts sends one executeBatch() as
+            // multi-row INSERT ... ON CONFLICT DO UPDATE blocks, and a block that hits one row twice fails
+            // ("cannot affect row a second time"), so a group is cut before its key repeats. Edge type via
+            // edge::class: one serial name per class, so the same row always yields an equal key (UnknownEdge
+            // can only over-match, which costs an extra cut, never a missed one).
+            fun conflictKey(op: PersistentOp): Any? = when (op) {
+                is PersistentOp.SaveNode -> op.id
+                is PersistentOp.SaveEdge -> Triple(op.fromId, op.toId, op.edge::class)
+                is PersistentOp.DeleteNode, is PersistentOp.DeleteEdge -> null
+            }
+
             var committed = 0
             for (chunk in ops.chunked(batchSize)) {
                 try {
                     var i = 0
                     while (i < chunk.size) {
                         val stmt = bind(chunk[i]).also { it.addBatch() }
+                        val keys = HashSet<Any>()
+                        conflictKey(chunk[i])?.let(keys::add)
                         var j = i + 1
-                        while (j < chunk.size && chunk[j]::class == chunk[i]::class) {
+                        while (j < chunk.size && chunk[j]::class == chunk[i]::class &&
+                            conflictKey(chunk[j]).let { it == null || keys.add(it) }) {
                             bind(chunk[j]).addBatch()
                             j++
                         }

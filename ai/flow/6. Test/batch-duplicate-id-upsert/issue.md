@@ -65,6 +65,27 @@ Rejected:
 - Add an edge case: the same `(from, to, type)` saved twice in one block.
 - After the fix: all green, full suite, then remove the cut and confirm the duplicate cases go red.
 
+## Result (2026-10-28)
+
+- `commitYsqlBatched` cuts the group before a key repeats: `conflictKey` is `id` for `SaveNode`,
+  `(fromId, toId, edge::class)` for `SaveEdge` (one serial name per class; `UnknownEdge` can only
+  over-match, which costs an extra cut, never a missed one), null for deletes.
+- `BatchDuplicateIdTest` 4/4 green, including the edge case `[a→b, a→c, c→a, a→b]`. With the cut disabled,
+  `[A,A]`, `[A,B,C,A]` and the edge case go red again. Full suite 450/450.
+- Cost on the no-duplicate path (`BatchCutCostTest`, `-Pperf`, real `batchTransaction`, 10007 distinct
+  keys, median of 5, alternating builds): no measurable change.
+
+  | pass | nodes before → after | edges before → after |
+  |---|---|---|
+  | 1 | 1189 → 1223 ms (+2.9%) | 1293 → 1275 ms (−1.4%) |
+  | 2 | 1291 → 1277 ms (−1.1%) | 1310 → 1310 ms (0.0%) |
+
+  The deltas split both ways and stay under the pass-to-pass drift (nodes before: 1189 → 1291 ms).
+- Side finding: the test's first version held a default 20-connection pool per test instance and never
+  closed it, which exhausted the container's slots in the full suite (`YsqlPartitionScanFeasibilityTest`:
+  "remaining connection slots are reserved"). It now uses a pool of 2, closed after each test. No other
+  YB test closes its store either (`CommitOrderDeadlockTest` holds 64), so the suite runs close to the limit.
+
 ## Independent of nodes-history
 
 The bug exists today without history. The fix keys on op identity, not on which SQL runs. The
