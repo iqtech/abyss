@@ -77,10 +77,10 @@ Design points:
 | `deleteFanoutFailed` | the two `onLeft` fanout branches | replaces nothing; the log line stays |
 | `batchPartiallyCommitted` | `batchTransaction` Left branch | `committed` from `BatchPartiallyCommitted` |
 
-`failed` on the read side depends on 1.38. Today `getOrNull()` collapses `Left` to null before the
-worker can tell. Phase 1 changes only the worker sites to inspect the `Either` (report, then keep the
-current null behaviour). The typed-error propagation itself stays in 1.38. The default store
-`loadNodes` still swallows per-id failures until 1.38 lands; that gap is accepted and named here.
+`failed` on the read side is unblocked by 1.38 (`29d746d`). The 7 worker read sites (incl.
+`ephemeralStoreHops`) no longer collapse `Left` to null; they throw `StoreUnavailableException`.
+Phase 1 reports `failed` at those sites just before the throw. The default store `loadNodes` returns
+the first `Left` instead of swallowing per-id failures, so `storeLoad(NODES)` sees it too.
 
 `outScanVerdict(false)` rate is the eviction-health signal. The TODO 4.14 count check already computes
 it; today the result is discarded.
@@ -93,7 +93,7 @@ Change: one `CompletableFuture.allOf(stages)`, then a single `whenComplete` repo
 `exceptionally` chain goes away. Sync mode reports after the existing `awaitAll`.
 
 Silent cache staleness after a successful store commit is the second alert worth having (the first is
-1.38).
+store read failures, surfaced as `StoreUnavailable` since 1.38).
 
 ## 6. Wiring
 
