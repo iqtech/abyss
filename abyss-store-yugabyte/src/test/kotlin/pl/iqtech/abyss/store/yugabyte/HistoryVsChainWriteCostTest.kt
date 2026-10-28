@@ -23,10 +23,12 @@ import kotlin.uuid.Uuid
 // measured, so the chain is understated. Variants interleaved per round, order rotated, round 0 = warm-up.
 class HistoryVsChainWriteCostTest {
 
-    private val variants = listOf("plain", "history", "chain")
+    // trigger: plain upsert plus version bump and history flag; an AFTER row trigger writes history.
+    private val variants = listOf("plain", "history", "chain", "trigger")
     private fun nodes(v: String) = "abyss.hist_spike_${v}_nodes"
     private fun edges(v: String) = "abyss.hist_spike_${v}_edges"
     private fun history(v: String) = "abyss.hist_spike_${v}_history"
+    private fun historyFn(v: String) = "abyss.hist_spike_${v}_history_append"
 
     private val upsertNode = { t: String ->
         "INSERT INTO $t AS n (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
@@ -39,6 +41,17 @@ class HistoryVsChainWriteCostTest {
             "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
             "version = n.version + 1 RETURNING id, version, type, data, updated_at) " +
             "INSERT INTO $h (node_id, version, type, data, updated_at) SELECT id, version, type, data, updated_at FROM u"
+    }
+    private val upsertNodeFlagged = { t: String ->
+        "INSERT INTO $t AS n (id, type, data, tags, created_at, updated_at, history) VALUES (?, ?, ?, ?, ?, ?, true) " +
+            "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
+            "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
+            "version = n.version + 1"
+    }
+    private fun liveStatement(v: String) = when (v) {
+        "history" -> upsertNodeWithHistory(nodes(v), history(v))
+        "trigger" -> upsertNodeFlagged(nodes(v))
+        else -> upsertNode(nodes(v))
     }
     private val upsertEdge = { t: String ->
         "INSERT INTO $t AS e (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
@@ -80,13 +93,12 @@ class HistoryVsChainWriteCostTest {
             pool.connection.use { c -> c.createStatement().use { s ->
                 fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
                 assertEquals(entities, count("SELECT count(*) FROM ${nodes("plain")}"), "plain nodes")
-                assertEquals(entities, count("SELECT count(*) FROM ${nodes("history")}"), "history nodes")
-                assertEquals(events, count("SELECT count(*) FROM ${history("history")}"), "history rows")
-                // every entity's history is exactly versions 1..n, no gaps, and the node sits on version n
-                assertEquals(0L, count("""SELECT count(*) FROM (SELECT node_id, min(version) lo, max(version) hi, count(*) n
-                    FROM ${history("history")} GROUP BY node_id) g JOIN ${nodes("history")} x ON x.id = g.node_id
-                    WHERE g.lo <> 1 OR g.hi <> g.n OR x.version <> g.hi"""), "history gaps or version drift")
-                assertEquals(entities, count("SELECT count(DISTINCT node_id) FROM ${history("history")}"), "entities with history")
+                for (v in listOf("history", "trigger")) {
+                    assertEquals(entities, count("SELECT count(*) FROM ${nodes(v)}"), "$v nodes")
+                    assertEquals(events, count("SELECT count(*) FROM ${history(v)}"), "$v history rows")
+                    assertEquals(0L, count(gapQuery(nodes(v), history(v))), "$v history gaps or version drift")
+                    assertEquals(entities, count("SELECT count(DISTINCT node_id) FROM ${history(v)}"), "$v entities with history")
+                }
                 assertEquals(entities + events, count("SELECT count(*) FROM ${nodes("chain")}"), "chain nodes")
                 // one has-next per event, one tail pointer per entity
                 assertEquals(events + entities, count("SELECT count(*) FROM ${edges("chain")}"), "chain edges")
@@ -103,19 +115,68 @@ class HistoryVsChainWriteCostTest {
                 }
             }
         } finally {
-            pool.connection.use { c -> c.createStatement().use { s -> variants.forEach { v ->
-                s.execute("DROP TABLE IF EXISTS ${history(v)}"); s.execute("DROP TABLE IF EXISTS ${edges(v)}"); s.execute("DROP TABLE IF EXISTS ${nodes(v)}")
-            } } }
+            pool.connection.use { c -> c.createStatement().use { s -> variants.forEach { v -> dropTables(s, v) } } }
             pool.close()
         }
     }
 
+    // Read-committed exactness: `conc` writers update ONE id concurrently. History must hold exactly
+    // versions 1..total with the node on the last one. The run above gives each writer its own id, so it
+    // never contends. One transaction per event; rate reported, not compared (hot-id writes are slow).
+    @Test fun `history CTE vs trigger - 16 writers on one id stay gap-free`() {
+        if (System.getProperty("perf") == null) return
+        val pool = HikariDataSource(HikariConfig().apply {
+            jdbcUrl = "jdbc:yugabytedb://localhost:5433/abyss_test_graph?load-balance=false"
+            username = "abyss"; password = "abyss"; maximumPoolSize = conc; minimumIdle = conc
+        })
+        val perWriterHot = 21 // odd, so total (336) isn't a round number
+        val hotVariants = listOf("plain", "history", "trigger") // plain: production upsert, the no-history control
+        val failures = linkedMapOf<String, String>()
+        try {
+            for (v in hotVariants) {
+                pool.connection.use { c -> c.createStatement().use { createTables(it, v) } }
+                val hot = Uuid.random()
+                val total = conc * perWriterHot
+                val outcome = runCatching {
+                    val d = timed { runBlocking {
+                        (0 until conc).map { async(Dispatchers.IO) { appendEvents(pool, v, hot, perWriterHot) } }.awaitAll()
+                    } }
+                    pool.connection.use { c -> c.createStatement().use { s ->
+                        fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
+                        if (v != "plain") {
+                            assertEquals(total.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v history rows")
+                            assertEquals(0L, count(gapQuery(nodes(v), history(v))), "$v history gaps or version drift")
+                            assertEquals(total.toLong(), count("SELECT max(version) FROM ${nodes(v)}"), "$v node version")
+                        }
+                    } }
+                    d
+                }
+                outcome.onSuccess { d -> println("HHOT %-8s %d writers x %d on one id: %.0f ms, %.1f events/s".format(v, conc, perWriterHot, d, total * 1000.0 / d)) }
+                outcome.onFailure { e -> failures[v] = e.message ?: e.toString(); println("HHOT %-8s FAILED: %s".format(v, e.message)) }
+            }
+            assertEquals(emptyMap(), failures, "variants that failed under one-id contention")
+        } finally {
+            pool.connection.use { c -> c.createStatement().use { s -> hotVariants.forEach { dropTables(s, it) } } }
+            pool.close()
+        }
+    }
+
+    // Every entity's history is exactly versions 1..n with no gaps, and the node sits on version n.
+    private fun gapQuery(nodes: String, history: String) = """SELECT count(*) FROM (SELECT node_id, min(version) lo,
+        max(version) hi, count(*) n FROM $history GROUP BY node_id) g JOIN $nodes x ON x.id = g.node_id
+        WHERE g.lo <> 1 OR g.hi <> g.n OR x.version <> g.hi"""
+
+    private fun dropTables(s: java.sql.Statement, v: String) {
+        s.execute("DROP TABLE IF EXISTS ${history(v)}"); s.execute("DROP TABLE IF EXISTS ${edges(v)}"); s.execute("DROP TABLE IF EXISTS ${nodes(v)}")
+        s.execute("DROP FUNCTION IF EXISTS ${historyFn(v)}()")
+    }
+
     // Production DDL (ysql-schema.sql) plus the version column, and node_history as decided in the idea.
     private fun createTables(s: java.sql.Statement, v: String) {
-        s.execute("DROP TABLE IF EXISTS ${history(v)}"); s.execute("DROP TABLE IF EXISTS ${edges(v)}"); s.execute("DROP TABLE IF EXISTS ${nodes(v)}")
+        dropTables(s, v)
         s.execute("""CREATE TABLE ${nodes(v)} (id BYTEA PRIMARY KEY, type TEXT NOT NULL, data JSONB NOT NULL,
             tags TEXT[] NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
-            version BIGINT NOT NULL DEFAULT 1)""")
+            version BIGINT NOT NULL DEFAULT 1, history BOOLEAN NOT NULL DEFAULT false)""")
         s.execute("CREATE INDEX hist_spike_${v}_nodes_type ON ${nodes(v)} (type)")
         s.execute("CREATE INDEX hist_spike_${v}_nodes_tags ON ${nodes(v)} USING GIN (tags)")
         s.execute("""CREATE TABLE ${edges(v)} (from_id BYTEA NOT NULL, to_id BYTEA NOT NULL, type TEXT NOT NULL,
@@ -126,6 +187,7 @@ class HistoryVsChainWriteCostTest {
         s.execute("CREATE INDEX hist_spike_${v}_edges_tags ON ${edges(v)} USING GIN (tags)")
         s.execute("""CREATE TABLE ${history(v)} (node_id BYTEA NOT NULL, version BIGINT NOT NULL, type TEXT NOT NULL,
             data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (node_id HASH, version ASC))""")
+        if (v == "trigger") createHistoryTrigger(s, nodes(v), history(v), historyFn(v))
     }
 
     private fun timed(block: () -> Unit): Double { val s = System.nanoTime(); block(); return (System.nanoTime() - s) / 1e6 }
@@ -152,7 +214,7 @@ class HistoryVsChainWriteCostTest {
     // One transaction per event, as commitYsql runs it: one executeUpdate() per op.
     private fun appendEvents(pool: HikariDataSource, v: String, entity: Uuid, n: Int) = pool.connection.use { c ->
         c.autoCommit = false
-        val live = c.prepareStatement(if (v == "history") upsertNodeWithHistory(nodes(v), history(v)) else upsertNode(nodes(v)))
+        val live = c.prepareStatement(liveStatement(v))
         val addNode = c.prepareStatement(upsertNode(nodes(v)))
         val addEdge = c.prepareStatement(upsertEdge(edges(v)))
         val delEdge = c.prepareStatement(deleteEdge(edges(v)))
@@ -175,4 +237,16 @@ class HistoryVsChainWriteCostTest {
         }
         listOf(live, addNode, addEdge, delEdge).forEach { it.close() }
     }
+}
+
+// The trigger variant of nodes history (shared with HistoryBatchRewriteTest): an AFTER row trigger copies
+// each new row state of a flagged node into history. NEW.version is the value this row's own write just
+// set, after the ON CONFLICT path locked the row, so nothing is re-read.
+internal fun createHistoryTrigger(s: java.sql.Statement, nodes: String, history: String, fn: String) {
+    s.execute(
+        "CREATE OR REPLACE FUNCTION $fn() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN " +
+            "INSERT INTO $history (node_id, version, type, data, updated_at) " +
+            "VALUES (NEW.id, NEW.version, NEW.type, NEW.data, NEW.updated_at); RETURN NULL; END \$\$"
+    )
+    s.execute("CREATE TRIGGER ${fn.substringAfter('.')} AFTER INSERT OR UPDATE ON $nodes FOR EACH ROW WHEN (NEW.history) EXECUTE FUNCTION $fn()")
 }

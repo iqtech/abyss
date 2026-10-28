@@ -20,9 +20,13 @@ import kotlin.uuid.Uuid
 // history versions climb. Op counts are odd so the last chunk is partial. Variants interleaved, round 0 warm-up.
 class HistoryBatchRewriteTest {
 
-    private val variants = listOf("plain", "history")
+    // trigger: the plain upsert (rewritable) plus a version bump and a history flag; an AFTER row trigger
+    // copies each new row state into history.
+    private val variants = listOf("plain", "history", "trigger")
+    private val withHistory = setOf("history", "trigger")
     private fun nodes(v: String) = "abyss.hist_batch_${v}_nodes"
     private fun history(v: String) = "abyss.hist_batch_${v}_history"
+    private fun historyFn(v: String) = "abyss.hist_batch_${v}_history_append"
 
     private val upsertNode = { t: String ->
         "INSERT INTO $t AS n (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
@@ -35,6 +39,17 @@ class HistoryBatchRewriteTest {
             "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
             "version = n.version + 1 RETURNING id, version, type, data, updated_at) " +
             "INSERT INTO $h (node_id, version, type, data, updated_at) SELECT id, version, type, data, updated_at FROM u"
+    }
+    private val upsertNodeFlagged = { t: String ->
+        "INSERT INTO $t AS n (id, type, data, tags, created_at, updated_at, history) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
+            "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
+            "version = n.version + 1"
+    }
+    private fun statement(v: String) = when (v) {
+        "history" -> upsertNodeWithHistory(nodes(v), history(v))
+        "trigger" -> upsertNodeFlagged(nodes(v))
+        else -> upsertNode(nodes(v))
     }
     private val payload = "x".repeat(240)
 
@@ -88,8 +103,8 @@ class HistoryBatchRewriteTest {
     private fun assertSaved(s: Statement, v: String, n: Int) {
         fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
         assertEquals(minOf(n, batchSize).toLong(), count("SELECT count(*) FROM ${nodes(v)}"), "$v nodes")
-        if (v != "history") return
-        assertEquals(n.toLong(), count("SELECT count(*) FROM ${history(v)}"), "history rows")
+        if (v !in withHistory) return
+        assertEquals(n.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v history rows")
         assertEquals(0L, count("""SELECT count(*) FROM (SELECT node_id, min(version) lo, max(version) hi, count(*) k
             FROM ${history(v)} GROUP BY node_id) g JOIN ${nodes(v)} x ON x.id = g.node_id
             WHERE g.lo <> 1 OR g.hi <> g.k OR x.version <> g.hi"""), "history gaps or version drift")
@@ -102,9 +117,13 @@ class HistoryBatchRewriteTest {
         c.autoCommit = false
         val ids = List(batchSize) { Uuid.random() }
         var noInfo = false
-        c.prepareStatement(if (v == "history") upsertNodeWithHistory(nodes(v), history(v)) else upsertNode(nodes(v))).use { st ->
+        c.prepareStatement(statement(v)).use { st ->
             for (chunk in (0 until n).chunked(batchSize)) {
-                chunk.forEach { i -> bindNode(c, st, ids[i % batchSize], i); st.addBatch() }
+                chunk.forEach { i ->
+                    bindNode(c, st, ids[i % batchSize], i)
+                    if (v == "trigger") st.setBoolean(7, true)
+                    st.addBatch()
+                }
                 val counts = st.executeBatch()
                 if (counts.any { it == Statement.SUCCESS_NO_INFO }) noInfo = true
                 c.commit()
@@ -118,15 +137,17 @@ class HistoryBatchRewriteTest {
         dropTables(s, v)
         s.execute("""CREATE TABLE ${nodes(v)} (id BYTEA PRIMARY KEY, type TEXT NOT NULL, data JSONB NOT NULL,
             tags TEXT[] NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
-            version BIGINT NOT NULL DEFAULT 1)""")
+            version BIGINT NOT NULL DEFAULT 1, history BOOLEAN NOT NULL DEFAULT false)""")
         s.execute("CREATE INDEX hist_batch_${v}_nodes_type ON ${nodes(v)} (type)")
         s.execute("CREATE INDEX hist_batch_${v}_nodes_tags ON ${nodes(v)} USING GIN (tags)")
         s.execute("""CREATE TABLE ${history(v)} (node_id BYTEA NOT NULL, version BIGINT NOT NULL, type TEXT NOT NULL,
             data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (node_id HASH, version ASC))""")
+        if (v == "trigger") createHistoryTrigger(s, nodes(v), history(v), historyFn(v))
     }
 
     private fun dropTables(s: Statement, v: String) {
         s.execute("DROP TABLE IF EXISTS ${history(v)}"); s.execute("DROP TABLE IF EXISTS ${nodes(v)}")
+        s.execute("DROP FUNCTION IF EXISTS ${historyFn(v)}()")
     }
 
     private fun timed(block: () -> Unit): Double { val s = System.nanoTime(); block(); return (System.nanoTime() - s) / 1e6 }
