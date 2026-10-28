@@ -21,9 +21,10 @@ import kotlin.uuid.Uuid
 class HistoryBatchRewriteTest {
 
     // trigger: the plain upsert (rewritable) plus a version bump and a history flag; an AFTER row trigger
-    // copies each new row state into history.
-    private val variants = listOf("plain", "history", "trigger")
-    private val withHistory = setOf("history", "trigger")
+    // copies each new row state into history. multirow: the history CTE fed by unnest() of parallel
+    // arrays, one statement per chunk (chunk ids are distinct, as the commitYsqlBatched cut guarantees).
+    private val variants = listOf("plain", "history", "trigger", "multirow")
+    private val withHistory = setOf("history", "trigger", "multirow")
     private fun nodes(v: String) = "abyss.hist_batch_${v}_nodes"
     private fun history(v: String) = "abyss.hist_batch_${v}_history"
     private fun historyFn(v: String) = "abyss.hist_batch_${v}_history_append"
@@ -46,7 +47,20 @@ class HistoryBatchRewriteTest {
             "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
             "version = n.version + 1"
     }
+    // Tags travel as one text literal per row ('{a,b}'), cast per row: a text[][] can't carry one array
+    // per row (PostgreSQL arrays are rectangular and unnest flattens them).
+    private val upsertNodesWithHistoryMultirow = { t: String, h: String ->
+        "WITH input AS (SELECT * FROM unnest(?::bytea[], ?::text[], ?::text[], ?::text[], ?::timestamptz[], ?::timestamptz[]) " +
+            "AS r(id, type, data, tags, created_at, updated_at)), " +
+            "u AS (INSERT INTO $t AS n (id, type, data, tags, created_at, updated_at) " +
+            "SELECT id, type, data::jsonb, tags::text[], created_at, updated_at FROM input " +
+            "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
+            "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
+            "version = n.version + 1 RETURNING id, version, type, data, updated_at) " +
+            "INSERT INTO $h (node_id, version, type, data, updated_at) SELECT id, version, type, data, updated_at FROM u"
+    }
     private fun statement(v: String) = when (v) {
+        "multirow" -> upsertNodesWithHistoryMultirow(nodes(v), history(v))
         "history" -> upsertNodeWithHistory(nodes(v), history(v))
         "trigger" -> upsertNodeFlagged(nodes(v))
         else -> upsertNode(nodes(v))
@@ -117,7 +131,19 @@ class HistoryBatchRewriteTest {
         c.autoCommit = false
         val ids = List(batchSize) { Uuid.random() }
         var noInfo = false
-        c.prepareStatement(statement(v)).use { st ->
+        if (v == "multirow") c.prepareStatement(statement(v)).use { st ->
+            for (chunk in (0 until n).chunked(batchSize)) {
+                val now = Timestamp(System.currentTimeMillis())
+                st.setArray(1, c.createArrayOf("bytea", chunk.map { i -> UuidKeyAdapter.toNodeId(ids[i % batchSize]).bytes }.toTypedArray()))
+                st.setArray(2, c.createArrayOf("text", Array(chunk.size) { "device" }))
+                st.setArray(3, c.createArrayOf("text", chunk.map { i -> data(ids[i % batchSize], i) }.toTypedArray()))
+                st.setArray(4, c.createArrayOf("text", Array(chunk.size) { "{}" }))
+                st.setArray(5, c.createArrayOf("timestamptz", Array(chunk.size) { now }))
+                st.setArray(6, c.createArrayOf("timestamptz", Array(chunk.size) { now }))
+                assertEquals(chunk.size, st.executeUpdate(), "multirow: one history row per op in the chunk")
+                c.commit()
+            }
+        } else c.prepareStatement(statement(v)).use { st ->
             for (chunk in (0 until n).chunked(batchSize)) {
                 chunk.forEach { i ->
                     bindNode(c, st, ids[i % batchSize], i)
@@ -152,11 +178,13 @@ class HistoryBatchRewriteTest {
 
     private fun timed(block: () -> Unit): Double { val s = System.nanoTime(); block(); return (System.nanoTime() - s) / 1e6 }
 
+    private fun data(id: Uuid, seq: Int) = """{"type":"device","id":"$id","seq":$seq,"payload":"$payload"}"""
+
     private fun bindNode(c: Connection, st: PreparedStatement, id: Uuid, seq: Int) {
         val now = Timestamp(System.currentTimeMillis())
         st.setBytes(1, UuidKeyAdapter.toNodeId(id).bytes)
         st.setString(2, "device")
-        st.setObject(3, """{"type":"device","id":"$id","seq":$seq,"payload":"$payload"}""", Types.OTHER)
+        st.setObject(3, data(id, seq), Types.OTHER)
         st.setArray(4, c.createArrayOf("text", emptyArray<String>()))
         st.setTimestamp(5, now); st.setTimestamp(6, now)
     }

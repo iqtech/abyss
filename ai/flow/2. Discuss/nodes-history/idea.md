@@ -184,9 +184,29 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
     | 16 writers, own id, 200 each | 847 ms | 1007 ms (+18.8%) | 1089 ms (+28.6%) |
 
     The rewrite saves the trigger 15% (13983 → 11942 ms), but the per-row PL/pgSQL insert costs more
-    than the round trips it saves. The CTE stays. Untested way to regain the batch: a hand-built
-    multi-row CTE (`INSERT … SELECT FROM unnest(?::bytea[], …)` inside the `WITH`), one statement per
-    group, which relies on the duplicate-key cut below.
+    than the round trips it saves. The CTE stays.
+  - **Multi-row CTE measured 2026-10-28: regains the batch and beats plain.** The same CTE fed by
+    `unnest()` of six parallel arrays instead of one `VALUES` row, one statement per 1000-op chunk
+    (`HistoryBatchRewriteTest` `multirow`, same run as the baselines below):
+
+    | batched | 1003 ops | 10007 ops |
+    |---|---|---|
+    | plain upsert, rewritten (production) | 126 ms | 1375 ms |
+    | per-row CTE | 873 ms | 9198 ms |
+    | trigger | 1120 ms | 12062 ms |
+    | multi-row CTE | 110 ms | 1138 ms (−17% vs plain, 8.1× faster than per-row CTE) |
+
+    Exact in every round: each chunk's `executeUpdate()` returned the chunk size, history rows = ops,
+    versions gap-free, max version 11. The rewrite flag makes no difference to it (one statement).
+    - Why it beats plain (reading, not measured separately): pgjdbc splits a rewritten 1000-row batch
+      into several power-of-two multi-values statements with 6 parameters per row; unnest is one
+      statement, 6 array parameters, one plan. So the plain batched upsert could also move to unnest.
+    - Tags travel as one text literal per row (`'{a,b}'`) cast with `tags::text[]` (PostgreSQL arrays
+      are rectangular, `unnest` of a `text[][]` flattens it). The run bound empty tags only, so the
+      literal path for non-empty tags and tag merging is not exercised yet.
+    - A group must hold distinct ids (one statement can't touch a row twice); the duplicate-key cut
+      below already guarantees that.
+    - `createArrayOf("bytea", Array<ByteArray>)` binds correctly on the YB driver (verified by the run).
   - A multi-row history statement inherits the plain path's duplicate-id failure
     (`BatchDuplicateIdTest`: two saves of one id in one rewritten block fail the chunk with "ON
     CONFLICT DO UPDATE command cannot affect row a second time"). Fixed in `commitYsqlBatched` by
