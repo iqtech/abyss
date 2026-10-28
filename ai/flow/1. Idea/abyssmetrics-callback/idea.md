@@ -9,6 +9,7 @@ dependency, the host wires its own backend. Fires only on slow/semantic paths: s
 adjacency preloads, the `cachedOutScan` verdict (the eviction-health signal), evicted-edge heals,
 commits, cache population (async mode reported once on completion), delete-fanout failures, partial
 batch commits. Raw cache hits and raw store latency are left to Hazelcast map stats and a host-side
-`AbyssStoreLike` decorator. Event list agreed 2026-10-26. Read-side `failed` hooks the 7 worker read
-sites that throw `StoreUnavailableException` since 1.38 (`29d746d`). Plan, call sites, red probes, and the
+`AbyssStoreLike` decorator. Event list agreed 2026-10-26. Read-side `failed` hooks 5 of the 6 worker read
+functions that throw `StoreUnavailableException` since 1.38 (`29d746d`), once per function; the
+store-only `ephemeralStoreHops` is left to the host's store decorator. Plan, call sites, red probes, and the
 before/after benchmark: `ai-scripts/MetricsCallbackPlan.md`.

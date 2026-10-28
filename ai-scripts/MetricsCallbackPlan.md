@@ -77,10 +77,29 @@ Design points:
 | `deleteFanoutFailed` | the two `onLeft` fanout branches | replaces nothing; the log line stays |
 | `batchPartiallyCommitted` | `batchTransaction` Left branch | `committed` from `BatchPartiallyCommitted` |
 
-`failed` on the read side is unblocked by 1.38 (`29d746d`). The 7 worker read sites (incl.
-`ephemeralStoreHops`) no longer collapse `Left` to null; they throw `StoreUnavailableException`.
-Phase 1 reports `failed` at those sites just before the throw. The default store `loadNodes` returns
-the first `Left` instead of swallowing per-id failures, so `storeLoad(NODES)` sees it too.
+`failed` on the read side is unblocked by 1.38 (`29d746d`, whose message says "7 sites"; the code
+has 6 functions, 9 throw calls). They no longer collapse `Left` to null; they throw
+`StoreUnavailableException`:
+
+| Function | Throw calls | Callback |
+|---|---|---|
+| `loadAndCacheNode` | 2 (persistent + ephemeral `async`) | `storeLoad(NODE)` |
+| `loadAndCacheNodes` | 2 | `storeLoad(NODES)` |
+| `loadAndCacheEdge` | 2 | `storeLoad(EDGE)` |
+| `preloadOut` | 1 | `adjacencyPreload(OUT)` |
+| `preloadIn` | 1 | `adjacencyPreload(IN)` |
+| `ephemeralStoreHops` | 1 | none |
+
+- **Hook once per function, not per throw call.** In the three `loadAndCache*` functions each throw
+  sits in its own `async`: a per-throw hook fires twice when both sides fail and has no start time
+  for `nanos`. One `try/catch` around the function's store read reports `failed = true` with
+  `nanos`, then rethrows. That also covers one side's failure cancelling the other.
+- **`found = 0` on failure.** Every failure path throws; no partial result is served.
+- **`ephemeralStoreHops` gets no callback.** It is not a self-heal: TTL edges are store-only and
+  never cached (TODO 1.27), so every `includeEphemeral` traversal reads the store by design. Per §2
+  that is a plain store read, visible to the host's `AbyssStoreLike` decorator.
+- The default store `loadNodes` returns the first `Left` instead of swallowing per-id failures, so
+  `storeLoad(NODES)` sees it too.
 
 `outScanVerdict(false)` rate is the eviction-health signal. The TODO 4.14 count check already computes
 it; today the result is discarded.
