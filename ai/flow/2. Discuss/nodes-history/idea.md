@@ -133,11 +133,32 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
   (`ConflictResolution_WaitOnConflictingTxns`, suspected `wait_queue_poll_interval_ms=100`, not
   confirmed). N measured 6–8/s, about 2× worse. Hot nodes (counters, aggregates) need their own fix
   first; history should probably stay off for them.
-- **Batched path may lose insert rewriting.** Production sets `reWriteBatchedInserts=true`
-  (`YugabytePersistentStore.kt:476`). pgjdbc rewrites plain `INSERT … VALUES` batches into
-  multi-row inserts; a `WITH … INSERT … SELECT` statement is most likely not rewritten, so
-  `batchTransaction` could fall back to one row per statement. Unverified: measure `commitYsqlBatched`
-  before and after at 1k/10k ops.
+- **Batched path loses insert rewriting (measured 2026-10-28).** Production sets
+  `reWriteBatchedInserts=true` (`YugabytePersistentStore.kt:476`). `HistoryBatchRewriteTest`
+  (`-Pperf`, dev YB, `commitYsqlBatched` shape, chunks of 1000, median of 5 interleaved rounds):
+  the driver reports `SUCCESS_NO_INFO` for the plain upsert (rewritten) and row counts for the
+  history CTE (not rewritten), with the flag on or off.
+
+  | ops | plain, rewrite on | plain, rewrite off | history, rewrite on | history, rewrite off |
+  |---|---|---|---|---|
+  | 1003 | 124 ms (8057/s) | 800 ms (1253/s) | 878 ms (1142/s) | 877 ms (1144/s) |
+  | 10007 | 1394 ms (7177/s) | 8442 ms (1185/s) | 9171 ms (1091/s) | 9118 ms (1098/s) |
+
+  - Batched history is **6.6×** the plain batched time. Almost all of that is the lost rewrite:
+    against plain with rewriting off, history costs only +8..10%.
+  - Regaining it means a node save that pgjdbc can rewrite: it must start with `INSERT` and carry no
+    `RETURNING`. Candidate: the plain upsert with `version = n.version + 1` added, plus an AFTER
+    INSERT OR UPDATE trigger copying the row into `node_history` (the archive trigger was already
+    verified exact on YB under true RC, where a two-statement archive lost versions). Not measured yet.
+  - A rewritable history statement inherits the plain path's duplicate-id failure
+    (`BatchDuplicateIdTest`: two saves of one id in one rewritten block fail the chunk with "ON
+    CONFLICT DO UPDATE command cannot affect row a second time"). Collapsing duplicates is not an
+    option for history: each save is a version.
+  - **Grouping key must become the bound statement.** `commitYsqlBatched` groups by op class
+    (`chunk[j]::class == chunk[i]::class`) and runs `executeBatch()` on the first op's statement only.
+    Once a `@WithHistory` `SaveNode` binds a different statement than a plain one, a mixed group puts
+    rows on two statements and executes one: the other's rows run later out of order or are lost
+    silently. Group by the statement `bind` returns, not by op class.
 - **Mixed types break up batches.** `commitYsqlBatched` groups consecutive ops that use the same
   statement into one `executeBatch()`. A transaction that mixes `@WithHistory` and plain node types
   alternates between the two statements and splits those groups into smaller batches. Measure an
