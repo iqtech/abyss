@@ -1,6 +1,8 @@
 # TODO 2.35 — Metrics callback: persistence and cache-population observability
 
 Status: **plan agreed 2026-10-26** (event list accepted "for now"). Not implemented.
+2026-10-28: read-side `failed` agreed as one hook per function (5 functions); `ephemeralStoreHops`
+excluded (§4).
 
 ## 1. Decision
 
