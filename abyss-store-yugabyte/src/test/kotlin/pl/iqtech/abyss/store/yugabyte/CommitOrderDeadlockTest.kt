@@ -17,6 +17,7 @@ import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import java.sql.DriverManager
 import java.util.Arrays
 import java.util.concurrent.CyclicBarrier
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -39,7 +40,11 @@ class CommitOrderDeadlockTest {
     // Dedicated pool, one connection per worker. On the default size (20) Hikari queues the
     // surplus workers, which serializes the transactions and hides the very contention we
     // are trying to measure.
-    private val store by lazy {
+    // Closed after each test: JUnit makes one instance per test, and 64 idle connections per instance
+    // left open eat the container's slots (max_connections 287) for every later test in the JVM.
+    @AfterTest fun closeStore() { if (storeLazy.isInitialized()) store.close() }
+
+    private val storeLazy = lazy {
         YugabytePersistentStore.create(
             ysqlUrl = "jdbc:yugabytedb://localhost:5433/abyss_test_graph",
             ysqlUser = "abyss",
@@ -51,6 +56,7 @@ class CommitOrderDeadlockTest {
             ysqlMaxPoolSize = 64
         )
     }
+    private val store by storeLazy
 
     private fun key(n: Int): Uuid = Uuid.parse("0000000$n-0000-4000-8000-00000000dead")
 

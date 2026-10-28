@@ -26,6 +26,7 @@ import java.sql.DriverManager
 import java.sql.SQLException
 import java.sql.Types
 import javax.sql.DataSource
+import org.junit.AfterClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -68,7 +69,8 @@ private val ybModule = SerializersModule {
     polymorphic(EdgeLike::class) { subclass(YbTestEdge::class) }
 }
 
-private val ybPersistentStore by lazy {
+// Shared by every LoadTest method, closed once after the class (LoadTest.closeStores).
+private val ybPersistentStoreLazy = lazy {
     YugabytePersistentStore.create(
         ysqlUrl = "jdbc:yugabytedb://localhost:5433/abyss_test_graph",
         ysqlUser = "abyss",
@@ -76,15 +78,22 @@ private val ybPersistentStore by lazy {
         module = ybModule
     )
 }
+private val ybPersistentStore by ybPersistentStoreLazy
 
-private val ybEphemeralStore by lazy {
-    YugabyteEphemeralStore.create(module = ybModule)
-}
+private val ybEphemeralStoreLazy = lazy { YugabyteEphemeralStore.create(module = ybModule) }
+private val ybEphemeralStore by ybEphemeralStoreLazy
 
 // Stores are NodeId-keyed now; tests convert their domain Uuids at the boundary.
 private fun nid(u: Uuid): NodeId = UuidKeyAdapter.toNodeId(u)
 
 class LoadTest {
+
+    companion object {
+        @JvmStatic @AfterClass fun closeStores() {
+            if (ybPersistentStoreLazy.isInitialized()) ybPersistentStore.close()
+            if (ybEphemeralStoreLazy.isInitialized()) ybEphemeralStore.close()
+        }
+    }
 
     @Test fun `loadNode returns node inserted in ysql`() {
         val id = Uuid.random()
@@ -403,12 +412,18 @@ class LoadTest {
     // store API (upserts, unconditional deletes) can be made to fail deterministically otherwise.
     @Test fun `batchTransaction failure partway leaves earlier chunks committed and later chunks absent`() {
         val ids = List(6) { Uuid.random() }
-        val failingStore = YugabytePersistentStore(FailAfterNCommitsDataSource(rawYsqlDataSource(), failAtCommit = 2), ybModule)
+        // The wrapper only delegates DataSource, so failingStore.close() can't reach the pool: close it here.
+        val raw = rawYsqlDataSource()
+        val failingStore = YugabytePersistentStore(FailAfterNCommitsDataSource(raw, failAtCommit = 2), ybModule)
 
-        val result = runBlocking {
-            failingStore.batchTransaction(batchSize = 2) {
-                ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batch-fail"), emptySet()) }
+        val result = try {
+            runBlocking {
+                failingStore.batchTransaction(batchSize = 2) {
+                    ids.forEach { id -> saveNode(nid(id), YbTestNode(id = id, name = "batch-fail"), emptySet()) }
+                }
             }
+        } finally {
+            raw.close()
         }
         assertIs<Either.Left<AbyssError.BatchPartiallyCommitted>>(result)
         // TODO 1.29 item 2: batchSize=2, failAtCommit=2 -> chunk 1 (2 ops) committed before chunk 2 failed.
@@ -647,7 +662,7 @@ private fun readYcqlEdgeTags(fromId: Uuid, toId: Uuid): Set<String> =
             ).one()!!.getSet("tags", String::class.java)!!
         }
 
-private fun rawYsqlDataSource(): DataSource = HikariDataSource(HikariConfig().apply {
+private fun rawYsqlDataSource(): HikariDataSource = HikariDataSource(HikariConfig().apply {
     jdbcUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph"
     username = "abyss"
     password = "abyss"
