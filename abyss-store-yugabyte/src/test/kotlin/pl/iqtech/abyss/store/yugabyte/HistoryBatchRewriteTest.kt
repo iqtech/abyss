@@ -113,6 +113,76 @@ class HistoryBatchRewriteTest {
         }
     }
 
+    // 50/50 @WithHistory and plain saves in one batch. commitYsqlBatched keeps op order and groups only
+    // consecutive same-statement ops, so alternating types (mix_alt) gives groups of one op. mix_split
+    // stably partitions each chunk by statement: one multirow + one rewritten batch per chunk. Even ids
+    // (= even op index, batchSize is even) are history. Shapes interleaved, round 0 warm-up.
+    private val mixShapes = listOf("mix_plain", "mix_history", "mix_alt", "mix_split")
+    private fun isHistory(v: String, i: Int) = when (v) { "mix_plain" -> false; "mix_history" -> true; else -> i % 2 == 0 }
+
+    @Test fun `mixed history and plain saves in one batch - grouping cost`() {
+        if (System.getProperty("perf") == null) return
+        val n = 10_007
+        pool(rewrite = true).use { pool ->
+            try {
+                val ms = mixShapes.associateWith { mutableListOf<Double>() }
+                repeat(rounds + 1) { round ->
+                    for (k in mixShapes.indices) {
+                        val v = mixShapes[(k + round) % mixShapes.size]
+                        pool.connection.use { c -> c.createStatement().use { createTables(it, v) } }
+                        val d = timed { saveMixed(pool, v, n) }
+                        if (round > 0) ms.getValue(v) += d
+                        pool.connection.use { c -> c.createStatement().use { s -> assertMixed(s, v, n) } }
+                    }
+                }
+                val base = ms.getValue("mix_plain").sorted()[rounds / 2]
+                mixShapes.forEach { v ->
+                    val all = ms.getValue(v).sorted()
+                    val med = all[rounds / 2]
+                    println("HMIX %6d ops %-11s median=%7.0f ms  range=%.0f..%.0f  %6.0f ops/s  vs all-plain: %+.1f%%".format(
+                        n, v, med, all.first(), all.last(), n * 1000.0 / med, (med / base - 1) * 100))
+                }
+            } finally {
+                pool.connection.use { c -> c.createStatement().use { s -> mixShapes.forEach { dropTables(s, it) } } }
+            }
+        }
+    }
+
+    private fun saveMixed(pool: HikariDataSource, v: String, n: Int) = pool.connection.use { c ->
+        c.autoCommit = false
+        val ids = List(batchSize) { Uuid.random() }
+        c.prepareStatement(upsertNode(nodes(v))).use { plain ->
+            c.prepareStatement(upsertNodesWithHistoryMultirow(nodes(v), history(v))).use { hist ->
+                for (chunk in (0 until n).chunked(batchSize)) {
+                    val ordered = if (v == "mix_split") chunk.sortedBy { !isHistory(v, it) } else chunk
+                    var i = 0
+                    while (i < ordered.size) {
+                        val h = isHistory(v, ordered[i])
+                        var j = i
+                        while (j < ordered.size && isHistory(v, ordered[j]) == h) j++
+                        val group = ordered.subList(i, j)
+                        if (h) saveMultirowChunk(c, hist, group.map { Triple(ids[it % batchSize], it, emptySet()) })
+                        else { group.forEach { bindNode(c, plain, ids[it % batchSize], it); plain.addBatch() }; plain.executeBatch() }
+                        i = j
+                    }
+                    c.commit()
+                }
+            }
+        }
+    }
+
+    // All ids landed; history only for history ids, exactly versions 1..k each; plain ids have none.
+    private fun assertMixed(s: Statement, v: String, n: Int) {
+        fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
+        assertEquals(batchSize.toLong(), count("SELECT count(*) FROM ${nodes(v)}"), "$v nodes")
+        assertEquals((0 until n).count { isHistory(v, it) }.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v history rows")
+        assertEquals((0 until batchSize).count { isHistory(v, it) }.toLong(),
+            count("SELECT count(DISTINCT node_id) FROM ${history(v)}"), "$v ids with history")
+        assertEquals(0L, count("""SELECT count(*) FROM (SELECT node_id, min(version) lo, max(version) hi, count(*) k
+            FROM ${history(v)} GROUP BY node_id) g JOIN ${nodes(v)} x ON x.id = g.node_id
+            WHERE g.lo <> 1 OR g.hi <> g.k OR x.version <> g.hi"""), "$v history gaps or version drift")
+    }
+
     // Every op landed; for history, each entity's history is exactly versions 1..k and the node sits on k.
     private fun assertSaved(s: Statement, v: String, n: Int) {
         fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }

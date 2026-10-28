@@ -48,9 +48,9 @@ The graph-native chain (event nodes linked by `has-next` edges) costs 3.3–4.4�
 ## Next steps, in the order I'd take them
 
 1. **Retry on 40001/40P01** (`0. Issues`). Small, specified, red-first test ready. It fixes a production problem today, with or without history, and history widens the abort window. Do it first.
-2. **Two cheap probes before planning history:**
-   - **Migration:** does `ADD COLUMN version BIGINT NOT NULL DEFAULT 1` rewrite a large `nodes` table on YB? Nobody has checked; a big rewrite would change the migration plan.
-   - **Mixed batch:** time a 50/50 mix of `@WithHistory` and plain types in one batch. Alternating types breaks one batch into many small ones.
+2. **Probes before planning history:**
+   - **Migration:** dropped (2026-10-28). No migration needed; `ALTER TABLE` on the target database runs in seconds.
+   - **Mixed batch, measured 2026-10-28** (10007 node saves, 50/50 history and plain): all plain 1462 ms; alternating with op order kept (groups of one) **16730 ms, 11.4×**; each chunk stably split by statement 1338 ms (−8.5%). The batched path must split per chunk by statement while keeping each row's own op order. Details in `idea.md`.
 3. **Move nodes-history from Discuss to Plan**, then implement v1 with the red-first tests already listed in `idea.md`:
    - schema plus migration;
    - `@WithHistory`, resolved per class into `SaveNode.history`;

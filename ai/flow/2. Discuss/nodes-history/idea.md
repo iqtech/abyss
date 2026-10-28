@@ -224,8 +224,27 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
     silently. Group by the statement `bind` returns, not by op class.
 - **Mixed types break up batches.** `commitYsqlBatched` groups consecutive ops that use the same
   statement into one `executeBatch()`. A transaction that mixes `@WithHistory` and plain node types
-  alternates between the two statements and splits those groups into smaller batches. Measure an
-  interleaved 50/50 workload alongside the rewrite check above.
+  alternates between the two statements and splits those groups into smaller batches.
+  **Measured 2026-10-28** (`HistoryBatchRewriteTest` "mixed history and plain saves", `-Pperf`, dev
+  YB, 10007 node saves, chunks of 1000, rewrite on, multirow for history, median of 5 interleaved
+  rounds; history exact and no history rows for plain ids, every round):
+
+  | shape | median | vs all-plain |
+  |---|---|---|
+  | all plain (production today) | 1462 ms | — |
+  | all history, multirow | 1123 ms | −23% |
+  | 50/50 alternating, op order kept (groups of one) | 16730 ms | **11.4×** |
+  | 50/50, each chunk stably split by statement | 1338 ms | −8.5% |
+
+  - Order-kept grouping is the trap: alternating types cost 11.4× plain, 15× all-history. One
+    statement round trip per op.
+  - Splitting each chunk by statement fixes it: one multirow + one rewritten batch per chunk, faster
+    than today's all-plain path.
+  - The split reorders ops across rows. Safe for the same reason `commitYsql`'s `LOCK_ORDER` sort is
+    (no reads in the commit, no FKs or triggers), but only if each row's own ops keep their order: a
+    `SaveNode(x)` then `DeleteNode(x)` sit on different statements, so a plain partition by statement
+    would swap them. The split rule must keep per-row order (e.g. cut the chunk segment where a row
+    reappears under a different statement). Design in Plan; the probe had saves only.
 - **Write amplification.** Every save copies the full JSONB once more. Storage grows without bound,
   with no time column in the key and no row TTL in YSQL, so retention is a scan plus delete. Long
   per-id histories grow one tablet's key range.
