@@ -202,8 +202,13 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
       into several power-of-two multi-values statements with 6 parameters per row; unnest is one
       statement, 6 array parameters, one plan. So the plain batched upsert could also move to unnest.
     - Tags travel as one text literal per row (`'{a,b}'`) cast with `tags::text[]` (PostgreSQL arrays
-      are rectangular, `unnest` of a `text[][]` flattens it). The run bound empty tags only, so the
-      literal path for non-empty tags and tag merging is not exercised yet.
+      are rectangular, `unnest` of a `text[][]` flattens it). The literal must come from the driver's
+      quoting, `createArrayOf("text", tags).toString()`, never a hand join: a joined `{a,b,"q",{x}}`
+      fails with `malformed array literal`, and quieter inputs corrupt silently (`a,b` splits into two
+      tags, a bare `NULL` becomes an SQL null). Verified by execution, `HistoryBatchRewriteTest`
+      "non-empty tags land verbatim and merge on conflict" (normal suite): commas, quotes, braces,
+      backslash, blanks, empty string and `NULL` land verbatim over two chunks on 3 ids; conflict
+      merges as a union and versions reach 2. It goes red with the hand join.
     - A group must hold distinct ids (one statement can't touch a row twice); the duplicate-key cut
       below already guarantees that.
     - `createArrayOf("bytea", Array<ByteArray>)` binds correctly on the YB driver (verified by the run).

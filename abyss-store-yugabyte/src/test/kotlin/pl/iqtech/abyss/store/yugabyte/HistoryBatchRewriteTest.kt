@@ -133,14 +133,7 @@ class HistoryBatchRewriteTest {
         var noInfo = false
         if (v == "multirow") c.prepareStatement(statement(v)).use { st ->
             for (chunk in (0 until n).chunked(batchSize)) {
-                val now = Timestamp(System.currentTimeMillis())
-                st.setArray(1, c.createArrayOf("bytea", chunk.map { i -> UuidKeyAdapter.toNodeId(ids[i % batchSize]).bytes }.toTypedArray()))
-                st.setArray(2, c.createArrayOf("text", Array(chunk.size) { "device" }))
-                st.setArray(3, c.createArrayOf("text", chunk.map { i -> data(ids[i % batchSize], i) }.toTypedArray()))
-                st.setArray(4, c.createArrayOf("text", Array(chunk.size) { "{}" }))
-                st.setArray(5, c.createArrayOf("timestamptz", Array(chunk.size) { now }))
-                st.setArray(6, c.createArrayOf("timestamptz", Array(chunk.size) { now }))
-                assertEquals(chunk.size, st.executeUpdate(), "multirow: one history row per op in the chunk")
+                saveMultirowChunk(c, st, chunk.map { i -> Triple(ids[i % batchSize], i, emptySet()) })
                 c.commit()
             }
         } else c.prepareStatement(statement(v)).use { st ->
@@ -156,6 +149,58 @@ class HistoryBatchRewriteTest {
             }
         }
         noInfo
+    }
+
+    // One multirow statement for a chunk of distinct ids: (id, seq, tags) per row.
+    private fun saveMultirowChunk(c: Connection, st: PreparedStatement, rows: List<Triple<Uuid, Int, Set<String>>>) {
+        val now = Timestamp(System.currentTimeMillis())
+        st.setArray(1, c.createArrayOf("bytea", rows.map { UuidKeyAdapter.toNodeId(it.first).bytes }.toTypedArray()))
+        st.setArray(2, c.createArrayOf("text", Array(rows.size) { "device" }))
+        st.setArray(3, c.createArrayOf("text", rows.map { data(it.first, it.second) }.toTypedArray()))
+        st.setArray(4, c.createArrayOf("text", rows.map { tagsLiteral(c, it.third) }.toTypedArray()))
+        st.setArray(5, c.createArrayOf("timestamptz", Array(rows.size) { now }))
+        st.setArray(6, c.createArrayOf("timestamptz", Array(rows.size) { now }))
+        assertEquals(rows.size, st.executeUpdate(), "multirow: one history row per op in the chunk")
+    }
+
+    // The driver's own array-literal quoting (PgArray.toString), the same encoding production's per-row
+    // setArray sends: commas, quotes, braces, backslashes, blanks and the word NULL survive verbatim.
+    private fun tagsLiteral(c: Connection, tags: Set<String>) = c.createArrayOf("text", tags.toTypedArray()).toString()
+
+    // Tags with array-literal syntax in them must land verbatim and merge as a union on conflict, exactly
+    // as production's per-row createArrayOf binding does. Two chunks on the same 3 ids, asymmetric tag sets.
+    @Test fun `multirow history CTE - non-empty tags land verbatim and merge on conflict`() {
+        val v = "multirow"
+        val ids = List(3) { Uuid.random() }
+        val first = listOf(setOf("a,b", "\"q\"", "{x}"), setOf("back\\slash", " sp ", ""), emptySet())
+        val second = listOf(setOf("{x}", "NULL", "c"), emptySet(), setOf("only-second", "a,b"))
+        pool(rewrite = true).use { pool -> pool.connection.use { c ->
+            c.createStatement().use { createTables(it, v) }
+            try {
+                c.autoCommit = false
+                c.prepareStatement(statement(v)).use { st ->
+                    listOf(first, second).forEachIndexed { k, tags ->
+                        saveMultirowChunk(c, st, ids.indices.map { Triple(ids[it], k, tags[it]) }); c.commit()
+                    }
+                }
+                ids.indices.forEach { i ->
+                    c.prepareStatement("SELECT tags, version FROM ${nodes(v)} WHERE id = ?").use { q ->
+                        q.setBytes(1, UuidKeyAdapter.toNodeId(ids[i]).bytes)
+                        q.executeQuery().use { rs ->
+                            rs.next()
+                            @Suppress("UNCHECKED_CAST")
+                            val got = (rs.getArray(1).array as Array<String?>).toList()
+                            assertEquals((first[i] + second[i]).sorted(), got.map { it ?: "<SQL NULL>" }.sorted(), "node $i tags")
+                            assertEquals(2L, rs.getLong(2), "node $i version")
+                        }
+                    }
+                }
+                c.commit()
+            } finally {
+                c.rollback(); c.autoCommit = true
+                c.createStatement().use { dropTables(it, v) }
+            }
+        } }
     }
 
     // Production DDL (ysql-schema.sql) plus the version column, and node_history as decided in the idea.
