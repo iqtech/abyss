@@ -133,15 +133,30 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
   (`ConflictResolution_WaitOnConflictingTxns`, suspected `wait_queue_poll_interval_ms=100`, not
   confirmed). N measured 6–8/s, about 2× worse. Hot nodes (counters, aggregates) need their own fix
   first; history should probably stay off for them.
-  - **Hard failure under one-id contention (measured 2026-10-28, 3 of 3 runs).**
-    `HistoryVsChainWriteCostTest` "16 writers on one id" (`-Pperf`, 16 writers × 21 events, one
-    transaction per event, no app-level retry): the plain upsert completes (41.7–52.3 events/s); the
-    CTE aborts with `deadlock detected (query layer retry isn't possible, READ COMMITTED transaction
-    was aborted …)`; the trigger form aborts with `could not serialize access due to concurrent update
-    (yb_max_query_layer_retries set to 60 are exhausted)`. Reading of the error texts, not verified
-    in YB source: plain survives on YB's transparent statement retry, a statement that also writes a
-    second table doesn't. So history on a contended id needs an app-level retry on 40001/40P01 in the
-    commit path, whichever statement form is used. This is a blocker, not a slowdown.
+  - **One-id contention, measured 2026-10-28** (`HistoryVsChainWriteCostTest` "one id under
+    2-4-8-16 writers", `-Pperf`, 21 events per writer, one transaction per event, raw JDBC, no retry;
+    an abort is rolled back, counted and skipped; 4 runs):
+
+    | writers | plain commits/s | CTE commits/s | aborts plain / CTE |
+    |---|---|---|---|
+    | 2 | 199–213 | 144–255 | 0 / 0 of 168 |
+    | 4 | 182–409 | 29–51 | 0 / 0 of 336 |
+    | 8 | 188–442 | 16–23 | 1 / 1 of 672 |
+    | 16 | 31–50 | 7–15 | 3 / 6 of 1344 |
+
+    - The cost of history under contention is **throughput**: from 4 writers on one id it is 4–25×
+      slower than plain. With 2 writers it matches plain.
+    - **Aborts are rare and not history-specific**: plain aborts with 40001 (serialization), the CTE
+      with 40P01 (deadlock), 0.1–0.5% at 8–16 writers (worst single run: CTE 4 of 336). An earlier version of the test threw on
+      the first abort and read as "plain completes, history fails"; that was a 0-vs-1 comparison of a
+      rare event, not a real difference.
+    - **Exact in every run**: history rows = commits, versions gap-free, node on the last version, so
+      an abort leaves nothing behind.
+    - Consequences: processor-per-id (one writer per id, occasional 2-writer overlap) is safe at full
+      speed. Any production path with concurrent writers on one id can abort today, history or not, so a
+      bounded retry on 40001/40P01 in `commitYsql` is a store fix in its own right, not a history
+      prerequisite. The trigger form aborted with `yb_max_query_layer_retries set to 60 are
+      exhausted` (40001) in the earlier runs; it is rejected on cost anyway.
 - **Batched path loses insert rewriting (measured 2026-10-28).** Production sets
   `reWriteBatchedInserts=true` (`YugabytePersistentStore.kt:476`). `HistoryBatchRewriteTest`
   (`-Pperf`, dev YB, `commitYsqlBatched` shape, chunks of 1000, median of 5 interleaved rounds):

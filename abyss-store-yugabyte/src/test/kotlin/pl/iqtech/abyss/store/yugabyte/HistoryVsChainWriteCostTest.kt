@@ -9,6 +9,8 @@ import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import java.sql.Connection
 import java.sql.PreparedStatement
+import java.sql.SQLException
+import java.util.concurrent.ConcurrentHashMap
 import java.sql.Timestamp
 import java.sql.Types
 import kotlin.test.Test
@@ -120,46 +122,58 @@ class HistoryVsChainWriteCostTest {
         }
     }
 
-    // Read-committed exactness: `conc` writers update ONE id concurrently. History must hold exactly
-    // versions 1..total with the node on the last one. The run above gives each writer its own id, so it
-    // never contends. One transaction per event; rate reported, not compared (hot-id writes are slow).
-    @Test fun `history CTE vs trigger - 16 writers on one id stay gap-free`() {
+    // One-id contention: n writers update ONE id concurrently, one transaction per event, no retry. An
+    // aborted transaction is rolled back, counted by SQLState and skipped. What committed must still be
+    // exact: history rows = commits, versions 1..commits, node on the last (so an abort leaves nothing
+    // behind). Abort counts and commit rates are the measurement, not asserted: plain aborts too (40001)
+    // and this raw-JDBC loop has no retry. The trigger form is rejected, so not run here.
+    @Test fun `one id under 2-4-8-16 writers - aborts and history exactness`() {
         if (System.getProperty("perf") == null) return
         val pool = HikariDataSource(HikariConfig().apply {
             jdbcUrl = "jdbc:yugabytedb://localhost:5433/abyss_test_graph?load-balance=false"
             username = "abyss"; password = "abyss"; maximumPoolSize = conc; minimumIdle = conc
         })
-        val perWriterHot = 21 // odd, so total (336) isn't a round number
-        val hotVariants = listOf("plain", "history", "trigger") // plain: production upsert, the no-history control
-        val failures = linkedMapOf<String, String>()
+        val perWriterHot = 21 // odd, so no total is a round number
+        val hotVariants = listOf("plain", "history") // plain: production upsert, the no-history control
         try {
-            for (v in hotVariants) {
+            for (n in listOf(2, 4, 8, 16)) for (v in hotVariants) {
                 pool.connection.use { c -> c.createStatement().use { createTables(it, v) } }
                 val hot = Uuid.random()
-                val total = conc * perWriterHot
-                val outcome = runCatching {
-                    val d = timed { runBlocking {
-                        (0 until conc).map { async(Dispatchers.IO) { appendEvents(pool, v, hot, perWriterHot) } }.awaitAll()
-                    } }
-                    pool.connection.use { c -> c.createStatement().use { s ->
-                        fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
-                        if (v != "plain") {
-                            assertEquals(total.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v history rows")
-                            assertEquals(0L, count(gapQuery(nodes(v), history(v))), "$v history gaps or version drift")
-                            assertEquals(total.toLong(), count("SELECT max(version) FROM ${nodes(v)}"), "$v node version")
-                        }
-                    } }
-                    d
-                }
-                outcome.onSuccess { d -> println("HHOT %-8s %d writers x %d on one id: %.0f ms, %.1f events/s".format(v, conc, perWriterHot, d, total * 1000.0 / d)) }
-                outcome.onFailure { e -> failures[v] = e.message ?: e.toString(); println("HHOT %-8s FAILED: %s".format(v, e.message)) }
+                val errors = ConcurrentHashMap<String, Int>()
+                var commits = 0
+                val d = timed { commits = runBlocking {
+                    (0 until n).map { async(Dispatchers.IO) { hotWrites(pool, v, hot, perWriterHot, errors) } }.awaitAll().sum()
+                } }
+                if (v == "history") pool.connection.use { c -> c.createStatement().use { s ->
+                    fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
+                    assertEquals(commits.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v/$n history rows = commits")
+                    assertEquals(0L, count(gapQuery(nodes(v), history(v))), "$v/$n history gaps or version drift")
+                    assertEquals(commits.toLong(), count("SELECT max(version) FROM ${nodes(v)}"), "$v/$n node version = commits")
+                } }
+                val total = n * perWriterHot
+                println("HHOT %-8s %2d writers: %3d/%3d committed, %3d aborted %s  %6.0f ms  %5.1f commits/s".format(
+                    v, n, commits, total, total - commits, errors.toSortedMap(), d, commits * 1000.0 / d))
             }
-            assertEquals(emptyMap(), failures, "variants that failed under one-id contention")
         } finally {
             pool.connection.use { c -> c.createStatement().use { s -> hotVariants.forEach { dropTables(s, it) } } }
             pool.close()
         }
     }
+
+    // One transaction per event; an aborted one is rolled back and counted by SQLState, never retried.
+    private fun hotWrites(pool: HikariDataSource, v: String, entity: Uuid, n: Int, errors: MutableMap<String, Int>): Int =
+        pool.connection.use { c ->
+            c.autoCommit = false
+            var commits = 0
+            c.prepareStatement(liveStatement(v)).use { live ->
+                for (seq in 1..n) try {
+                    bindNode(c, live, entity, "device", seq); live.executeUpdate(); c.commit(); commits++
+                } catch (e: SQLException) {
+                    c.rollback(); errors.merge(e.sqlState ?: "?", 1, Int::plus)
+                }
+            }
+            commits
+        }
 
     // Every entity's history is exactly versions 1..n with no gaps, and the node sits on version n.
     private fun gapQuery(nodes: String, history: String) = """SELECT count(*) FROM (SELECT node_id, min(version) lo,
