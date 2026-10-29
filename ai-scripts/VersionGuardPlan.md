@@ -4,9 +4,22 @@ Closes `IoT.md` findings **2** (silent lost update on `modifyNode`), **B** (stal
 and **3** (cache and DB disagree on who won). Written 2026-09-08 after TODO 1.32 closed finding 1;
 rewritten 2026-09-09 after a code audit found three blocking defects in the first draft (§9).
 
-**Consumer (parked):** [`NodeHistoryRFC.md`](NodeHistoryRFC.md) §4.2 uses Phase 1's `version`
-column as the ordering key for its fallback history shape (N). Any write path that misses the
-`version = n.version + 1` increment breaks that history silently.
+**Status (2026-10-29): partly superseded, rest parked behind nodes-history.**
+- **Superseded:** the `version` column, its migration (`DEFAULT 1`, 0 reserved, §3.2) and the
+  unconditional `version = n.version + 1` on every node upsert, on both commit paths. These now belong to
+  nodes-history v1 (`ai/flow/2. Discuss/nodes-history/idea.md` items 1–2, test `NodeVersionTest`).
+  That doc owns node `version` from here on.
+- **Still needed, parked:** the guard itself. That is Phase 1's `expectedVersion`, the guarded
+  statements, the rowcount check and `VersionConflict`, plus Phases 2–4 and Q1–Q5. History records a lost
+  update after it commits; only the guard prevents it. Abyss has **no single-writer-per-id contract**
+  (decided 2026-10-29), so the guard stays in scope. It starts after nodes-history v1 lands.
+- **Interaction to design when it resumes:** a guarded `@WithHistory` save must keep history consistent.
+  The `ON CONFLICT … WHERE n.version = ?` form does that for free: a stale write returns no row from the
+  CTE, so no history row is written. §3.3's guarded plain `UPDATE` needs its own history CTE
+  (`WITH u AS (UPDATE … WHERE id = ? AND version = ? RETURNING …) INSERT …`). That adds statements to
+  the batched path's bound-statement grouping.
+- Edge `version` stays here, blocked on Q3; nodes-history v1 versions nodes only.
+- §2's live measurements stand. They're the evidence for the CAS shape.
 
 ---
 
@@ -377,6 +390,8 @@ Consequences:
 update today. The version counter joins in Phase 2, once there is a version to count from.
 
 **Phase 1 — schema + store, no API change.**
+*(2026-10-29: for nodes, the migration and the unconditional increment ship with nodes-history v1. What's
+left here is edges, `expectedVersion`, the guarded statements and `VersionConflict`.)*
 Migration and `ysql-schema.sql` per §3.2 (`DEFAULT 1`, backfill existing rows to 1). Add
 `expectedVersion: Long?` to `PersistentOp.SaveNode`/`SaveEdge`. Add the unconditional
 `version = n.version + 1` to both `commitYsql` and `commitYsqlBatched` upserts. Add the two guarded
@@ -473,7 +488,8 @@ cannot silently stop proving anything — the discipline that made TEST 5 meanin
    guarded commit must conflict (§3.3 point 1). This is the test that fails if the increment is left
    conditional.
 6. **Migration.** A row created before the ALTER is at version 1, not 0, and a `expectedVersion = 0`
-   write against it conflicts (§3.2).
+   write against it conflicts (§3.2). *(The "version 1, not 0" half moves to nodes-history v1; the
+   conflict half stays here.)*
 7. **Late packet, read-modify-write path.** A transform that sees `old.updatedAt >= event.time` and
    returns `old` must issue **no write at all** — assert the version is unchanged afterwards, which is
    what proves the `===` skip works (§3.5). No SQL guard involved.

@@ -7,8 +7,11 @@ node upsert. Ordering comes from a per-node `version` counter on `abyss.nodes`, 
 and covers every write path (`modifyNode`, cascades, REST, `batchTransaction`).
 
 This is option "N" from `ai-scripts/NodeHistoryRFC.md` §4.2, promoted from fallback to base design.
-It's the same column as Phase 1 of `ai-scripts/VersionGuardPlan.md`, so this work is also the first
-step of the lost-update fix. The Kafka `(ts, offset)` key from RFC §2 becomes an optional later
+**This doc owns node `version`** (decided 2026-10-29). The column, its migration and the increment on
+every node upsert used to be VersionGuardPlan Phase 1. They ship here, and that plan is marked partly
+superseded. History records lost updates but doesn't prevent them. Abyss has no single-writer-per-id
+contract, so the guard (`expectedVersion`, `VersionConflict`) stays a separate, parked follow-up in
+`ai-scripts/VersionGuardPlan.md`, built on this column. The Kafka `(ts, offset)` key from RFC §2 becomes an optional later
 addition, used for dropping redeliveries and for time-based retention.
 
 ## Target statement
@@ -63,8 +66,18 @@ The first insert takes `version` from the column default (1), so the first state
      Deleting every node of a type doesn't need type access on history: take the node ids from
      `nodes` through `idx_nodes_type` (the TODO 2.34 type scan), and item 3 cascades each one by
      `node_id`.
-2. **Both commit paths** switch to the statement above. If any path still uses the old upsert, history
-   silently loses versions, so both paths change in the same commit.
+2. **Every node upsert increments `version`** (decided 2026-10-29), plain and `@WithHistory` alike, on
+   both commit paths, in the same commit. This pulls VersionGuardPlan Phase 1's unconditional
+   `version = n.version + 1` into v1. Without it, plain nodes sit at v1 forever and the column CAS needs
+   only counts annotated types. So there are two node statements, and they differ only by the history
+   `INSERT`:
+   - plain: the upsert with `version = n.version + 1`;
+   - `@WithHistory`: the statement above.
+
+   If any path still uses an upsert without the increment, history silently loses versions.
+   Test: `NodeVersionTest`, red on today's upsert. The "plain" baselines measured below lack the
+   increment; re-measure plain with it before comparing history against it.
+   Edges stay out: `modifyEdge` deletes and re-inserts, so an edge version would reset (VersionGuard Q3).
 3. **History is deleted with the node** (decided 2026-10-27; closes RFC open question 6). The counter
    lives on the `nodes` row, so deleting a node resets it. Without this rule, re-creating the id inserts
    at `version` 1, collides with the old `(node_id, 1)` in history, and every later write to that id
@@ -82,12 +95,13 @@ The first insert takes `version` from the column default (1), so the first state
    doubles node writes, so only annotated types get it. A class-level annotation in `abyss-store-api`,
    next to `@TypeTag`, `@EdgeConstraint` and `@CrossSchemaEdge`. A node never changes type, so the
    flag is resolved once per class at schema registration, never per write. `PersistentOp.SaveNode`
-   carries the resolved `history: Boolean`, and the store picks the plain upsert or the CTE statement
-   per op.
+   carries the resolved `history: Boolean`, and the store picks the plain (version-incrementing) upsert
+   or the CTE statement per op (item 2).
 5. **Persistent store only.** Cache-only and ephemeral (YCQL) can't hold history. Registering a
    `@WithHistory` type without a YSQL store fails at wiring time (RFC open question 8).
 6. **Out of v1:** a read API (`history(nodeId, from, limit)`), retention, dropping Kafka redeliveries,
-   and the CAS guard itself (VersionGuardPlan Phases 2–4). Downstream reads the table directly.
+   and the CAS guard itself (VersionGuardPlan Phase 1's guarded statements and `VersionConflict`, plus
+   Phases 2–4). Downstream reads the table directly.
 
 ## Tests (red first, on the dev container with true read committed)
 
@@ -96,6 +110,10 @@ The first insert takes `version` from the column default (1), so the first state
   column, no table.
 - Repeat on distinct ids (odd counts, non-zero starting state).
 - A plain (unannotated) type writes no history rows; a `@WithHistory` type does, in the same transaction.
+- A plain type still increments `version` by exactly 1 per save on both paths (`NodeVersionTest`,
+  written 2026-10-29, red on today's upsert).
+- Migration: a row created before the `ALTER` reads as version 1, never 0. 0 stays reserved for the
+  guard's "I read nothing" (VersionGuardPlan §3.2, test 6).
 - Every commit path: `transaction`, `batchTransaction` across chunk boundaries (batch size not a
   divisor of the op count), cascade writes. Each must increment by exactly 1 per save.
 - Two saves of one id inside one transaction produce two history rows.

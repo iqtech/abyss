@@ -60,4 +60,4 @@ The graph-native chain (event nodes linked by `has-next` edges) costs 3.3–4.4�
 4. **Separate idea, not part of history:** move the plain batched upsert (nodes and edges) to `unnest`. That's about −17% on bulk loads, inferred from the multi-row run; it needs its own measurement through the real store.
 5. **Before calling it viable:** measure on a real multi-node cluster at about 16.7k events/s, with and without history. Until then, the single box doesn't show whether history is viable at that scale.
 
-Parked, out of v1: a history read API, retention (no TTL in YSQL, so it would be scan-and-delete), dropping Kafka redeliveries, and the version check against lost updates (VersionGuardPlan phases 2–4).
+Parked, out of v1: a history read API, retention (no TTL in YSQL, so it would be scan-and-delete), dropping Kafka redeliveries, and the version check against lost updates (the guard in VersionGuardPlan: Phase 1's guarded statements plus Phases 2–4; the `version` column and increment now ship with history v1, decided 2026-10-29).
