@@ -85,10 +85,20 @@ The first insert takes `version` from the column default (1), so the first state
    at `version` 1, collides with the old `(node_id, 1)` in history, and every later write to that id
    rolls back. (Found by reading the SQL, not run yet.) So `DeleteNode` on a `@WithHistory` type also
    runs `DELETE FROM abyss.node_history WHERE node_id = ?` in the same transaction: one statement on
-   one tablet, and nothing extra on the write path. `deleteNode(id)` carries no type, so the node delete
-   becomes `DELETE … RETURNING type`, and the history delete runs only when that type maps to a
-   `@WithHistory` class (decided 2026-10-29). Plain deletes stay single-tablet; always deleting from
-   history was rejected because it makes every node delete a two-tablet transaction. A re-created node starts a new history at v1.
+   one tablet, and nothing extra on the write path. `deleteNode(id)` carries no type, so the deleted
+   row's own type decides: the history delete runs only when that type maps to a `@WithHistory` class
+   (decided 2026-10-29). Plain deletes stay single-tablet; always deleting from history was rejected
+   because it makes every node delete a two-tablet transaction. A re-created node starts a new history at v1.
+   - **Form (refined 2026-10-31):** one statement, not `DELETE … RETURNING type` plus a second one. A
+     statement that returns rows can't go through `executeBatch`, so bulk deletes would cost one round
+     trip each:
+     ```sql
+     WITH d AS (DELETE FROM abyss.nodes WHERE id = ? RETURNING id, type)
+     DELETE FROM abyss.node_history h USING d
+     WHERE h.node_id = d.id AND NOT (d.type = ANY(?))   -- ? = the module's plain node types
+     ```
+     Binding the *plain* types, not the history types, makes an unknown type cascade (item 4). Probe
+     P1 in `plan.md` checks that it batches and that a plain delete costs no more than a bare `DELETE`.
    Deleting a node also erases its past, which suits decommissioning and GDPR-style erase, but this
    isn't an audit trail.
    - **Upgrade path if history must outlive the node:** on the insert branch only, start the
@@ -98,12 +108,23 @@ The first insert takes `version` from the column default (1), so the first state
      and soft-delete tombstones (every read path would have to filter them).
 4. **Opt-in per node type: `@WithHistory`** (decided 2026-10-27; closes RFC open question 5). History
    doubles node writes, so only annotated types get it. A class-level annotation in `abyss-store-api`,
-   next to `@TypeTag`, `@EdgeConstraint` and `@CrossSchemaEdge`. A node never changes type, so the
-   flag is resolved once per class at schema registration, never per write. `PersistentOp.SaveNode`
-   carries the resolved `history: Boolean`, and the store picks the plain (version-incrementing) upsert
-   or the CTE statement per op (item 2).
+   next to `@TypeTag`, `@EdgeConstraint` and `@CrossSchemaEdge`.
+   - **Resolved eagerly by the store from its module (decided 2026-10-31).** At construction the store
+     walks the `SerializersModule` it already receives, as `TypeTagRegistry.of(module)` does, and builds
+     two sets of node serial names: `historyTypes` and `plainTypes`. On save, the type name `jsonPair`
+     already computes picks the statement (item 2). On delete, the deleted row's type picks the cascade
+     (item 3). No per-write reflection, nothing passed through `NodeOp` or the store API; the annotation
+     is read once per class with `isAnnotationPresent`.
+   - **Not lazy.** A cache filled on first save is empty after a restart. Then a delete of a history
+     type that hasn't been saved in the new process skips the cascade, leaves orphan history, and the
+     next re-create collides at v1. That's the restart gap `TypeTagRegistry` already avoids (TODO 1.20).
+   - **Unknown type on delete cascades (decided 2026-10-31).** A type in the DB but not in this
+     process's module (mid rolling deploy, as `nodeTagOf` allows) gets the history delete: one extra
+     statement on a second tablet for a rare case, and never an orphan.
 5. **Persistent store only.** Cache-only and ephemeral (YCQL) can't hold history. Registering a
-   `@WithHistory` type without a YSQL store fails at wiring time (RFC open question 8).
+   `@WithHistory` type without a YSQL store fails at wiring time (RFC open question 8): the
+   `persistentStore == null` check in `AbyssSchemaWorker` (`YugabytePersistentStore` is the only
+   `AbyssStoreLike`, so null means no YSQL store).
 6. **Out of v1:** a read API (`history(nodeId, from, limit)`), retention, dropping Kafka redeliveries,
    and the CAS guard itself (VersionGuardPlan Phase 1's guarded statements and `VersionConflict`, plus
    Phases 2–4). Downstream reads the table directly.
