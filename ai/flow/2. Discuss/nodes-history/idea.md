@@ -37,7 +37,9 @@ The first insert takes `version` from the column default (1), so the first state
 
 ## What a first working solution needs
 
-1. **Schema** (`ysql-schema.sql` plus a migration for existing deployments):
+1. **Schema** (`ysql-schema.sql`; decided 2026-10-29: the file gets the new DDL for fresh installs, and
+   the `ALTER TABLE` for existing deployments goes below it as a comment. Nothing in code applies the
+   schema; it's provisioned outside, the shared test DB included):
    - `ALTER TABLE abyss.nodes ADD COLUMN version BIGINT NOT NULL DEFAULT 1`. 1-based, 0 stays
      reserved as VersionGuardPlan §3.2 says. Existing rows read as 1 and have no history row; that's
      accepted (history starts at the migration).
@@ -83,7 +85,10 @@ The first insert takes `version` from the column default (1), so the first state
    at `version` 1, collides with the old `(node_id, 1)` in history, and every later write to that id
    rolls back. (Found by reading the SQL, not run yet.) So `DeleteNode` on a `@WithHistory` type also
    runs `DELETE FROM abyss.node_history WHERE node_id = ?` in the same transaction: one statement on
-   one tablet, and nothing extra on the write path. A re-created node starts a new history at v1.
+   one tablet, and nothing extra on the write path. `deleteNode(id)` carries no type, so the node delete
+   becomes `DELETE … RETURNING type`, and the history delete runs only when that type maps to a
+   `@WithHistory` class (decided 2026-10-29). Plain deletes stay single-tablet; always deleting from
+   history was rejected because it makes every node delete a two-tablet transaction. A re-created node starts a new history at v1.
    Deleting a node also erases its past, which suits decommissioning and GDPR-style erase, but this
    isn't an audit trail.
    - **Upgrade path if history must outlive the node:** on the insert branch only, start the

@@ -4,6 +4,7 @@ import arrow.core.Either
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -29,10 +30,12 @@ import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.abyssSerializersModule
 import java.io.Closeable
+import java.sql.SQLException
 import java.sql.Timestamp
 import java.sql.Types
 import java.util.Arrays
 import javax.sql.DataSource
+import kotlin.random.Random
 import kotlin.time.toJavaInstant
 
 private sealed interface PersistentOp {
@@ -288,8 +291,10 @@ class YugabytePersistentStore(
     // reorder across distinct rows because this commit issues no reads, and the schema carries no
     // foreign keys or triggers (see ysql-schema.sql); if an FK is ever added for the dangling-edge
     // backstop it must be DEFERRABLE INITIALLY DEFERRED, or it will re-impose node-before-edge order.
-    // Single-op transactions can't deadlock, so they skip the sort entirely — that is the whole
-    // per-event ingest path.
+    // Single-op transactions have nothing to reorder, so they skip the sort entirely — that is the whole
+    // per-event ingest path. They can still be aborted under contention (40001 on the plain upsert; the
+    // history CTE hit 40P01 in single-statement transactions), and retryTransientAbort covers that, not
+    // the sort.
     // ponytail: the key stops at (from_id, to_id); the third PK column, `type`, is only reachable by
     // serializing the edge (jsonPair), which happens below. Residual window: two concurrent txns
     // writing the SAME node pair with DIFFERENT edge types in opposite order. If that ever shows up,
@@ -301,11 +306,11 @@ class YugabytePersistentStore(
     // AbyssSchemaWorker's `ops.take(committed)` cache replay and splitting a RemoveNode from its
     // cascaded edges. If a caller ever does drive contended mixed-order writes through it, the fix is
     // a per-chunk sort (the chunk is the transaction there, so per-chunk ordering is sufficient).
-    private fun commitYsql(unordered: List<PersistentOp>) {
+    private suspend fun commitYsql(unordered: List<PersistentOp>) {
         val ops = if (unordered.size < 2) unordered else unordered.sortedWith(LOCK_ORDER)
         ysql.connection.use { conn ->
             conn.autoCommit = false
-            try {
+            retryTransientAbort { try {
                 val upsertNode = conn.prepareStatement(
                     "INSERT INTO $ysqlSchema.nodes AS n (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
                     "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
@@ -352,6 +357,28 @@ class YugabytePersistentStore(
             } catch (e: Throwable) {
                 conn.rollback()
                 throw e
+            } }
+        }
+    }
+
+    // ysql-commit-retry-on-conflict: YB aborts a contended read-committed transaction with 40001
+    // (serialization) or 40P01 (deadlock) when its query layer can't retry the statement itself. The
+    // attempt rolled back as a whole, the commit issues no reads, and every op is an upsert or an
+    // unconditional delete, so re-running the attempt is exact. Any other error fails on the first attempt.
+    // The driver puts the abort's SQLState on the thrown exception itself, BatchUpdateException included
+    // (CommitRetryTest driver case), so no cause-chain walk.
+    // ponytail: 3 attempts with 10–50 ms jitter are the issue's starting values; measure before tuning.
+    // The connection stays held across the backoff.
+    private suspend inline fun <T> retryTransientAbort(attempt: () -> T): T {
+        var n = 1
+        while (true) {
+            try {
+                return attempt()
+            } catch (e: SQLException) {
+                if (n >= RETRY_ATTEMPTS || e.sqlState !in TRANSIENT_ABORTS) throw e
+                log.debug("Transient abort {} on attempt {}/{}, retrying", e.sqlState, n, RETRY_ATTEMPTS)
+                n++
+                delay(Random.nextLong(10, 50))
             }
         }
     }
@@ -363,7 +390,7 @@ class YugabytePersistentStore(
     // addBatch()/executeBatch() round, preserving the caller's original cross-type op order (so a
     // mixed AddNode(X)/RemoveNode(X) sequence within one chunk still resolves the same way
     // commitYsql's op-by-op execution would).
-    private fun commitYsqlBatched(ops: List<PersistentOp>, batchSize: Int) {
+    private suspend fun commitYsqlBatched(ops: List<PersistentOp>, batchSize: Int) {
         ysql.connection.use { conn ->
             conn.autoCommit = false
             val upsertNode = conn.prepareStatement(
@@ -420,27 +447,35 @@ class YugabytePersistentStore(
                 is PersistentOp.DeleteNode, is PersistentOp.DeleteEdge -> null
             }
 
+            // The chunk is the transaction, so a transient abort re-runs only the current chunk; committed
+            // chunks are never re-run and `committed` moves only after a successful commit. A failed attempt
+            // can leave addBatch() entries queued on a statement, so they're cleared before the next one.
             var committed = 0
             for (chunk in ops.chunked(batchSize)) {
                 try {
-                    var i = 0
-                    while (i < chunk.size) {
-                        val stmt = bind(chunk[i]).also { it.addBatch() }
-                        val keys = HashSet<Any>()
-                        conflictKey(chunk[i])?.let(keys::add)
-                        var j = i + 1
-                        while (j < chunk.size && chunk[j]::class == chunk[i]::class &&
-                            conflictKey(chunk[j]).let { it == null || keys.add(it) }) {
-                            bind(chunk[j]).addBatch()
-                            j++
+                    retryTransientAbort { try {
+                        var i = 0
+                        while (i < chunk.size) {
+                            val stmt = bind(chunk[i]).also { it.addBatch() }
+                            val keys = HashSet<Any>()
+                            conflictKey(chunk[i])?.let(keys::add)
+                            var j = i + 1
+                            while (j < chunk.size && chunk[j]::class == chunk[i]::class &&
+                                conflictKey(chunk[j]).let { it == null || keys.add(it) }) {
+                                bind(chunk[j]).addBatch()
+                                j++
+                            }
+                            stmt.executeBatch()
+                            i = j
                         }
-                        stmt.executeBatch()
-                        i = j
-                    }
-                    conn.commit()
+                        conn.commit()
+                    } catch (e: Throwable) {
+                        conn.rollback()
+                        listOf(upsertNode, upsertEdge, delNode, delEdge).forEach { it.clearBatch() }
+                        throw e
+                    } }
                     committed += chunk.size
                 } catch (e: Throwable) {
-                    conn.rollback()
                     throw PartialBatchFailure(committed, e)
                 }
             }
@@ -461,6 +496,9 @@ class YugabytePersistentStore(
     }
 
     companion object {
+        private const val RETRY_ATTEMPTS = 3
+        private val TRANSIENT_ABORTS = setOf("40001", "40P01")
+
         fun create(
             ysqlUrl: String,
             ysqlUser: String,

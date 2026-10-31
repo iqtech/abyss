@@ -662,7 +662,7 @@ private fun readYcqlEdgeTags(fromId: Uuid, toId: Uuid): Set<String> =
             ).one()!!.getSet("tags", String::class.java)!!
         }
 
-private fun rawYsqlDataSource(): HikariDataSource = HikariDataSource(HikariConfig().apply {
+internal fun rawYsqlDataSource(): HikariDataSource = HikariDataSource(HikariConfig().apply {
     jdbcUrl = "jdbc:postgresql://localhost:5433/abyss_test_graph"
     username = "abyss"
     password = "abyss"
@@ -671,21 +671,25 @@ private fun rawYsqlDataSource(): HikariDataSource = HikariDataSource(HikariConfi
     minimumIdle = 1
 })
 
-// Wraps a real DataSource's connections so the Nth conn.commit() call throws instead of committing
-// — the only way to force a deterministic mid-batch failure, since every op batchTransaction's
-// public API exposes (upserts, unconditional deletes) succeeds regardless of prior state.
-private class FailAfterNCommitsDataSource(
+// Wraps a real DataSource's connections so commit calls failAtCommit .. failAtCommit+failCount-1 throw
+// `error` instead of committing — the only way to force a deterministic mid-batch failure, since every op
+// batchTransaction's public API exposes (upserts, unconditional deletes) succeeds regardless of prior
+// state. `commitCount` counts every attempt, failed ones included.
+internal class FailAfterNCommitsDataSource(
     private val delegate: DataSource,
     private val failAtCommit: Int,
+    private val failCount: Int = 1,
+    private val error: (Int) -> SQLException = { n -> SQLException("simulated failure at commit #$n") },
 ) : DataSource by delegate {
-    private var commitCount = 0
+    var commitCount = 0
+        private set
 
     override fun getConnection(): Connection {
         val real = delegate.connection
         return Proxy.newProxyInstance(Connection::class.java.classLoader, arrayOf(Connection::class.java)) { _, method, args ->
             if (method.name == "commit") {
                 commitCount++
-                if (commitCount == failAtCommit) throw SQLException("simulated failure at commit #$commitCount")
+                if (commitCount >= failAtCommit && commitCount - failAtCommit < failCount) throw error(commitCount)
             }
             if (args == null) method.invoke(real) else method.invoke(real, *args)
         } as Connection
