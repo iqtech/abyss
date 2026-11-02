@@ -3,6 +3,7 @@ package pl.iqtech.abyss.store.yugabyte
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
+import java.nio.ByteBuffer
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.Statement
@@ -23,7 +24,8 @@ class HistoryBatchRewriteTest {
     // trigger: the plain upsert (rewritable) plus a version bump and a history flag; an AFTER row trigger
     // copies each new row state into history. multirow: the history CTE fed by unnest() of parallel
     // arrays, one statement per chunk (chunk ids are distinct, as the commitYsqlBatched cut guarantees).
-    private val variants = listOf("plain", "history", "trigger", "multirow")
+    // plain_ver: the plain upsert plus `version = n.version + 1`, the v1 plain statement (plan.md P2).
+    private val variants = listOf("plain", "plain_ver", "history", "trigger", "multirow")
     private val withHistory = setOf("history", "trigger", "multirow")
     private fun nodes(v: String) = "abyss.hist_batch_${v}_nodes"
     private fun history(v: String) = "abyss.hist_batch_${v}_history"
@@ -63,6 +65,7 @@ class HistoryBatchRewriteTest {
         "multirow" -> upsertNodesWithHistoryMultirow(nodes(v), history(v))
         "history" -> upsertNodeWithHistory(nodes(v), history(v))
         "trigger" -> upsertNodeFlagged(nodes(v))
+        "plain_ver" -> upsertNode(nodes(v)) + ", version = n.version + 1"
         else -> upsertNode(nodes(v))
     }
     private val payload = "x".repeat(240)
@@ -187,6 +190,8 @@ class HistoryBatchRewriteTest {
     private fun assertSaved(s: Statement, v: String, n: Int) {
         fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
         assertEquals(minOf(n, batchSize).toLong(), count("SELECT count(*) FROM ${nodes(v)}"), "$v nodes")
+        // plain_ver: every save counted, n saves over batchSize entities
+        if (v == "plain_ver") assertEquals(n.toLong(), count("SELECT sum(version) FROM ${nodes(v)}"), "$v version sum = saves")
         if (v !in withHistory) return
         assertEquals(n.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v history rows")
         assertEquals(0L, count("""SELECT count(*) FROM (SELECT node_id, min(version) lo, max(version) hi, count(*) k
@@ -271,6 +276,129 @@ class HistoryBatchRewriteTest {
                 c.createStatement().use { dropTables(it, v) }
             }
         } }
+    }
+
+    // ── P1 (nodes-history plan.md): node delete that cascades into history unless the type is plain ──
+    // One statement returning no rows, so it can go through executeBatch. Binds the module's PLAIN types,
+    // so history types and types the module doesn't know (mid rolling deploy) both cascade. Scalar
+    // subquery: for a plain type it yields NULL and the history index scan issues no storage request.
+    private val deleteNodeCascade = { t: String, h: String ->
+        "WITH d AS (DELETE FROM $t WHERE id = ? RETURNING id, type) " +
+            "DELETE FROM $h WHERE node_id = (SELECT id FROM d WHERE NOT (type = ANY(?)))"
+    }
+    // Rejected join form, kept for the cost record: YB plans `USING d` as a Batched Nested Loop that binds
+    // a 1024-slot ANY array per statement (planning 12.3 vs 0.6 ms, 699 vs 155 kB, EXPLAIN ANALYZE DIST),
+    // although the history scan never executes for a plain type.
+    private val deleteNodeCascadeJoin = { t: String, h: String ->
+        "WITH d AS (DELETE FROM $t WHERE id = ? RETURNING id, type) " +
+            "DELETE FROM $h hh USING d WHERE hh.node_id = d.id AND NOT (d.type = ANY(?))"
+    }
+    private val deleteNodeBare = { t: String -> "DELETE FROM $t WHERE id = ?" }
+
+    // 16-byte id from a number: 8 zero bytes, then g big-endian, the bytes plant() builds server-side.
+    private fun idOf(g: Long): ByteArray = ByteBuffer.allocate(16).putLong(0).putLong(g).array()
+
+    // Plants nodes from..to of `type`, each with one history row at version 1, server-side. Call once
+    // per type and table: the history insert copies every node of that type.
+    private fun plant(s: Statement, v: String, from: Long, to: Long, type: String) {
+        s.execute("""INSERT INTO ${nodes(v)} (id, type, data, tags, created_at, updated_at)
+            SELECT decode(lpad(to_hex(g), 32, '0'), 'hex'), '$type', '{"type":"$type"}'::jsonb, '{}', now(), now()
+            FROM generate_series($from, $to) g""")
+        s.execute("""INSERT INTO ${history(v)} (node_id, version, type, data, updated_at)
+            SELECT id, 1, type, data, updated_at FROM ${nodes(v)} WHERE type = '$type'""")
+    }
+
+    // Plain-type nodes get history rows too, which a plain type never has in production, so a wrong
+    // cascade shows. 3 history-type, 5 plain, 1 unknown type; all deleted in one executeBatch.
+    @Test fun `delete cascade CTE - batches, cascades history and unknown types, spares plain`() {
+        val v = "delsem"
+        pool(rewrite = true).use { pool -> pool.connection.use { c ->
+            c.createStatement().use { s ->
+                createTables(s, v)
+                plant(s, v, 1, 3, "order")      // @WithHistory type
+                plant(s, v, 4, 8, "customer")   // plain type
+                plant(s, v, 9, 9, "legacy")     // not in the module
+            }
+            try {
+                c.autoCommit = false
+                c.prepareStatement(deleteNodeCascade(nodes(v), history(v))).use { st ->
+                    val plainTypes = c.createArrayOf("text", arrayOf("customer"))
+                    for (g in 1L..9L) { st.setBytes(1, idOf(g)); st.setArray(2, plainTypes); st.addBatch() }
+                    st.executeBatch()
+                }
+                c.commit()
+                c.createStatement().use { s ->
+                    fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
+                    assertEquals(0L, count("SELECT count(*) FROM ${nodes(v)}"), "every node deleted")
+                    assertEquals(5L, count("SELECT count(*) FROM ${history(v)} WHERE type = 'customer'"), "plain type's history untouched")
+                    assertEquals(0L, count("SELECT count(*) FROM ${history(v)} WHERE type <> 'customer'"), "history and unknown types cascaded")
+                }
+            } finally {
+                c.rollback(); c.autoCommit = true
+                c.createStatement().use { dropTables(it, v) }
+            }
+        } }
+    }
+
+    // P1 cost: deleting plain-type nodes through the cascade statement against a bare DELETE. del_cte is
+    // the rejected join form, del_sub the scalar-subquery form, del_sub_hist the subquery form on a
+    // cascading type, for reference. Every shape's nodes carry one history row each, so the tables match.
+    // Single: one transaction per delete (the per-event path); batched: chunks of batchSize through
+    // executeBatch. Planting is server-side and untimed. Shapes interleaved, round 0 warm-up.
+    private val delShapes = listOf("del_bare", "del_cte", "del_sub", "del_sub_hist")
+    private fun cascades(v: String) = v == "del_sub_hist"
+
+    @Test fun `delete cascade CTE vs bare delete - cost`() {
+        if (System.getProperty("perf") == null) return
+        val workloads = listOf("single" to 1_001) + sizes.map { "batched" to it }
+        pool(rewrite = true).use { pool ->
+            try {
+                val ms = mutableMapOf<Triple<String, Int, String>, MutableList<Double>>()
+                repeat(rounds + 1) { round ->
+                    for ((mode, n) in workloads) for (k in delShapes.indices) {
+                        val v = delShapes[(k + round) % delShapes.size]
+                        pool.connection.use { c -> c.createStatement().use { s ->
+                            createTables(s, v); plant(s, v, 1, n.toLong(), if (cascades(v)) "order" else "customer")
+                        } }
+                        val d = timed { deleteAll(pool, v, n, batched = mode == "batched") }
+                        if (round > 0) ms.getOrPut(Triple(mode, n, v)) { mutableListOf() } += d
+                        pool.connection.use { c -> c.createStatement().use { s ->
+                            fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
+                            assertEquals(0L, count("SELECT count(*) FROM ${nodes(v)}"), "$v $mode $n: nodes left")
+                            assertEquals(if (cascades(v)) 0L else n.toLong(), count("SELECT count(*) FROM ${history(v)}"), "$v $mode $n: history left")
+                        } }
+                    }
+                }
+                for ((mode, n) in workloads) {
+                    val base = ms.getValue(Triple(mode, n, "del_bare")).sorted()[rounds / 2]
+                    delShapes.forEach { v ->
+                        val all = ms.getValue(Triple(mode, n, v)).sorted()
+                        val med = all[rounds / 2]
+                        println("HDEL %-7s %6d ops %-8s median=%7.0f ms  range=%.0f..%.0f  %6.0f ops/s  vs bare: %+.1f%%".format(
+                            mode, n, v, med, all.first(), all.last(), n * 1000.0 / med, (med / base - 1) * 100))
+                    }
+                }
+            } finally {
+                pool.connection.use { c -> c.createStatement().use { s -> delShapes.forEach { dropTables(s, it) } } }
+            }
+        }
+    }
+
+    private fun deleteAll(pool: HikariDataSource, v: String, n: Int, batched: Boolean) = pool.connection.use { c ->
+        c.autoCommit = false
+        val bare = v == "del_bare"
+        val sql = when (v) {
+            "del_bare" -> deleteNodeBare(nodes(v))
+            "del_cte" -> deleteNodeCascadeJoin(nodes(v), history(v))
+            else -> deleteNodeCascade(nodes(v), history(v))
+        }
+        c.prepareStatement(sql).use { st ->
+            val plainTypes = c.createArrayOf("text", arrayOf("customer"))
+            fun bind(g: Long) { st.setBytes(1, idOf(g)); if (!bare) st.setArray(2, plainTypes) }
+            if (batched) for (chunk in (1L..n.toLong()).chunked(batchSize)) {
+                chunk.forEach { bind(it); st.addBatch() }; st.executeBatch(); c.commit()
+            } else for (g in 1L..n.toLong()) { bind(g); st.executeUpdate(); c.commit() }
+        }
     }
 
     // Production DDL (ysql-schema.sql) plus the version column, and node_history as decided in the idea.

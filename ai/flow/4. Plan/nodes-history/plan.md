@@ -15,15 +15,21 @@ plain types pay only the `version` increment, and deleting a node removes its hi
 
 ## Probes (before code)
 
+**Status 2026-10-31:** both run, numbers in `idea.md` (Performance doubts, P1 and P2).
+- P2: the increment costs +0.3% to +4.7% and keeps the batch rewrite. Passed.
+- P1: the join form failed (+18–24%, root cause YB's Batched Nested Loop). The scalar-subquery form
+  costs +5%: small, but outside noise. **Decided 2026-11-02: accept +5% on plain deletes, the scalar
+  subquery is the v1 form. The `RETURNING` fallback isn't measured.**
+
 - **P1, delete CTE** (`idea.md` item 3). Raw JDBC on the dev container, `-Pperf`:
   - The CTE runs through `addBatch`/`executeBatch` without "a result was returned" errors.
   - Semantics: a plain type leaves `node_history` alone; history and unknown types cascade.
   - Cost of a plain-type delete, CTE against bare `DELETE`: single op, and 1003/10007-op batches.
-  - Accept if it's within noise of the bare delete. Otherwise the fallback is the original Ad 1
-    form: `DELETE … RETURNING type` run with `executeQuery`, then the history delete when the type
-    isn't a known plain type. The store can't choose a statement up front, because it learns the type
-    only from the deleted row. That costs one round trip per delete on the batched path, so it's only
-    taken if the CTE is measurably slower.
+  - The bar was "within noise of the bare delete". +5% misses it and was accepted on 2026-11-02.
+    Unused fallback, the original Ad 1 form: `DELETE … RETURNING type` run with `executeQuery`, then
+    the history delete when the type isn't a known plain type. The store can't choose a statement up
+    front, because it learns the type only from the deleted row. That costs one round trip per delete
+    on the batched path.
 - **P2, plain baseline with the increment.** The plain upsert plus `version = n.version + 1`, against
   today's upsert, single op and batched. idea.md item 2 requires this before history is compared to
   "plain".

@@ -26,7 +26,8 @@ import kotlin.uuid.Uuid
 class HistoryVsChainWriteCostTest {
 
     // trigger: plain upsert plus version bump and history flag; an AFTER row trigger writes history.
-    private val variants = listOf("plain", "history", "chain", "trigger")
+    // plain_ver: the plain upsert plus `version = n.version + 1`, the v1 plain statement (plan.md P2).
+    private val variants = listOf("plain", "plain_ver", "history", "chain", "trigger")
     private fun nodes(v: String) = "abyss.hist_spike_${v}_nodes"
     private fun edges(v: String) = "abyss.hist_spike_${v}_edges"
     private fun history(v: String) = "abyss.hist_spike_${v}_history"
@@ -53,6 +54,7 @@ class HistoryVsChainWriteCostTest {
     private fun liveStatement(v: String) = when (v) {
         "history" -> upsertNodeWithHistory(nodes(v), history(v))
         "trigger" -> upsertNodeFlagged(nodes(v))
+        "plain_ver" -> upsertNode(nodes(v)) + ", version = n.version + 1"
         else -> upsertNode(nodes(v))
     }
     private val upsertEdge = { t: String ->
@@ -95,6 +97,8 @@ class HistoryVsChainWriteCostTest {
             pool.connection.use { c -> c.createStatement().use { s ->
                 fun count(sql: String) = s.executeQuery(sql).use { rs -> rs.next(); rs.getLong(1) }
                 assertEquals(entities, count("SELECT count(*) FROM ${nodes("plain")}"), "plain nodes")
+                assertEquals(entities, count("SELECT count(*) FROM ${nodes("plain_ver")}"), "plain_ver nodes")
+                assertEquals(events, count("SELECT sum(version) FROM ${nodes("plain_ver")}"), "plain_ver version sum = events")
                 for (v in listOf("history", "trigger")) {
                     assertEquals(entities, count("SELECT count(*) FROM ${nodes(v)}"), "$v nodes")
                     assertEquals(events, count("SELECT count(*) FROM ${history(v)}"), "$v history rows")

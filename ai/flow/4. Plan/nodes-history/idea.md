@@ -94,11 +94,13 @@ The first insert takes `version` from the column default (1), so the first state
      trip each:
      ```sql
      WITH d AS (DELETE FROM abyss.nodes WHERE id = ? RETURNING id, type)
-     DELETE FROM abyss.node_history h USING d
-     WHERE h.node_id = d.id AND NOT (d.type = ANY(?))   -- ? = the module's plain node types
+     DELETE FROM abyss.node_history
+     WHERE node_id = (SELECT id FROM d WHERE NOT (type = ANY(?)))   -- ? = the module's plain node types
      ```
-     Binding the *plain* types, not the history types, makes an unknown type cascade (item 4). Probe
-     P1 in `plan.md` checks that it batches and that a plain delete costs no more than a bare `DELETE`.
+     Binding the *plain* types, not the history types, makes an unknown type cascade (item 4). For a
+     plain type the subquery yields NULL and the history index scan issues no storage request.
+     Measured as P1, 2026-10-31 (Performance doubts below): +5% against a bare `DELETE`, accepted
+     2026-11-02. The `USING d` join form cost +18–24% and is rejected.
    Deleting a node also erases its past, which suits decommissioning and GDPR-style erase, but this
    isn't an audit trail.
    - **Upgrade path if history must outlive the node:** on the insert branch only, start the
@@ -289,6 +291,40 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
     `SaveNode(x)` then `DeleteNode(x)` sit on different statements, so a plain partition by statement
     would swap them. The split rule must keep per-row order (e.g. cut the chunk segment where a row
     reappears under a different statement). Design in Plan; the probe had saves only.
+- **P2, plain with the version increment, measured 2026-10-31** (`plain_ver` variant in
+  `HistoryVsChainWriteCostTest` and `HistoryBatchRewriteTest`, `-Pperf`, dev YB, median of 5 interleaved
+  rounds after a warm-up, same runs as `plain`). Version sum = saves in every round.
+
+  | workload | plain | plain + version | vs plain |
+  |---|---|---|---|
+  | 1 writer, 1 entity, 1000 events | 2010 ms | 2016 ms | +0.3% |
+  | 16 writers, own entity, 200 each | 817 ms | 835 ms | +2.1% |
+  | batched 1003, rewrite on | 119 ms | 123 ms | +3.3% |
+  | batched 10007, rewrite on | 1332 ms | 1395 ms | +4.7% |
+
+  - The increment keeps the batch rewrite: the driver reports `SUCCESS_NO_INFO` for it, as for plain.
+  - Against this fair baseline, from the same run: history +1.6% (1 writer, 2049 ms) and +17.6%
+    (16 writers, 982 ms); multi-row history −20.1% batched (10007: 1114 ms).
+- **P1, delete with history cascade, measured 2026-10-31** (`HistoryBatchRewriteTest` "delete cascade
+  CTE vs bare delete", `-Pperf`, dev YB, median of 5 interleaved rounds after a warm-up). Every node
+  carries one history row, so tables match; single = one transaction per delete, batched = chunks of
+  1000 through `executeBatch`.
+
+  | workload | bare `DELETE` | join form, plain | subquery, plain | subquery, cascading |
+  |---|---|---|---|---|
+  | single 1001 | 1730 ms | 2050 ms, +18.5% | 1815 ms, **+4.9%** | 2581 ms, +49.2% |
+  | batched 1003 | 781 ms | 971 ms, +24.3% | 824 ms, **+5.5%** | 1546 ms, +97.9% |
+  | batched 10007 | 7860 ms | 9700 ms, +23.4% | 8246 ms, **+4.9%** | 15560 ms, +98.0% |
+
+  - Root cause of the join's cost (`EXPLAIN (ANALYZE, DIST)`): storage traffic matches the bare delete
+    (1 read, 3 writes, 1 flush; the history scan never executes), but YB plans `USING d` as a Batched
+    Nested Loop binding a 1024-slot `ANY` array per statement: planning 12.3 vs 0.6 ms, peak memory
+    699 vs 155 kB. The scalar subquery plans as an InitPlan: 0.17 ms, 183 kB, same storage traffic.
+  - The subquery's remaining +5% is real (ranges don't overlap: 1721..1741 vs 1799..1826 ms), CPU for
+    the CTE and InitPlan, not I/O.
+  - Semantics (normal suite, "delete cascade CTE - batches, cascades history and unknown types, spares
+    plain"): through `executeBatch`, plain-type history untouched, history and unknown types cascaded.
+    Goes red when the unknown type is bound as plain.
 - **Write amplification.** Every save copies the full JSONB once more. Storage grows without bound,
   with no time column in the key and no row TTL in YSQL, so retention is a scan plus delete. Long
   per-id histories grow one tablet's key range.
