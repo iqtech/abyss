@@ -45,6 +45,9 @@ plain types pay only the `version` increment, and deleting a node removes its hi
 - `NodeVersionTest` builds its schema with `LIKE abyss.nodes`, which will now copy `version`, so its
   `ADD COLUMN` becomes `ADD COLUMN IF NOT EXISTS`.
 - Red already: `NodeVersionTest`. Goes green here.
+- **Done 2026-11-02.** Red: versions `[1,1,1]` vs `[4,2,1]`, and 1 vs 3. Green after, with each path's
+  increment removed in turn failing exactly that path's test. Test DB migrated: 39869 rows read as
+  version 1, 0 FAILED tablets, `/home` unchanged at 16 GB free.
 
 ### B+C. History write, batched grouping and delete cascade (one commit)
 These land together: history without the cascade reopens the re-create collision (item 3).
@@ -67,6 +70,24 @@ These land together: history without the cascade reopens the re-create collision
     literals, never a hand join.
   - The duplicate-key cut applies inside every group, the multi-row one included.
   - Chunk retry: unchanged. The multi-row statement isn't batched, so `clearBatch` doesn't concern it.
+- **Done 2026-11-02.** `NodeHistoryTest` (cases 1-11, 16 tests): all red on phase A, then green. Full
+  suites, forced fresh: store 97/97, graph 386/386. Guards, each removed in turn:
+  - grouping by op class: #5, #6; partition crossing deletes: #5;
+  - cascade removed: #5, #7, #8; unknown type as plain: #8;
+  - old upsert on one path: that path's #2, #7, #9, #10, #11 (and #1, #3 single; #4, #5, #6 batched);
+  - no duplicate-key cut: #2, #4, #7 (batched); `Timestamp[]` instants: #10.
+- Changed from the plan while building:
+  - **Multi-row instants go as ISO text**, not the probe's `createArrayOf("timestamptz", Timestamp[])`.
+    That form sends local time with no offset, so an instant in the fall-back hour lands wrong
+    (`#10`, red with Europe/Warsaw at 2026-10-25). Production's per-row `setTimestamp` isn't affected.
+  - **Saves pick their statement by class** (`historyClasses`), not by the type name from `jsonPair`:
+    grouping runs before binding, and the name would serialize every save twice. Deletes still bind
+    the plain serial names, as item 4 decided.
+  - **Partitioning covers runs of node saves only**, not edge saves: only node saves have two
+    statements. An edge between node saves ends the run, which costs one more group and no order.
+- Not guarded (by reading, not executed): removing the partition altogether should keep every case
+  green, because it only changes the statement count. The cost would show in Verification step 3, not
+  yet run through the real store.
 
 ### D. Wiring check
 - `AbyssSchemaWorker` init, next to the existing `persistentStore == null` block (`:148`): a module
@@ -116,8 +137,8 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
   but means a type written both ways has gaps in its history. Alternative: reject `@WithHistory`
   types in `ephemeral()`.
 - **Test DB migration by hand.** Altering the shared `abyss_test_graph` (`version` DEFAULT 1,
-  `node_history`) is harmless to every existing test: no test selects `*` or counts columns.
-  Verified by grep before applying.
+  `node_history`) is harmless to every existing test: no test counts columns, and the only `SELECT *`
+  on it (`ConnectionTest`) asserts non-null. Verified by grep; applied 2026-11-02.
 
 ## Records
 

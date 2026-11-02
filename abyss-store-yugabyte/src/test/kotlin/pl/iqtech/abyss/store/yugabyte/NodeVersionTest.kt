@@ -16,9 +16,9 @@ import kotlin.test.assertEquals
 import kotlin.uuid.Uuid
 
 // nodes-history idea.md item 2: every node upsert, plain included, increments nodes.version by exactly 1
-// per save on both commit paths. Runs the real store against its own schema: the production tables
-// (LIKE abyss.* INCLUDING ALL) plus the planned `version BIGINT NOT NULL DEFAULT 1` migration, so the shared
-// abyss schema is untouched. Requires the live YugabyteDB container (localhost:5433).
+// per save on both commit paths. Runs the real store against its own schema, the production tables
+// (LIKE abyss.* INCLUDING ALL), so the shared abyss rows stay untouched. The IF NOT EXISTS keeps it running
+// on a DB that predates the migration. Requires the live YugabyteDB container (localhost:5433).
 class NodeVersionTest {
 
     private val url = "jdbc:yugabytedb://localhost:5433/abyss_test_graph"
@@ -32,7 +32,7 @@ class NodeVersionTest {
         "DROP SCHEMA IF EXISTS $schema CASCADE",
         "CREATE SCHEMA $schema",
         "CREATE TABLE $schema.nodes (LIKE abyss.nodes INCLUDING ALL)",
-        "ALTER TABLE $schema.nodes ADD COLUMN version BIGINT NOT NULL DEFAULT 1",
+        "ALTER TABLE $schema.nodes ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
         "CREATE TABLE $schema.edges (LIKE abyss.edges INCLUDING ALL)",
     )
 

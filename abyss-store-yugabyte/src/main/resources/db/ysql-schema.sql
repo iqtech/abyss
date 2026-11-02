@@ -17,6 +17,7 @@ CREATE SCHEMA IF NOT EXISTS abyss;
 -- `id` is the raw NodeId byte encoding (see KeyAdapter) — not a UUID column, since
 -- the same schema serves Uuid/Long/String IDs uniformly. YugabytePersistentStore
 -- always binds it via setBytes/getBytes.
+-- `version` counts saves, 1-based: every node upsert increments it. 0 stays reserved.
 
 CREATE TABLE IF NOT EXISTS abyss.nodes (
     id          BYTEA       PRIMARY KEY,
@@ -24,11 +25,30 @@ CREATE TABLE IF NOT EXISTS abyss.nodes (
     data        JSONB       NOT NULL,
     tags        TEXT[]      NOT NULL DEFAULT '{}',
     created_at  TIMESTAMPTZ NOT NULL,
-    updated_at  TIMESTAMPTZ NOT NULL
+    updated_at  TIMESTAMPTZ NOT NULL,
+    version     BIGINT      NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON abyss.nodes (type);
 CREATE INDEX IF NOT EXISTS idx_nodes_tags  ON abyss.nodes USING GIN (tags);
+
+-- Existing deployments, before the new store version rolls out (the upsert needs the column). Rows
+-- created earlier read as version 1 with no history row; history starts at the migration.
+-- ALTER TABLE abyss.nodes ADD COLUMN version BIGINT NOT NULL DEFAULT 1;
+-- The node_history CREATE TABLE below is idempotent, run it as it stands.
+
+-- ── node_history ─────────────────────────────────────────────────────────────
+-- One row per committed state of a @WithHistory node. Every access has the id, so
+-- there's no secondary index: an index on `type` would add a write to every insert.
+
+CREATE TABLE IF NOT EXISTS abyss.node_history (
+    node_id     BYTEA       NOT NULL,
+    version     BIGINT      NOT NULL,
+    type        TEXT        NOT NULL,
+    data        JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (node_id HASH, version ASC)
+);
 
 -- ── edges ────────────────────────────────────────────────────────────────────
 -- Primary key matches EdgeKey: (from_id, to_id, type).

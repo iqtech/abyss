@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.PolymorphicSerializer
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.Json
@@ -19,6 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.modules.EmptySerializersModule
 import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.SerializersModuleCollector
 import kotlinx.serialization.modules.plus
 import org.slf4j.LoggerFactory
 import pl.iqtech.abyss.store.api.AbyssError
@@ -28,6 +31,7 @@ import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.WithHistory
 import pl.iqtech.abyss.store.api.abyssSerializersModule
 import java.io.Closeable
 import java.sql.SQLException
@@ -36,6 +40,7 @@ import java.sql.Types
 import java.util.Arrays
 import javax.sql.DataSource
 import kotlin.random.Random
+import kotlin.reflect.KClass
 import kotlin.time.toJavaInstant
 
 private sealed interface PersistentOp {
@@ -87,6 +92,37 @@ class YugabytePersistentStore(
     private val nodeSer = PolymorphicSerializer(NodeLike::class) as kotlinx.serialization.KSerializer<NodeLike<*>>
     @Suppress("UNCHECKED_CAST")
     private val edgeSer = PolymorphicSerializer(EdgeLike::class) as kotlinx.serialization.KSerializer<EdgeLike<*, *>>
+
+    // Resolved eagerly from the module, as TypeTagRegistry does: a cache filled on first save is empty
+    // after a restart, and a delete of a history type would then skip the cascade. The class picks a
+    // save's statement, so batches group without serializing. Deletes bind the plain serial names, since
+    // only the deleted row knows its type, and a type outside this module (rolling deploy) must cascade.
+    private val nodeTypes = NodeTypeCollector().also { json.serializersModule.dumpTo(it) }.found
+    private val historyClasses = nodeTypes.keys.filterTo(HashSet()) { it.isAnnotationPresent(WithHistory::class.java) }
+    private val plainTypes = (nodeTypes - historyClasses).values.toTypedArray()
+
+    private val nodeConflictUpdate = "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
+        "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, version = n.version + 1"
+    private val historyFromUpsert = "RETURNING id, version, type, data, updated_at) " +
+        "INSERT INTO $ysqlSchema.node_history (node_id, version, type, data, updated_at) SELECT id, version, type, data, updated_at FROM u"
+    private val upsertNodeWithHistory =
+        "WITH u AS (INSERT INTO $ysqlSchema.nodes AS n (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+        "$nodeConflictUpdate $historyFromUpsert"
+    // One statement per group, fed by parallel arrays: a data-modifying CTE isn't rewritten into a multi-row
+    // INSERT, so executeBatch would cost a round trip per op. Tags travel as one literal per row, because
+    // PostgreSQL arrays are rectangular and can't hold an array per row.
+    private val upsertNodesWithHistory =
+        "WITH input AS (SELECT * FROM unnest(?::bytea[], ?::text[], ?::text[], ?::text[], ?::timestamptz[], ?::timestamptz[]) " +
+        "AS r(id, type, data, tags, created_at, updated_at)), " +
+        "u AS (INSERT INTO $ysqlSchema.nodes AS n (id, type, data, tags, created_at, updated_at) " +
+        "SELECT id, type, data::jsonb, tags::text[], created_at, updated_at FROM input " +
+        "$nodeConflictUpdate $historyFromUpsert"
+    // Returns no rows, so it batches. Scalar subquery, not `USING d`: a plain type yields NULL and the
+    // history scan issues no storage request, while YB plans the join as a Batched Nested Loop that binds
+    // a 1024-slot array per statement (nodes-history idea.md, P1: +5% against +18-24% on a bare delete).
+    private val deleteNodeWithHistory =
+        "WITH d AS (DELETE FROM $ysqlSchema.nodes WHERE id = ? RETURNING id, type) " +
+        "DELETE FROM $ysqlSchema.node_history WHERE node_id = (SELECT id FROM d WHERE NOT (type = ANY(?)))"
 
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, kotlin.time.Duration?>> =
         Either.catch {
@@ -314,25 +350,29 @@ class YugabytePersistentStore(
                 val upsertNode = conn.prepareStatement(
                     "INSERT INTO $ysqlSchema.nodes AS n (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
                     "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
-                    "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at"
+                    "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
+                    "version = n.version + 1"
                 )
                 val upsertEdge = conn.prepareStatement(
                     "INSERT INTO $ysqlSchema.edges AS e (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
                     "ON CONFLICT (from_id, to_id, type) DO UPDATE SET data = EXCLUDED.data, " +
                     "tags = ARRAY(SELECT DISTINCT UNNEST(e.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at"
                 )
-                val delNode = conn.prepareStatement("DELETE FROM $ysqlSchema.nodes WHERE id = ?")
+                val upsertHistory = conn.prepareStatement(upsertNodeWithHistory)
+                val delNode = conn.prepareStatement(deleteNodeWithHistory)
                 val delEdge = conn.prepareStatement("DELETE FROM $ysqlSchema.edges WHERE from_id = ? AND to_id = ? AND type = ?")
+                val plain = conn.createArrayOf("text", plainTypes)
                 for (op in ops) when (op) {
                     is PersistentOp.SaveNode -> {
                         val (type, data) = jsonPair(nodeSer, op.node)
-                        upsertNode.setBytes(1, op.id.bytes)
-                        upsertNode.setString(2, type)
-                        upsertNode.setObject(3, data, Types.OTHER)
-                        upsertNode.setArray(4, conn.createArrayOf("text", op.tags.toTypedArray()))
-                        upsertNode.setTimestamp(5, Timestamp.from(op.node.createdAt.toJavaInstant()))
-                        upsertNode.setTimestamp(6, Timestamp.from(op.node.updatedAt.toJavaInstant()))
-                        upsertNode.executeUpdate()
+                        val upsert = if (op.node.javaClass in historyClasses) upsertHistory else upsertNode
+                        upsert.setBytes(1, op.id.bytes)
+                        upsert.setString(2, type)
+                        upsert.setObject(3, data, Types.OTHER)
+                        upsert.setArray(4, conn.createArrayOf("text", op.tags.toTypedArray()))
+                        upsert.setTimestamp(5, Timestamp.from(op.node.createdAt.toJavaInstant()))
+                        upsert.setTimestamp(6, Timestamp.from(op.node.updatedAt.toJavaInstant()))
+                        upsert.executeUpdate()
                     }
                     is PersistentOp.SaveEdge -> {
                         val (type, data) = jsonPair(edgeSer, op.edge)
@@ -345,7 +385,7 @@ class YugabytePersistentStore(
                         upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt.toJavaInstant()))
                         upsertEdge.executeUpdate()
                     }
-                    is PersistentOp.DeleteNode -> { delNode.setBytes(1, op.id.bytes); delNode.executeUpdate() }
+                    is PersistentOp.DeleteNode -> { delNode.setBytes(1, op.id.bytes); delNode.setArray(2, plain); delNode.executeUpdate() }
                     is PersistentOp.DeleteEdge -> {
                         delEdge.setBytes(1, op.fromId.bytes)
                         delEdge.setBytes(2, op.toId.bytes)
@@ -386,25 +426,35 @@ class YugabytePersistentStore(
     // Independent of commitYsql (own inline binding, not shared with it) — kept that way
     // deliberately so this never risks the existing, already-tested single-transaction commit path.
     // One connection for the whole call, but one conn.commit() per chunk (bounded transaction size).
-    // Within a chunk, consecutive ops of the same statement type are run-length-grouped into one
+    // Within a chunk, consecutive ops of the same statement are run-length-grouped into one
     // addBatch()/executeBatch() round, preserving the caller's original cross-type op order (so a
     // mixed AddNode(X)/RemoveNode(X) sequence within one chunk still resolves the same way
-    // commitYsql's op-by-op execution would).
+    // commitYsql's op-by-op execution would). History saves run as one multi-row statement instead.
     private suspend fun commitYsqlBatched(ops: List<PersistentOp>, batchSize: Int) {
         ysql.connection.use { conn ->
             conn.autoCommit = false
             val upsertNode = conn.prepareStatement(
                 "INSERT INTO $ysqlSchema.nodes AS n (id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
                 "ON CONFLICT (id) DO UPDATE SET type = EXCLUDED.type, data = EXCLUDED.data, " +
-                "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at"
+                "tags = ARRAY(SELECT DISTINCT UNNEST(n.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at, " +
+                "version = n.version + 1"
             )
             val upsertEdge = conn.prepareStatement(
                 "INSERT INTO $ysqlSchema.edges AS e (from_id, to_id, type, data, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
                 "ON CONFLICT (from_id, to_id, type) DO UPDATE SET data = EXCLUDED.data, " +
                 "tags = ARRAY(SELECT DISTINCT UNNEST(e.tags || EXCLUDED.tags)), updated_at = EXCLUDED.updated_at"
             )
-            val delNode = conn.prepareStatement("DELETE FROM $ysqlSchema.nodes WHERE id = ?")
+            val upsertHistory = conn.prepareStatement(upsertNodesWithHistory)
+            val delNode = conn.prepareStatement(deleteNodeWithHistory)
             val delEdge = conn.prepareStatement("DELETE FROM $ysqlSchema.edges WHERE from_id = ? AND to_id = ? AND type = ?")
+            val plain = conn.createArrayOf("text", plainTypes)
+
+            fun statementOf(op: PersistentOp) = when (op) {
+                is PersistentOp.SaveNode -> if (op.node.javaClass in historyClasses) upsertHistory else upsertNode
+                is PersistentOp.SaveEdge -> upsertEdge
+                is PersistentOp.DeleteNode -> delNode
+                is PersistentOp.DeleteEdge -> delEdge
+            }
 
             fun bind(op: PersistentOp): java.sql.PreparedStatement = when (op) {
                 is PersistentOp.SaveNode -> {
@@ -428,12 +478,45 @@ class YugabytePersistentStore(
                     upsertEdge.setTimestamp(7, Timestamp.from(op.edge.updatedAt.toJavaInstant()))
                     upsertEdge
                 }
-                is PersistentOp.DeleteNode -> delNode.apply { setBytes(1, op.id.bytes) }
+                is PersistentOp.DeleteNode -> delNode.apply { setBytes(1, op.id.bytes); setArray(2, plain) }
                 is PersistentOp.DeleteEdge -> delEdge.apply {
                     setBytes(1, op.fromId.bytes)
                     setBytes(2, op.toId.bytes)
                     setString(3, op.type)
                 }
+            }
+
+            // Instants as ISO text: a Timestamp array element is sent as local time with no offset, which
+            // is ambiguous in the fall-back hour. Conflict keys keep a group's ids distinct.
+            fun saveHistoryGroup(group: List<PersistentOp>) {
+                val saves = group.map { it as PersistentOp.SaveNode }
+                val rows = saves.map { jsonPair(nodeSer, it.node) }
+                upsertHistory.setArray(1, conn.createArrayOf("bytea", saves.map { it.id.bytes }.toTypedArray()))
+                upsertHistory.setArray(2, conn.createArrayOf("text", rows.map { it.first }.toTypedArray()))
+                upsertHistory.setArray(3, conn.createArrayOf("text", rows.map { it.second }.toTypedArray()))
+                upsertHistory.setArray(4, conn.createArrayOf("text", saves.map { conn.createArrayOf("text", it.tags.toTypedArray()).toString() }.toTypedArray()))
+                upsertHistory.setArray(5, conn.createArrayOf("timestamptz", saves.map { it.node.createdAt.toString() }.toTypedArray()))
+                upsertHistory.setArray(6, conn.createArrayOf("timestamptz", saves.map { it.node.updatedAt.toString() }.toTypedArray()))
+                upsertHistory.executeUpdate()
+            }
+
+            // Stably partitions each run of node saves by statement, so a mixed chunk costs two statements
+            // rather than one per type change (10007 mixed ops, idea.md: 11.4x). Per-row order holds: an id
+            // always binds the same statement, its type being immutable, and deletes stay in place as run
+            // boundaries. Ops stay inside their chunk, so the worker's ops.take(committed) replay stays exact.
+            fun statementOrder(chunk: List<PersistentOp>): List<PersistentOp> {
+                val ordered = ArrayList<PersistentOp>(chunk.size)
+                var i = 0
+                while (i < chunk.size) {
+                    var j = i
+                    while (j < chunk.size && chunk[j] is PersistentOp.SaveNode) j++
+                    if (j == i) { ordered += chunk[i++]; continue }
+                    val (history, plainSaves) = chunk.subList(i, j).partition { statementOf(it) === upsertHistory }
+                    ordered += history
+                    ordered += plainSaves
+                    i = j
+                }
+                return ordered
             }
 
             // Conflict key of an upsert op, null for deletes. reWriteBatchedInserts sends one executeBatch() as
@@ -452,20 +535,19 @@ class YugabytePersistentStore(
             // can leave addBatch() entries queued on a statement, so they're cleared before the next one.
             var committed = 0
             for (chunk in ops.chunked(batchSize)) {
+                val ordered = statementOrder(chunk)
                 try {
                     retryTransientAbort { try {
                         var i = 0
-                        while (i < chunk.size) {
-                            val stmt = bind(chunk[i]).also { it.addBatch() }
+                        while (i < ordered.size) {
+                            val stmt = statementOf(ordered[i])
                             val keys = HashSet<Any>()
-                            conflictKey(chunk[i])?.let(keys::add)
-                            var j = i + 1
-                            while (j < chunk.size && chunk[j]::class == chunk[i]::class &&
-                                conflictKey(chunk[j]).let { it == null || keys.add(it) }) {
-                                bind(chunk[j]).addBatch()
-                                j++
-                            }
-                            stmt.executeBatch()
+                            var j = i
+                            while (j < ordered.size && statementOf(ordered[j]) === stmt &&
+                                conflictKey(ordered[j]).let { it == null || keys.add(it) }) j++
+                            val group = ordered.subList(i, j)
+                            if (stmt === upsertHistory) saveHistoryGroup(group)
+                            else { group.forEach { bind(it).addBatch() }; stmt.executeBatch() }
                             i = j
                         }
                         conn.commit()
@@ -534,4 +616,19 @@ class YugabytePersistentStore(
             return YugabytePersistentStore(dataSource, module, ysqlSchema)
         }
     }
+}
+
+// Class -> serial name of every NodeLike subclass in a module.
+private class NodeTypeCollector : SerializersModuleCollector {
+    val found = mutableMapOf<Class<*>, String>()
+
+    override fun <T : Any> contextual(kClass: KClass<T>, provider: (List<KSerializer<*>>) -> KSerializer<*>) {}
+
+    override fun <Base : Any, Sub : Base> polymorphic(baseClass: KClass<Base>, actualClass: KClass<Sub>, actualSerializer: KSerializer<Sub>) {
+        if (baseClass == NodeLike::class) found[actualClass.java] = actualSerializer.descriptor.serialName
+    }
+
+    override fun <Base : Any> polymorphicDefaultSerializer(baseClass: KClass<Base>, serializerProvider: (Base) -> SerializationStrategy<Base>?) {}
+
+    override fun <Base : Any> polymorphicDefaultDeserializer(baseClass: KClass<Base>, defaultDeserializerProvider: (String?) -> DeserializationStrategy<out Base>?) {}
 }
