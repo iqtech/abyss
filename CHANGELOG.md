@@ -1,3 +1,14 @@
+## [0.37.0] - 2026-11-02
+
+- **Breaking, schema first:** every node upsert now increments the new `nodes.version` column, so this store fails all node writes until `ALTER TABLE abyss.nodes ADD COLUMN version BIGINT NOT NULL DEFAULT 1` has run. Apply it, plus the `node_history` DDL from `ysql-schema.sql`, before rolling out. Rows created earlier read as version 1
+- New `@WithHistory` on a node class: every committed state goes to `abyss.node_history`, in the same statement as the upsert, on both commit paths. History records the persistent layer only and is deleted with the node. A `@WithHistory` type with no persistent store fails at construction. Removing the annotation and adding it back on one class is a wrong idea: a re-created id collides with its old rows
+- Node delete cascades through one batchable statement. A delete of a type outside the module cascades too
+- `commitYsqlBatched` groups by bound statement and partitions each run of node saves by statement, keeping per-row order
+- Commits retry 40001/40P01 aborts, up to 3 attempts on both commit paths
+- Fix a batched upsert failing its whole chunk when two saves of one key shared a rewritten block
+- Perf, real store (`NodeHistoryCostTest`, vs `1609f34`): plain batched +5.3%, plain delete +5.7%, plain single none measurable; history batched 19–22% under plain, history single +6 to +12%; the statement partition is worth 8.2× on mixed batches
+- Known: `modifyNode` crosses layers unguarded, so a persistent `modifyNode` on an ephemeral id writes it to `nodes` and `node_history` (`ai/flow/0. Issues/modifynode-crosses-layers-unguarded`)
+
 ## [0.36.0] - 2026-10-26
 
 - Store read failures now surface as the new `AbyssError.StoreUnavailable(error)` instead of reading as "absent" (TODO 1.38). Every self-heal read collapsed a store `Left` to null: on a cache miss with the store failing, `nodeExists` returned `Right(false)`, `node`/`edge` returned `NodeNotFound`/`EdgeNotFound`, traversals returned truncated results, and `existingNodeIds` dropped ids. Any `Left` on either store side (persistent or ephemeral) fails the read
