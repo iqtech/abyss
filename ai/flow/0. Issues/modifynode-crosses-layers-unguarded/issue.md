@@ -18,7 +18,15 @@ All of the below is by reading the code; no test reproduces it yet.
   the new value with a TTL. Readers see it, then persistent wins again
   (`AbyssSchemaWorker.loadAndCacheNode`) and the old value returns. No history row, `version` unmoved.
 
-`modifyEdge` has the same read-then-write shape in both buffers (not traced).
+`modifyEdge` is worse, because it emits `RemoveEdge` + `AddEdge` and the removal fans out to the other
+layer (traced 2026-11-02, by reading):
+
+- **`transaction { modifyEdge }` on an ephemeral edge:** `loadAndCacheEdge` falls through to the ephemeral
+  store, the add writes it to the persistent store, and the delete fanout (`AbyssSchemaWorker.kt:478`)
+  removes the ephemeral copy. The edge moves to disk outright, which is the case refresh tokens must never
+  hit.
+- **`ephemeral { modifyEdge }` on a persistent edge:** the delete fanout (`:536`) deletes the persistent
+  edge and the add writes an ephemeral one. When the TTL expires the edge is gone for good.
 
 ## Why it isn't a one-line guard
 

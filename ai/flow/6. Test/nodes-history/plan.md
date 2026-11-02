@@ -85,7 +85,8 @@ These land together: history without the cascade reopens the re-create collision
     grouping runs before binding, and the name would serialize every save twice. Deletes still bind
     the plain serial names, as item 4 decided.
   - **Partitioning covers runs of node saves only**, not edge saves: only node saves have two
-    statements. An edge between node saves ends the run, which costs one more group and no order.
+    statements. An edge between node saves ends the run. That was noted as one more group, which is
+    wrong on alternating node and edge saves: 15.5x, `ai/flow/0. Issues/batch-partition-node-and-edge-saves`.
 - No test fails without the partition: `NodeHistoryCostTest` passes its row counts with it bypassed
   and takes 8.2x as long (Verification 3), and by reading `NodeHistoryTest` stays green too, since only
   the statement count changes. A performance regression there shows only under `-Pperf`.
