@@ -6,12 +6,13 @@ Created: 2026-10-31. Decisions live in `idea.md` items 1–6; this file is the b
 
 Keep every committed state of a `@WithHistory` node in `abyss.node_history`, written in the same
 statement as the node upsert, ordered by a per-node `version` that every node upsert increments.
-Measured on the dev container (`idea.md`, `discussion-summary.md`): single-writer +2–4%, batched
-multi-row −17% vs plain, exact under contention. The 40001/40P01 retry (`3470582`) is in, so contended
-history commits no longer surface as `Left`.
+Measured through the real store (`idea.md`, Performance doubts): single op +6 to +12% on near-all
+inserts, batched 19–22% under plain, exact under contention. The 40001/40P01 retry (`3470582`) is in, so
+contended history commits no longer surface as `Left`.
 
-Outcome: `NodeVersionTest` goes green, annotated types get gap-free history on both commit paths,
-plain types pay only the `version` increment, and deleting a node removes its history.
+**Status 2026-11-02:** phases A, B+C and D are in (`96f1ab2`, `40385de`), `NodeVersionTest` is green,
+annotated types get gap-free history on both commit paths, plain types pay the `version` increment
+(+5.3% batched, none measurable single), and deleting a node removes its history. See Open below.
 
 ## Probes (before code)
 
@@ -19,7 +20,7 @@ plain types pay only the `version` increment, and deleting a node removes its hi
 - P2: the increment costs +0.3% to +4.7% and keeps the batch rewrite. Passed.
 - P1: the join form failed (+18–24%, root cause YB's Batched Nested Loop). The scalar-subquery form
   costs +5%: small, but outside noise. **Decided 2026-11-02: accept +5% on plain deletes, the scalar
-  subquery is the v1 form. The `RETURNING` fallback isn't measured.**
+  subquery is the v1 form. The `RETURNING` fallback isn't measured.** Real store: +5.7%.
 
 - **P1, delete CTE** (`idea.md` item 3). Raw JDBC on the dev container, `-Pperf`:
   - The CTE runs through `addBatch`/`executeBatch` without "a result was returned" errors.
@@ -38,8 +39,8 @@ plain types pay only the `version` increment, and deleting a node removes its hi
 
 ### A. Schema plus version increment
 - `ysql-schema.sql`: `version BIGINT NOT NULL DEFAULT 1` on `nodes`, and the `node_history` DDL
-  (item 1). Below it, as a comment, the `ALTER TABLE` and `CREATE TABLE IF NOT EXISTS` for existing
-  deployments.
+  (item 1). Below it, as a comment, the `ALTER TABLE` for existing deployments, pointing at the
+  idempotent `CREATE TABLE` rather than repeating it.
 - Apply both to the shared test DB `abyss_test_graph` by hand (`ysqlsh`), as the comment says.
 - Both node upserts in `YugabytePersistentStore` gain `version = n.version + 1`.
 - `NodeVersionTest` builds its schema with `LIKE abyss.nodes`, which will now copy `version`, so its
@@ -53,14 +54,14 @@ plain types pay only the `version` increment, and deleting a node removes its hi
 These land together: history without the cascade reopens the re-create collision (item 3).
 - `@WithHistory` in `abyss-store-api`, next to `TypeTag.kt`.
 - Store construction: walk the module with a `SerializersModuleCollector`, as `TypeTagRegistry`
-  does. Take each node subclass's serial name from its serializer descriptor and fill `historyTypes` /
+  does. Take each node subclass's serial name from its serializer descriptor and fill `historyClasses` /
   `plainTypes` using `java.isAnnotationPresent(WithHistory::class.java)`. No `abyss-dsl` dependency.
-- **`commitYsql`**: a `SaveNode` whose `jsonPair` type is in `historyTypes` runs the per-row history
-  CTE; otherwise the plain upsert. `DeleteNode` runs the P1 form. The `LOCK_ORDER` sort is unchanged:
+- **`commitYsql`**: a `SaveNode` whose class is in `historyClasses` runs the per-row history CTE;
+  otherwise the plain upsert. `DeleteNode` runs the P1 form. The `LOCK_ORDER` sort is unchanged:
   history rows share the node's id, so lock order holds.
 - **`commitYsqlBatched`**:
   - Group by the statement an op binds, not by op class.
-  - Within each maximal run of saves, stably partition by statement. Deletes stay in place as
+  - Within each maximal run of node saves, stably partition by statement. Deletes stay in place as
     boundaries.
     - Per-row order holds because an id always binds the same statement (type is immutable) and the
       partition is stable.
@@ -85,9 +86,9 @@ These land together: history without the cascade reopens the re-create collision
     the plain serial names, as item 4 decided.
   - **Partitioning covers runs of node saves only**, not edge saves: only node saves have two
     statements. An edge between node saves ends the run, which costs one more group and no order.
-- Not guarded (by reading, not executed): removing the partition altogether should keep every case
-  green, because it only changes the statement count. The cost would show in Verification step 3, not
-  yet run through the real store.
+- No test fails without the partition: `NodeHistoryCostTest` passes its row counts with it bypassed
+  and takes 8.2x as long (Verification 3), and by reading `NodeHistoryTest` stays green too, since only
+  the statement count changes. A performance regression there shows only under `-Pperf`.
 
 ### D. Wiring check
 - `AbyssSchemaWorker` init, next to the existing `persistentStore == null` block (`:148`): a module
@@ -107,12 +108,12 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
 | 2 | distinct ids, odd counts, non-zero starting state, both paths | B |
 | 3 | plain type writes no history; history type writes one row per save, same transaction | B |
 | 4 | batch 4 over 7 ops crossing a chunk boundary, two saves of one id in a chunk → two history rows | B |
-| 5 | **mixed chunk** `S(x,H) S(p,P) D(x) S(x,H) S(q,P)` → x at v1 with exactly 1 history row (from the last save), p and q present: per-row order kept across the split | B |
+| 5 | **mixed chunk** `S(x,H) S(p,P) D(x) S(x,H) S(q,P)` → x at v1 with exactly 1 history row (from the last save), p and q present with no history: per-row order kept across the split | B |
 | 6 | mixed history/plain interleaved, 10007 ops → no lost rows on either statement (guards "group by class") | B |
 | 7 | delete then re-create a history id → no orphan rows, re-create commits at v1. Red with the cascade removed | C |
 | 8 | delete of an **unknown** type (row and history planted by SQL with a name not in the module) → history gone | C |
 | 9 | plain delete leaves other ids' history untouched | C |
-| 10 | non-empty tags with commas, quotes, braces, `NULL` land verbatim through the store's multi-row path | B |
+| 10 | non-empty tags with commas, quotes, braces, `NULL`, data and fall-back-hour instants land verbatim on both paths | B |
 | 11 | commit aborted with 40001 once (`FailAfterNCommitsDataSource`) on a history save → exactly one history row (the rollback leaves nothing) | B |
 | 12 | wiring: `@WithHistory` in the module with no persistent store → construction fails (abyss-graph) | D |
 
@@ -130,15 +131,31 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
 3. Performance, through the real store (`-Pperf`): single op and batched 1003/10007, plain only, history
    only, and 50/50 mixed. Compare with today's numbers (plain batched 1375 ms; multirow 1138 ms; mixed
    split 1338 ms). Report before and after; a slower result loses to the measurement.
+   **Done 2026-11-02** (`NodeHistoryCostTest`, numbers in `idea.md`): plain batched +5.3%, plain delete
+   +5.7%, history batched 19–22% under plain, the partition worth 8.2x on mixed batches.
 4. After the test-DB migration, check that no tablet is FAILED and `/home` has headroom (the 2026-10-29
-   incident).
+   incident). **Done 2026-11-02:** 34 tablets RUNNING, 0 FAILED, 15 GB free at 90%. The incident isn't
+   described anywhere in `ai/`, so the headroom bar is unknown.
+
+## Open
+
+- **Removing `@WithHistory` from a type.** It becomes plain, so its deletes stop cascading, and a
+  re-created id hits the v1 collision of item 3. Found by reading the SQL, no test, no rule in v1.
+- **Rollout order.** The new store fails every node upsert without the `version` column, so the
+  `ALTER` lands first. Only `abyss_test_graph` is migrated; whether sniper runs Abyss on a database of
+  its own isn't checked.
+
+## Decided
+
+- **History is the persistent layer's record, per id (agreed 2026-11-02).** `ephemeral()` writes never
+  reach `node_history`, so there's no gap: an ephemeral state was never a persistent one. Rejecting
+  `@WithHistory` types in `ephemeral()` is out, because the layer is per id, not per class. An `ephemeral`
+  `removeNode` of a persistent id still fans out and cascades. The two `modifyNode` cases that cross
+  layers moved to gap 2: `ai/flow/0. Issues/modifynode-crosses-layers-unguarded`. Until that lands, a
+  persistent `modifyNode` on an ephemeral id writes it to `nodes` and `node_history`.
 
 ## Decided by me, override if wrong
 
-- **Ephemeral writes record no history.** `ephemeral()` writes a `@WithHistory` node to YCQL and
-  Hazelcast only; nothing reaches `node_history`. That's consistent with item 5 ("persistent only"),
-  but means a type written both ways has gaps in its history. Alternative: reject `@WithHistory`
-  types in `ephemeral()`.
 - **Test DB migration by hand.** Altering the shared `abyss_test_graph` (`version` DEFAULT 1,
   `node_history`) is harmless to every existing test: no test counts columns, and the only `SELECT *`
   on it (`ConnectionTest`) asserts non-null. Verified by grep; applied 2026-11-02.

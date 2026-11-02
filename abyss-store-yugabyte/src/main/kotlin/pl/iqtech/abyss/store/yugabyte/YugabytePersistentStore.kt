@@ -501,7 +501,7 @@ class YugabytePersistentStore(
             }
 
             // Stably partitions each run of node saves by statement, so a mixed chunk costs two statements
-            // rather than one per type change (10007 mixed ops, idea.md: 11.4x). Per-row order holds: an id
+            // rather than one per type change (10007 mixed ops: 8.2x, idea.md). Per-row order holds: an id
             // always binds the same statement, its type being immutable, and deletes stay in place as run
             // boundaries. Ops stay inside their chunk, so the worker's ops.take(committed) replay stays exact.
             fun statementOrder(chunk: List<PersistentOp>): List<PersistentOp> {

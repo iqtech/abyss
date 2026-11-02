@@ -16,8 +16,8 @@ addition, used for dropping redeliveries and for time-based retention.
 
 ## Target statement
 
-Replaces the node upsert in `commitYsql` and `commitYsqlBatched`
-(`YugabytePersistentStore.kt:309`, `:369`):
+The node upsert of a `@WithHistory` type in `commitYsql` (`commitYsqlBatched` runs the multi-row form,
+under Performance doubts):
 
 ```sql
 WITH u AS (
@@ -77,13 +77,13 @@ The first insert takes `version` from the column default (1), so the first state
    - `@WithHistory`: the statement above.
 
    If any path still uses an upsert without the increment, history silently loses versions.
-   Test: `NodeVersionTest`, red on today's upsert. The "plain" baselines measured below lack the
-   increment; re-measure plain with it before comparing history against it.
+   Test: `NodeVersionTest`. The earlier "plain" baselines below lack the increment; P2 and the
+   real-store run measure with it.
    Edges stay out: `modifyEdge` deletes and re-inserts, so an edge version would reset (VersionGuard Q3).
 3. **History is deleted with the node** (decided 2026-10-27; closes RFC open question 6). The counter
    lives on the `nodes` row, so deleting a node resets it. Without this rule, re-creating the id inserts
    at `version` 1, collides with the old `(node_id, 1)` in history, and every later write to that id
-   rolls back. (Found by reading the SQL, not run yet.) So `DeleteNode` on a `@WithHistory` type also
+   rolls back (`NodeHistoryTest` #7 goes red with the cascade removed). So `DeleteNode` on a `@WithHistory` type also
    runs `DELETE FROM abyss.node_history WHERE node_id = ?` in the same transaction: one statement on
    one tablet, and nothing extra on the write path. `deleteNode(id)` carries no type, so the deleted
    row's own type decides: the history delete runs only when that type maps to a `@WithHistory` class
@@ -100,7 +100,7 @@ The first insert takes `version` from the column default (1), so the first state
      Binding the *plain* types, not the history types, makes an unknown type cascade (item 4). For a
      plain type the subquery yields NULL and the history index scan issues no storage request.
      Measured as P1, 2026-10-31 (Performance doubts below): +5% against a bare `DELETE`, accepted
-     2026-11-02. The `USING d` join form cost +18–24% and is rejected.
+     2026-11-02; +5.7% through the real store. The `USING d` join form cost +18–24% and is rejected.
    Deleting a node also erases its past, which suits decommissioning and GDPR-style erase, but this
    isn't an audit trail.
    - **Upgrade path if history must outlive the node:** on the insert branch only, start the
@@ -113,29 +113,35 @@ The first insert takes `version` from the column default (1), so the first state
    next to `@TypeTag`, `@EdgeConstraint` and `@CrossSchemaEdge`.
    - **Resolved eagerly by the store from its module (decided 2026-10-31).** At construction the store
      walks the `SerializersModule` it already receives, as `TypeTagRegistry.of(module)` does, and builds
-     two sets of node serial names: `historyTypes` and `plainTypes`. On save, the type name `jsonPair`
-     already computes picks the statement (item 2). On delete, the deleted row's type picks the cascade
-     (item 3). No per-write reflection, nothing passed through `NodeOp` or the store API; the annotation
-     is read once per class with `isAnnotationPresent`.
+     `historyClasses` and `plainTypes` (serial names). On save, the node's class picks the statement
+     (item 2): a batch groups before it binds, so the type name `jsonPair` computes would serialize every
+     save twice (changed 2026-11-02). On delete, the deleted row's type picks the cascade (item 3). No
+     per-write reflection, nothing passed through `NodeOp` or the store API; the annotation is read once
+     per class with `isAnnotationPresent`.
    - **Not lazy.** A cache filled on first save is empty after a restart. Then a delete of a history
      type that hasn't been saved in the new process skips the cascade, leaves orphan history, and the
      next re-create collides at v1. That's the restart gap `TypeTagRegistry` already avoids (TODO 1.20).
    - **Unknown type on delete cascades (decided 2026-10-31).** A type in the DB but not in this
      process's module (mid rolling deploy, as `nodeTagOf` allows) gets the history delete: one extra
      statement on a second tablet for a rare case, and never an orphan.
-5. **Persistent store only.** Cache-only and ephemeral (YCQL) can't hold history. Registering a
+5. **Persistent layer only (agreed 2026-11-02).** History records the persistent layer, per id, so
+   `ephemeral()` writes never reach it; ephemeral data must not get to disk. Cache-only and ephemeral
+   (YCQL) can't hold history. Registering a
    `@WithHistory` type without a YSQL store fails at wiring time (RFC open question 8): the
    `persistentStore == null` check in `AbyssSchemaWorker` (`YugabytePersistentStore` is the only
-   `AbyssStoreLike`, so null means no YSQL store).
+   `AbyssStoreLike`, so null means no YSQL store). Built, `IndexAlwaysAliveTest`. `modifyNode` across
+   layers is gap 2: `ai/flow/0. Issues/modifynode-crosses-layers-unguarded`.
 6. **Out of v1:** a read API (`history(nodeId, from, limit)`), retention, dropping Kafka redeliveries,
    and the CAS guard itself (VersionGuardPlan Phase 1's guarded statements and `VersionConflict`, plus
    Phases 2–4). Downstream reads the table directly.
 
 ## Tests (red first, on the dev container with true read committed)
 
+Built as `NodeVersionTest` and `NodeHistoryTest`, cases and guards in `plan.md`. The migration line has
+no test: it was checked by hand on the test DB, 39869 rows at version 1.
+
 - 16 coroutines write N updates each to the **same** id. Assert history holds exactly versions 1..total
-  with no gaps or duplicates, and the last row's `data` equals the node's. Red on today's code: no
-  column, no table.
+  with no gaps or duplicates, and the last row's `data` equals the node's.
 - Repeat on distinct ids (odd counts, non-zero starting state).
 - A plain (unannotated) type writes no history rows; a `@WithHistory` type does, in the same transaction.
 - A plain type still increments `version` by exactly 1 per save on both paths (`NodeVersionTest`,
@@ -204,7 +210,7 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
       prerequisite. The trigger form aborted with `yb_max_query_layer_retries set to 60 are
       exhausted` (40001) in the earlier runs; it is rejected on cost anyway.
 - **Batched path loses insert rewriting (measured 2026-10-28).** Production sets
-  `reWriteBatchedInserts=true` (`YugabytePersistentStore.kt:476`). `HistoryBatchRewriteTest`
+  `reWriteBatchedInserts=true` (`YugabytePersistentStore.create`). `HistoryBatchRewriteTest`
   (`-Pperf`, dev YB, `commitYsqlBatched` shape, chunks of 1000, median of 5 interleaved rounds):
   the driver reports `SUCCESS_NO_INFO` for the plain upsert (rewritten) and row counts for the
   history CTE (not rewritten), with the flag on or off.
@@ -258,6 +264,9 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
     - A group must hold distinct ids (one statement can't touch a row twice); the duplicate-key cut
       below already guarantees that.
     - `createArrayOf("bytea", Array<ByteArray>)` binds correctly on the YB driver (verified by the run).
+    - Instants must go as ISO text. This probe's `createArrayOf("timestamptz", Timestamp[])` sends local
+      time with no offset, so an instant in the fall-back hour lands wrong (`NodeHistoryTest` #10, red
+      with Europe/Warsaw at 2026-10-25). The store binds `Instant.toString()`.
   - A multi-row history statement inherits the plain path's duplicate-id failure
     (`BatchDuplicateIdTest`: two saves of one id in one rewritten block fail the chunk with "ON
     CONFLICT DO UPDATE command cannot affect row a second time"). Fixed in `commitYsqlBatched` by
@@ -267,7 +276,8 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
     (`chunk[j]::class == chunk[i]::class`) and runs `executeBatch()` on the first op's statement only.
     Once a `@WithHistory` `SaveNode` binds a different statement than a plain one, a mixed group puts
     rows on two statements and executes one: the other's rows run later out of order or are lost
-    silently. Group by the statement `bind` returns, not by op class.
+    silently. Group by the bound statement, not by op class. Built; `NodeHistoryTest` #5 and #6 go red
+    with op-class grouping.
 - **Mixed types break up batches.** `commitYsqlBatched` groups consecutive ops that use the same
   statement into one `executeBatch()`. A transaction that mixes `@WithHistory` and plain node types
   alternates between the two statements and splits those groups into smaller batches.
@@ -289,8 +299,8 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
   - The split reorders ops across rows. Safe for the same reason `commitYsql`'s `LOCK_ORDER` sort is
     (no reads in the commit, no FKs or triggers), but only if each row's own ops keep their order: a
     `SaveNode(x)` then `DeleteNode(x)` sit on different statements, so a plain partition by statement
-    would swap them. The split rule must keep per-row order (e.g. cut the chunk segment where a row
-    reappears under a different statement). Design in Plan; the probe had saves only.
+    would swap them. Built as a stable partition of each run of node saves, with deletes staying in
+    place as boundaries: an id always binds the same statement, its type being immutable.
 - **P2, plain with the version increment, measured 2026-10-31** (`plain_ver` variant in
   `HistoryVsChainWriteCostTest` and `HistoryBatchRewriteTest`, `-Pperf`, dev YB, median of 5 interleaved
   rounds after a warm-up, same runs as `plain`). Version sum = saves in every round.
@@ -325,6 +335,32 @@ Measured on 2026-09-24 (RFC §4.3, §5.4): live YB 2025.1.0.1, single dev contai
   - Semantics (normal suite, "delete cascade CTE - batches, cascades history and unknown types, spares
     plain"): through `executeBatch`, plain-type history untouched, history and unknown types cascaded.
     Goes red when the unknown type is bound as plain.
+- **Through the real store, measured 2026-11-02** (`NodeHistoryCostTest`, `-Pperf`, dev YB, median of 5
+  interleaved rounds after a warm-up, row counts asserted every run). Before = the store at `1609f34`,
+  now = `40385de`, as alternating builds. Four passes, two each way round, because the first ran `now`
+  cold: per-pass deltas are +10.9/+2.8/+4.0/+7.3% (plain 10007) and +13.1/+4.9/+5.8/+4.8% (delete).
+
+  | workload | before | now | change |
+  |---|---|---|---|
+  | plain, single 1001 | 2105 ms | 2065 ms | none measurable (pass-to-pass drift 9%) |
+  | plain, batched 1003 | 133 ms | 135 ms | +1.9%, within noise |
+  | plain, batched 10007 | 1408 ms | 1483 ms | **+5.3%** (probe: +4.7%) |
+  | plain delete, batched 10007 | 7618 ms | 8054 ms | **+5.7%** (probe: +4.9%) |
+
+  Same-build comparison, two passes against plain `now`:
+
+  | workload | history | mixed 50/50 | plain |
+  |---|---|---|---|
+  | single 1001 | 2257 ms, +6 to +12% | 2120 ms, +1 to +3% | 2073 ms |
+  | batched 1003 | 117 ms, −12 to −16% | 144 ms, +2 to +11% | 135 ms |
+  | batched 10007 | 1203 ms, −19 to −22% | 1491 ms, −2% | 1516 ms |
+
+  - History batched beats plain batched on every size: the multi-row statement outruns the rewrite.
+  - The single-op history cost is above the probe's +1.6%. Different workload: 1000 distinct ids, so
+    nearly all inserts, where the probe updated one entity. Not investigated further.
+  - The partition, with `statementOrder` bypassed: mixed 10007 takes 12161 ms against 1491 ms, **8.2x**
+    (1003: 1164 ms against 144 ms, 8.1x). Against all-plain, the probe's basis, that's 8.0× to its 11.4×.
+    Why the real store loses less isn't measured.
 - **Write amplification.** Every save copies the full JSONB once more. Storage grows without bound,
   with no time column in the key and no row TTL in YSQL, so retention is a scan plus delete. Long
   per-id histories grow one tablet's key range.
