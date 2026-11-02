@@ -124,6 +124,12 @@ The first insert takes `version` from the column default (1), so the first state
    - **Unknown type on delete cascades (decided 2026-10-31).** A type in the DB but not in this
      process's module (mid rolling deploy, as `nodeTagOf` allows) gets the history delete: one extra
      statement on a second tablet for a rare case, and never an orphan.
+   - **Removing the annotation and adding it back on the same class is a wrong idea (2026-11-02).**
+     Removal alone is safe: the type turns plain, its old history stays, and plain saves don't touch
+     that table. But plain deletes stop cascading and plain saves leave no rows, so after the re-add a
+     re-created id collides with its old `(node_id, version)` and rolls back (item 3), and ids that
+     lived through the plain period have version gaps. By reading the SQL, no test. No rule in code:
+     to bring history back, clear that type's `node_history` rows first.
 5. **Persistent layer only (agreed 2026-11-02).** History records the persistent layer, per id, so
    `ephemeral()` writes never reach it; ephemeral data must not get to disk. Cache-only and ephemeral
    (YCQL) can't hold history. Registering a

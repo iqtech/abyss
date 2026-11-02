@@ -139,8 +139,6 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
 
 ## Open
 
-- **Removing `@WithHistory` from a type.** It becomes plain, so its deletes stop cascading, and a
-  re-created id hits the v1 collision of item 3. Found by reading the SQL, no test, no rule in v1.
 - **Rollout order.** The new store fails every node upsert without the `version` column, so the
   `ALTER` lands first. Only `abyss_test_graph` is migrated; whether sniper runs Abyss on a database of
   its own isn't checked.
@@ -153,6 +151,7 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
   `removeNode` of a persistent id still fans out and cascades. The two `modifyNode` cases that cross
   layers moved to gap 2: `ai/flow/0. Issues/modifynode-crosses-layers-unguarded`. Until that lands, a
   persistent `modifyNode` on an ephemeral id writes it to `nodes` and `node_history`.
+- **Don't remove `@WithHistory` and add it back on the same class (2026-11-02).** See `idea.md` item 4.
 
 ## Decided by me, override if wrong
 
