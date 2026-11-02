@@ -5,10 +5,12 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.SerializersModuleCollector
+import pl.iqtech.abyss.dsl.cachedAnnotation
 import pl.iqtech.abyss.dsl.serialName
 import pl.iqtech.abyss.dsl.typeTag
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.WithHistory
 import kotlin.reflect.KClass
 
 // Bidirectional edge-type registry, populated eagerly (once, at worker construction) rather than
@@ -21,6 +23,8 @@ class TypeTagRegistry private constructor(
     private val edgeTagByName: Map<String, Short>,
     private val edgeNameByTag: Map<Short, String>,
     private val nodeTagByName: Map<String, Short>,
+    // Serial names of the @WithHistory node types, for the worker's wiring check.
+    val historyNodeTypes: List<String>,
 ) {
     fun edgeTagOf(type: String): Short = edgeTagByName[type] ?: error("Edge type '$type' has no registered @TypeTag")
     fun edgeNameOf(tag: Short): String = edgeNameByTag[tag] ?: error("Unknown edge TypeTag $tag")
@@ -42,6 +46,7 @@ class TypeTagRegistry private constructor(
             val edgeTagByName = mutableMapOf<String, Short>()
             val edgeNameByTag = mutableMapOf<Short, String>()
             val nodeTagByName = mutableMapOf<String, Short>()
+            val historyNodeTypes = mutableListOf<String>()
 
             for ((base, actual) in collector.found) {
                 when (base) {
@@ -49,6 +54,7 @@ class TypeTagRegistry private constructor(
                         val tag = actual.typeTag()
                         require(nodeTags.add(tag)) { "Node TypeTag $tag already registered (class=$actual)" }
                         nodeTagByName[actual.serialName()] = tag
+                        if (actual.cachedAnnotation<WithHistory>() != null) historyNodeTypes += actual.serialName()
                     }
                     EdgeLike::class -> {
                         val tag = actual.typeTag()
@@ -59,7 +65,7 @@ class TypeTagRegistry private constructor(
                     }
                 }
             }
-            return TypeTagRegistry(edgeTagByName, edgeNameByTag, nodeTagByName)
+            return TypeTagRegistry(edgeTagByName, edgeNameByTag, nodeTagByName, historyNodeTypes)
         }
     }
 }

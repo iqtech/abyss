@@ -9,6 +9,11 @@ import com.hazelcast.config.EvictionPolicy
 import com.hazelcast.core.Hazelcast
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.polymorphic
+import kotlinx.serialization.modules.subclass
 import pl.iqtech.abyss.store.api.AbyssError
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.AbyssStoreTransactionLike
@@ -16,11 +21,15 @@ import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
 import pl.iqtech.abyss.store.api.StoredEdge
+import pl.iqtech.abyss.store.api.TypeTag
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
+import pl.iqtech.abyss.store.api.WithHistory
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.time.Duration
+import kotlin.time.Instant
 import kotlin.uuid.Uuid
 
 // Persistent store that actually holds edges, so an evicted value can be reloaded (TODO 1.27 Phase 2).
@@ -147,4 +156,36 @@ class IndexAlwaysAliveTest {
             hz.shutdown()
         }
     }
+
+    // nodes-history plan.md case 12: only the persistent store holds history, so a @WithHistory type with
+    // no persistentStore must fail at wiring, not silently keep nothing. One plain type beside it, so the
+    // check has to find the annotation rather than react to the module's first class.
+    private val historyModule = SerializersModule {
+        polymorphic(NodeLike::class) { subclass(IaaPlainNode::class); subclass(IaaHistoryNode::class) }
+    }
+
+    @Test fun `WithHistory type with no persistentStore fails at construction`() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "guard4-nodes", "guard4-edges", module = historyModule)
+        }
+        assertContains(e.message.orEmpty(), "iaa_history_node")
+    }
+
+    @Test fun `WithHistory type is fine when a persistentStore is configured`() {
+        AbyssGraphSchema(UuidKeyAdapter, graphTestHz, "guard5-nodes", "guard5-edges", persistentStore = SelfHealStore(), module = historyModule)
+    }
 }
+
+@Serializable @SerialName("iaa_plain_node") @TypeTag(901)
+private data class IaaPlainNode(
+    override val id: Uuid,
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : NodeLike<Uuid>
+
+@Serializable @SerialName("iaa_history_node") @TypeTag(902) @WithHistory
+private data class IaaHistoryNode(
+    override val id: Uuid,
+    override val createdAt: Instant = Instant.fromEpochSeconds(0),
+    override val updatedAt: Instant = Instant.fromEpochSeconds(0),
+) : NodeLike<Uuid>

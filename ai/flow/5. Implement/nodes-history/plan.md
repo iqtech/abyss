@@ -92,6 +92,9 @@ These land together: history without the cascade reopens the re-create collision
 ### D. Wiring check
 - `AbyssSchemaWorker` init, next to the existing `persistentStore == null` block (`:148`): a module
   containing a `@WithHistory` node class with no persistent store fails at construction.
+- **Done 2026-11-02.** `TypeTagRegistry` collects the names during its existing module walk, so there's
+  no second walk. Case 12 lives in `IndexAlwaysAliveTest`: red (construction succeeded), green with the
+  `require`, and the same module with a store still constructs.
 
 ## Tests (red first; dev container, true read committed)
 

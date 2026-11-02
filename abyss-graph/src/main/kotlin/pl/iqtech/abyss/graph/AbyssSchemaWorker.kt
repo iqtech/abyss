@@ -152,6 +152,11 @@ internal class AbyssSchemaWorker(
                 "(the adjacency index still lists it, the value read comes back null). Remove eviction/TTL from " +
                 "'$edgesMapName', or configure a persistentStore."
             )
+            // Only the persistent store holds history: without one a @WithHistory type would keep nothing.
+            require(tagRegistry.historyNodeTypes.isEmpty()) {
+                "@WithHistory on ${tagRegistry.historyNodeTypes} needs a persistentStore: cache-only and ephemeral " +
+                "writes keep no history. Configure a persistentStore, or remove the annotation."
+            }
         }
     }
 
