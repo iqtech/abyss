@@ -41,6 +41,7 @@ import pl.iqtech.abyss.store.api.KeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeKeyEncoding
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.NodeVersion
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTagWidth
 import kotlin.reflect.KClass
@@ -128,6 +129,22 @@ class AbyssGraphSchema<ID> internal constructor(
             .map { rows -> rows.filter { adapter.ownsNodeId(it.first) }.map { type.java.cast(it.second) } }
 
     inline fun <reified N : NodeLike<ID>> scanPersistentNodes(): Either<AbyssError, Flow<N>> = scanPersistentNodes(N::class)
+
+    // nodes-history phase E: the committed versions of one @WithHistory node, ascending from `from`
+    // (inclusive, 1-based), straight from the persistent store: no cache read, no cache write-through.
+    //  - Left = the read can't start: ScanUnsupported (no persistentStore, or the store has no history
+    //    read) or InvalidArgument (from < 1, limit <= 0). Failures during collection are thrown by the flow.
+    //  - A plain type, an unknown id or a never-saved id is an empty flow.
+    //  - No ownership filter: the id is this schema's own, so every row read is owned by construction.
+    //  - Ceilings: one store snapshot and one pooled connection while the flow is collected.
+    //  - A row of another class than N fails the cast and is thrown on collect (type is immutable per id,
+    //    so that's a caller passing the wrong N, not drift).
+    fun <N : NodeLike<ID>> history(type: KClass<N>, id: ID, from: Long = 1, limit: Int = Int.MAX_VALUE): Either<AbyssError, Flow<NodeVersion<N>>> =
+        worker.loadNodeHistory(adapter.toNodeId(id), from, limit)
+            .map { rows -> rows.map { NodeVersion(it.version, type.java.cast(it.node), it.updatedAt) } }
+
+    inline fun <reified N : NodeLike<ID>> history(id: ID, from: Long = 1, limit: Int = Int.MAX_VALUE): Either<AbyssError, Flow<NodeVersion<N>>> =
+        history(N::class, id, from, limit)
 
     override suspend fun node(id: ID): Either<AbyssError, NodeLike<ID>> =
         Either.catch { worker.readNode(adapter.toNodeId(id)) }

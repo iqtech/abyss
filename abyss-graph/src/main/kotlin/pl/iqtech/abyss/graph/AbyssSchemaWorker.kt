@@ -44,6 +44,7 @@ import pl.iqtech.abyss.store.api.EdgeConstraint
 import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.NodeVersion
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
@@ -212,6 +213,10 @@ internal class AbyssSchemaWorker(
     // deliberately not consulted. No store is a typed error, not an empty flow.
     fun scanPersistentNodes(type: String): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>> =
         persistentStore?.scanNodesOfType(type) ?: AbyssError.ScanUnsupported("no persistentStore configured").left()
+
+    // nodes-history phase E: persistent store only, the caches are never consulted.
+    fun loadNodeHistory(nid: NodeId, from: Long, limit: Int): Either<AbyssError, Flow<NodeVersion<NodeLike<*>>>> =
+        persistentStore?.loadNodeHistory(nid, from, limit) ?: AbyssError.ScanUnsupported("no persistentStore configured").left()
 
     // Outgoing edges. Persistent edges come from cachedOutScan (one partition scan, checked against the
     // index count); pageSize bounds only its heal path, the scan materializes the node's cached values.

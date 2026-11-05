@@ -17,6 +17,7 @@ import pl.iqtech.abyss.graph.serialization.AbyssJsonLinesCodec
 import pl.iqtech.abyss.store.api.LongKeyAdapter
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.NodeVersion
 import pl.iqtech.abyss.store.api.SchemaKeyAdapter
 import pl.iqtech.abyss.store.api.SchemaTag
 import pl.iqtech.abyss.store.api.SchemaTagWidth
@@ -43,7 +44,14 @@ private class ScanFakeStore(
     private val nodesById: Map<NodeId, NodeLike<*>> = emptyMap(),
     // null = this store does not implement the type scan (the seam default answers)
     private val typedRows: List<Pair<NodeId, NodeLike<*>>>? = null,
+    // null = this store does not implement the history read (the seam default answers)
+    private val historyRows: Map<NodeId, List<NodeVersion<NodeLike<*>>>>? = null,
 ) : AbyssStoreLike {
+    val historyCalls = mutableListOf<Triple<NodeId, Long, Int>>()
+    override fun loadNodeHistory(id: NodeId, from: Long, limit: Int): Either<AbyssError, Flow<NodeVersion<NodeLike<*>>>> {
+        historyCalls += Triple(id, from, limit)
+        return historyRows?.let { (it[id] ?: emptyList()).asFlow().right() } ?: super.loadNodeHistory(id, from, limit)
+    }
     override suspend fun loadNode(id: NodeId): Either<AbyssError, Pair<NodeLike<*>?, Duration?>> = Either.Right(nodesById[id] to null)
     override suspend fun loadEdge(fromId: NodeId, toId: NodeId, type: String): Either<AbyssError, Pair<EdgeLike<*, *>?, Duration?>> = Either.Right(null to null)
     override suspend fun transaction(block: suspend AbyssStoreTransactionLike.() -> Unit): Either<AbyssError, Unit> = Unit.right()
@@ -217,5 +225,49 @@ class ScanCapabilityTest {
         val schema = g.register(SchemaTag(75L), LongKeyAdapter)
 
         assertIs<AbyssError.SchemaError>(schema.scanPersistentNodes<UnnamedNode>().leftOrNull())
+    }
+
+    // ── nodes-history phase E: history<N>(id) ───────────────────────────────────────────────────────
+
+    @Test fun `history with no persistentStore is ScanUnsupported, not an empty flow`() {
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "hist1-nodes", "hist1-edges", module = graphTestModule)
+        val schema = g.register(SchemaTag(76L), LongKeyAdapter)
+
+        assertIs<AbyssError.ScanUnsupported>(schema.history<LongTestNode>(5L).leftOrNull())
+    }
+
+    @Test fun `history on a store that does not implement it is ScanUnsupported, not an empty flow`() {
+        val store = ScanFakeStore()
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "hist2-nodes", "hist2-edges", persistentStore = store, module = graphTestModule)
+        val schema = g.register(SchemaTag(77L), LongKeyAdapter)
+
+        assertIs<AbyssError.ScanUnsupported>(schema.history<LongTestNode>(5L).leftOrNull())
+        assertEquals(1, store.historyCalls.size, "the call reached the store, not a stub")
+    }
+
+    // Two schemas share one store; domain id 5 exists in both with 3 vs 2 versions, so only the NodeId's
+    // schema tag tells them apart. Versions start at 4 and 9, not 1, and the defaults must reach the store.
+    @Test fun `history reads this schema's own id, typed, with the defaults forwarded`() = runBlocking {
+        val tagA = SchemaTag(78L)
+        val tagB = SchemaTag(79L)
+        val nidA = SchemaKeyAdapter(tagA, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(5L)
+        val nidB = SchemaKeyAdapter(tagB, SchemaTagWidth.BYTE, LongKeyAdapter).toNodeId(5L)
+        fun v(n: Long, name: String) = NodeVersion<NodeLike<*>>(n, LongTestNode(id = 5L, name = name), Instant.fromEpochSeconds(1_000 + n))
+        val store = ScanFakeStore(historyRows = mapOf(
+            nidA to listOf(v(4, "a4"), v(5, "a5"), v(6, "a6")),
+            nidB to listOf(v(9, "b9"), v(10, "b10")),
+        ))
+        val g = HeterogeneousSchemaGraph(multiSchemaHz, SchemaTagWidth.BYTE, "hist3-nodes", "hist3-edges", persistentStore = store, module = graphTestModule)
+        val a = g.register(tagA, LongKeyAdapter)
+        val b = g.register(tagB, LongKeyAdapter)
+
+        val foundA: List<NodeVersion<LongTestNode>> = a.history<LongTestNode>(5L).getOrNull()!!.toList()
+        val foundB = b.history<LongTestNode>(5L, from = 10, limit = 7).getOrNull()!!.toList()
+
+        assertEquals(listOf(4L, 5L, 6L), foundA.map { it.version })
+        assertEquals(listOf("a4", "a5", "a6"), foundA.map { it.node.name })
+        assertEquals(listOf(Instant.fromEpochSeconds(1_004), Instant.fromEpochSeconds(1_005), Instant.fromEpochSeconds(1_006)), foundA.map { it.updatedAt })
+        assertEquals(listOf("b9", "b10"), foundB.map { it.node.name })
+        assertEquals(listOf(Triple(nidA, 1L, Int.MAX_VALUE), Triple(nidB, 10L, 7)), store.historyCalls)
     }
 }

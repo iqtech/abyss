@@ -4,6 +4,7 @@ import arrow.core.Either
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlin.time.Duration
+import kotlin.time.Instant
 
 // An edge as the store returns it from a scan: the value plus BOTH endpoint NodeIds read straight from
 // the PK columns, so a caller can rebuild the cache key without a per-schema adapter (the domain
@@ -13,6 +14,10 @@ import kotlin.time.Duration
 // adjacency warm can resolve the neighbor's @TypeTag without a per-neighbor node read. Null when the
 // store can't/doesn't resolve it (dangling edge, non-relational store); the caller falls back to a fetch.
 data class StoredEdge(val fromId: NodeId, val toId: NodeId, val edge: EdgeLike<*, *>, val remaining: Duration?, val neighborType: String? = null)
+
+// One committed state of a @WithHistory node (nodes-history phase E). `version` is the node's per-id
+// counter (starts at 1); NodeLike itself carries no version, and a caller pages with from = last + 1.
+data class NodeVersion<out N>(val version: Long, val node: N, val updatedAt: Instant)
 
 // Stores are keyed by the self-describing NodeId (its bytes are the PK) and hold polymorphic
 // NodeLike<*>/EdgeLike<*, *> values — one shared store backs every schema in a container, so there
@@ -56,6 +61,13 @@ interface AbyssStoreLike {
     // without the capability can't pass for "no rows". Failures while collecting are thrown by the flow.
     fun scanNodesOfType(type: String): Either<AbyssError, Flow<Pair<NodeId, NodeLike<*>>>> =
         Either.Left(AbyssError.ScanUnsupported("${this::class.simpleName} does not implement scanNodesOfType"))
+
+    // Versions of one node, ascending from `from` (inclusive, 1-based), at most `limit` (nodes-history
+    // phase E). Same contract as scanNodesOfType: Left = the read can't start (InvalidArgument for
+    // from < 1 or limit <= 0), failures while collecting are thrown by the flow. The default is
+    // Left(ScanUnsupported), so a store without history can't pass for "no versions".
+    fun loadNodeHistory(id: NodeId, from: Long, limit: Int): Either<AbyssError, Flow<NodeVersion<NodeLike<*>>>> =
+        Either.Left(AbyssError.ScanUnsupported("${this::class.simpleName} does not implement loadNodeHistory"))
 }
 
 interface AbyssStoreTransactionLike {

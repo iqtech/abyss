@@ -31,6 +31,7 @@ import pl.iqtech.abyss.store.api.EdgeLike
 import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.NodeId
 import pl.iqtech.abyss.store.api.NodeLike
+import pl.iqtech.abyss.store.api.NodeVersion
 import pl.iqtech.abyss.store.api.WithHistory
 import pl.iqtech.abyss.store.api.abyssSerializersModule
 import java.io.Closeable
@@ -42,6 +43,8 @@ import javax.sql.DataSource
 import kotlin.random.Random
 import kotlin.reflect.KClass
 import kotlin.time.toJavaInstant
+import kotlin.time.toKotlinInstant
+import java.time.OffsetDateTime
 
 private sealed interface PersistentOp {
     data class SaveNode(val id: NodeId, val node: NodeLike<*>, val tags: Set<String>) : PersistentOp
@@ -256,6 +259,38 @@ class YugabytePersistentStore(
             }
         }
     }.flowOn(Dispatchers.IO))
+
+    // nodes-history phase E. One tablet (node_id HASH), a range on the version ASC key: no sort, no
+    // index (EXPLAIN verified on the dev YB). Streamed like scanNodesOfType: pgjdbc only uses a cursor with
+    // autocommit off. An early stop (take/first) cancels the flow, which closes the cursor and returns the
+    // connection (NodeHistoryReadTest #19).
+    override fun loadNodeHistory(id: NodeId, from: Long, limit: Int): Either<AbyssError, Flow<NodeVersion<NodeLike<*>>>> {
+        if (from < 1) return Either.Left(AbyssError.InvalidArgument("history from must be >= 1, was $from"))
+        if (limit <= 0) return Either.Left(AbyssError.InvalidArgument("history limit must be > 0, was $limit"))
+        return Either.Right(flow {
+            ysql.connection.use { conn ->
+                conn.autoCommit = false
+                try {
+                    conn.prepareStatement(
+                        "SELECT version, data, updated_at FROM $ysqlSchema.node_history WHERE node_id = ? AND version >= ? ORDER BY version ASC LIMIT ?"
+                    ).apply { fetchSize = 500 }.use { stmt ->
+                        stmt.setBytes(1, id.bytes)
+                        stmt.setLong(2, from)
+                        stmt.setInt(3, limit)
+                        val rs = stmt.executeQuery()
+                        while (rs.next()) emit(NodeVersion(
+                            rs.getLong("version"),
+                            json.decodeFromString(nodeSer, rs.getString("data")),
+                            // OffsetDateTime, not getTimestamp: no JVM-zone hop (the fall-back hour, NodeHistoryTest #10).
+                            rs.getObject("updated_at", OffsetDateTime::class.java).toInstant().toKotlinInstant(),
+                        ))
+                    }
+                } finally {
+                    runCatching { conn.rollback() }
+                }
+            }
+        }.flowOn(Dispatchers.IO))
+    }
 
     // yb_hash_code() is bounded 0..65535 (proven in YsqlPartitionScanFeasibilityTest); splits it into
     // `parallelism` disjoint inclusive ranges for a channelFlow fan-out.

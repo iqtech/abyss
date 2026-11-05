@@ -98,6 +98,71 @@ These land together: history without the cascade reopens the re-create collision
   no second walk. Case 12 lives in `IndexAlwaysAliveTest`: red (construction succeeded), green with the
   `require`, and the same module with a store still constructs.
 
+### E. History read API (added 2026-11-05, back from Test)
+Promoted from "out of v1" (`idea.md` item 6). Read-only, no schema change, no write-path change.
+- **Return shape (decided 2026-11-05): `Either<AbyssError, Flow<NodeVersion<N>>>`** at every layer, the
+  same contract as `scanPersistentNodes`. `Left` means the read can't start: no store, the store can't do
+  it, a bad argument, or no `@SerialName`. Failures during collection are thrown by the flow. The element
+  is `NodeVersion`, not the bare node, because `NodeLike` carries no version and the caller needs it to
+  resume with `from = last.version + 1`.
+- **Store seam**, `AbyssStoreLike`: `fun loadNodeHistory(id: NodeId, from: Long, limit: Int):
+  Either<AbyssError, Flow<NodeVersion<NodeLike<*>>>>`, not `suspend` (as `scanNodesOfType`). Default
+  `Left(ScanUnsupported)`, so a store without history can't pass for "no versions".
+  `data class NodeVersion<out N>(val version: Long, val node: N, val updatedAt: Instant)` lives next to
+  `StoredEdge`.
+- **`YugabytePersistentStore`**: `SELECT version, data, updated_at FROM abyss.node_history WHERE
+  node_id = ? AND version >= ? ORDER BY version ASC LIMIT ?`. One tablet (`node_id HASH`), range on the
+  `version ASC` key, so no sort and no index. Decode `data` with the same polymorphic `nodeSer` path
+  `loadNode` uses (`type` isn't selected: the JSON discriminator already carries it). Stream it like
+  `scanNodesOfType` (`:245`): `autoCommit = false` (pgjdbc only uses a cursor with autocommit off),
+  `fetchSize = 500`, `rollback()` in `finally`, `flowOn(Dispatchers.IO)`.
+  - `from` is inclusive and 1-based (versions start at 1, 0 is the guard's reserved value).
+  - Defaults `from = 1, limit = Int.MAX_VALUE` live on `AbyssGraphSchema` only; the store seam takes
+    both explicitly. One SQL string serves "all versions" and a page: no `limit: Int?` and no second
+    statement without `LIMIT`. Verified on the dev YB 2026-11-05 (`EXPLAIN EXECUTE` of the prepared
+    statement): `LIMIT 2147483647` and `LIMIT 3` give the same plan, a `node_history_pkey` index scan with
+    both conditions pushed down, and no Sort node, so the PK satisfies the `ORDER BY`.
+  - `limit <= 0` or `from < 1` → `Left`, checked **before** `flow { }` is built, not thrown on collect.
+  - Ceiling: one pooled connection and one snapshot for as long as the flow is collected, as the scan.
+    A caller that stops early (`take`, `first`) cancels the collection, which closes the cursor.
+- **Worker**: `AbyssSchemaWorker.loadNodeHistory(nid, from, limit)` = `persistentStore?.loadNodeHistory(...)
+  ?: Left(ScanUnsupported("no persistentStore configured"))`, mirroring `scanPersistentNodes` (`:213`). It
+  never touches the Hazelcast maps (history is the persistent layer's record, see Decided).
+- **`AbyssGraphSchema`**: `fun <N : NodeLike<ID>> history(type: KClass<N>, id: ID, from: Long = 1, limit:
+  Int = Int.MAX_VALUE): Either<AbyssError, Flow<NodeVersion<N>>>` plus a `reified` overload, shaped like
+  `scanPersistentNodes` (`:124`): `serialName()` check → `worker.loadNodeHistory(adapter.toNodeId(id), …)`
+  → `.map { rows -> rows.map { NodeVersion(it.version, type.java.cast(it.node), it.updatedAt) } }`
+  (not `copy`: a data class's `copy` keeps its type parameter, so it can't go from `NodeLike<*>` to `N`). It's a plain method on the
+  concrete class, **not** on `AbyssEngineLike`, by the same precedent as `scanNodeIds`/`scanPersistentNodes`
+  (`:110`). No ownership filter: the id is this schema's own, encoded by `adapter.toNodeId`, so every row
+  is owned by construction. `ownsNodeId` exists only for scans over the shared store.
+- Red first: tests 13–18 against the default `Left(ScanUnsupported)`, then the override, then green.
+- Guards, each removed in turn must go red: `>=` → `>` (#14, #15); the `LIMIT` bind dropped (#14);
+  `ORDER BY` dropped is not a guard (the PK order returns the same rows), so don't claim one.
+- **Built 2026-11-05, not committed.** Red on stubs at every layer (the seam default, and worker and
+  `history` returning `ScanUnsupported("not built")`): `NodeHistoryReadTest` 7/7 red, each on the seam's
+  `ScanUnsupported` (#17 got it instead of `InvalidArgument`). `ScanCapabilityTest`: 2 of the 3 new cases
+  red. The no-store case can't be red on a stub that returns the same `Left`, so its guard is #4 below.
+  Green: 7/7 and 13/13. Full suites, `--rerun-tasks`: store 110/110, graph 391/391. Guards, each removed in turn:
+  1. `>=` → `>`: #14, #15 red (and #16, #18, #19). #13 stays green by design: its versions start at 5.
+  2. `LIMIT` dropped (bind moved too): exactly #14, #15.
+  3. `use` → `let` on the connection: #19 red with `Connection is not available … total=2, active=2`;
+     #14 and #16 too (3 reads on a pool of 2).
+  4. Worker's no-store fallback → empty flow: exactly `history with no persistentStore is ScanUnsupported`.
+- Changed from the plan while building:
+  - **New `AbyssError.InvalidArgument(message)`** for bad `from`/`limit` (agreed 2026-11-05). Reusing
+    `ScanUnsupported` would make #17 green on the stub. In-repo the only `when` over `AbyssError`
+    (`cause()`) has an `else`; a downstream exhaustive `when` needs a branch.
+  - **No `serialName()` step in `history`.** `scanPersistentNodes` needs the name for its SQL; the history
+    SQL filters by id only. A row of another class fails `type.java.cast` and is thrown on collect.
+  - **`updated_at` read as `OffsetDateTime`**, not `getTimestamp`: no JVM-zone hop (the #10 lesson).
+  - **The `history` facade cases live in `ScanCapabilityTest`** (abyss-graph has no YB test
+    dependency), on its `ScanFakeStore` extended with a history map and an argument log. Two schemas, domain
+    id 5 in both with 3 vs 2 versions, starting at 4 and 9, and the defaults `(1, Int.MAX_VALUE)` checked
+    as they reach the store.
+  - **#13 plants the id at version 4** with no history, so 7 saves are versions 5..11 and `from = 1` must
+    return them by stored version, not by position.
+
 ## Tests (red first; dev container, true read committed)
 
 New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own schema built with
@@ -117,6 +182,13 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
 | 10 | non-empty tags with commas, quotes, braces, `NULL`, data and fall-back-hour instants land verbatim on both paths | B |
 | 11 | commit aborted with 40001 once (`FailAfterNCommitsDataSource`) on a history save → exactly one history row (the rollback leaves nothing) | B |
 | 12 | wiring: `@WithHistory` in the module with no persistent store → construction fails (abyss-graph) | D |
+| 13 | id planted at version 4 with no history, then 7 saves → read with both defaults returns v5..11 ascending, each node and `updatedAt` as saved at that version | E |
+| 14 | slice boundaries on 7 versions: `from=4, limit=3` → 4,5,6; `from=7, limit=5` → 7 only; `from=8` → empty | E |
+| 15 | `from=1, limit=1` → exactly v1 (guards `>` vs `>=` at the lower edge) | E |
+| 16 | unknown id, plain-type id, deleted-then-re-created id → empty, empty, only the post-re-create versions | E |
+| 17 | `limit=0`, `limit=-1`, `from=0` → `Left`, not an empty list | E |
+| 18 | a different id's versions never appear (two ids, odd counts 5 and 3, interleaved saves) | E |
+| 19 | early stop: `take(2)` on 7 versions, run pool size + 1 times in a row → every call returns 1,2 and none blocks on the pool (connection released on cancel) | E |
 
 **Guard checks**, each must turn its tests red:
 - grouping back to op class (#5, #6);
@@ -159,10 +231,14 @@ New `NodeHistoryTest` (abyss-store-yugabyte), through the real store, on its own
 - **Test DB migration by hand.** Altering the shared `abyss_test_graph` (`version` DEFAULT 1,
   `node_history`) is harmless to every existing test: no test counts columns, and the only `SELECT *`
   on it (`ConnectionTest`) asserts non-null. Verified by grep; applied 2026-11-02.
+- **Phase E: a plain-type id returns an empty list, not `Left` (2026-11-05).** The store reads by id and
+  doesn't know the type without a second read. `AbyssGraphSchema.history` gets the `KClass` and could
+  reject a non-`@WithHistory` class before reading anything. That's cheap, but not in this phase.
 
 ## Records
 
 - `changelog.md` moves as phases land (`4. Plan → 5. Implement → 6. Test`).
 - Commit messages carry the mechanism and the numbers; commit on `dev`, push only when asked.
-- Out of v1 (item 6): read API, retention, Kafka redelivery dedup, CAS guard; plain batched upsert
+- Out of v1 (item 6): retention, Kafka redelivery dedup, CAS guard (the read API moved in as phase E,
+  2026-11-05); plain batched upsert
   to `unnest` is its own idea (`discussion-summary.md` step 4).

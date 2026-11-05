@@ -137,9 +137,10 @@ The first insert takes `version` from the column default (1), so the first state
    `persistentStore == null` check in `AbyssSchemaWorker` (`YugabytePersistentStore` is the only
    `AbyssStoreLike`, so null means no YSQL store). Built, `IndexAlwaysAliveTest`. `modifyNode` across
    layers is gap 2: `ai/flow/0. Issues/modifynode-crosses-layers-unguarded`.
-6. **Out of v1:** a read API (`history(nodeId, from, limit)`), retention, dropping Kafka redeliveries,
-   and the CAS guard itself (VersionGuardPlan Phase 1's guarded statements and `VersionConflict`, plus
-   Phases 2–4). Downstream reads the table directly.
+6. **Out of v1:** retention, dropping Kafka redeliveries, and the CAS guard itself (VersionGuardPlan
+   Phase 1's guarded statements and `VersionConflict`, plus Phases 2–4). The read API
+   (`history(nodeId, from, limit)`) moved into v1 on 2026-11-05 as `plan.md` phase E. Until it lands,
+   downstream reads the table directly.
 
 ## Tests (red first, on the dev container with true read committed)
 
