@@ -1,3 +1,8 @@
+## [0.37.1] - 2026-11-05
+
+- New `AbyssGraphSchema.history<N>(id, from = 1, limit = Int.MAX_VALUE)`: the committed versions of a `@WithHistory` node, ascending, as `Either<AbyssError, Flow<NodeVersion<N>>>`, read straight from the persistent store (no cache). One single-tablet PK range scan, streamed; an early stop releases the connection. Store seam: `AbyssStoreLike.loadNodeHistory`, default `Left(ScanUnsupported)`
+- New `AbyssError.InvalidArgument` (history's `from < 1`, `limit <= 0`). An exhaustive `when` over `AbyssError` needs a new branch
+
 ## [0.37.0] - 2026-11-02
 
 - **Breaking, schema first:** every node upsert now increments the new `nodes.version` column, so this store fails all node writes until `ALTER TABLE abyss.nodes ADD COLUMN version BIGINT NOT NULL DEFAULT 1` has run. Apply it, plus the `node_history` DDL from `ysql-schema.sql`, before rolling out. Rows created earlier read as version 1
