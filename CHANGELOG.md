@@ -1,3 +1,7 @@
+## [0.37.2] - 2026-11-19
+
+- New typed chain walk `walkOut<E>(maxLength, includeEphemeral)` / `walkIn<E>(maxLength)` (raw: `walkChain(edgeType, direction, ...)`): streams a degree-1 chain from one origin, 1.01 map ops/link vs `paths()` 3.00, no edge-value reads; a fork or cycle throws `IllegalStateException` after every node before it has been emitted
+
 ## [0.37.1] - 2026-11-05
 
 - New `AbyssGraphSchema.history<N>(id, from = 1, limit = Int.MAX_VALUE)`: the committed versions of a `@WithHistory` node, ascending, as `Either<AbyssError, Flow<NodeVersion<N>>>`, read straight from the persistent store (no cache). One single-tablet PK range scan, streamed; an early stop releases the connection. Store seam: `AbyssStoreLike.loadNodeHistory`, default `Left(ScanUnsupported)`
