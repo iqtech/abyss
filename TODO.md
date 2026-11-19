@@ -530,7 +530,7 @@
   ≤128-hop buffer) and read whole levels before descending. Gate: after the fix, rerun
   `DfsDepthHangReproTest` at 10k — if heap still grows with depth beyond small per-frame overhead, drop the
   recursion with those numbers. Residual risk: an engine that completes synchronously (only test fakes today).
-  Repro: `DfsDepthHangReproTest` (`-Pperf`). Evidence: `ai-scripts/TypedChainWalkPlan.md`, "Phase 0 results".
+  Repro: `DfsDepthHangReproTest` (`-Pperf`). Evidence: `ai/flow/1. Idea/typed-chain-walk/idea.md`, "Appendix — pre-4.14 measurements".
   **Done (3438a0b, 2026-09-17): iterative DFS.** The keep-recursion gate failed: with the backtracking fix alone,
   DFS still hung at 3k links — a `StackOverflowError` on the *unwind* (needValue hops descend from
   `adjacencyHopFlow`'s flush after the last read, so every return is synchronous), confirmed via
@@ -1018,29 +1018,28 @@
   tagged schema in a container returning only its own ids' nodes.
 
 - **➡️ 2.32 Typed chain walk — `walkOut<E>()` / `walkIn<E>()`**
-  Walking `A -hasNext-> B -hasNext-> C -> …` to the end has no primitive today. `paths()` can express
-  it but is the wrong instrument at 10k length: it emits one `Path` at the very end holding every node
-  (so `.take(10)` still walks the whole chain), `edgesFrom` hardcodes `outAt(nid, null)` so each step
-  reads and deserializes every edge of every type (`TraversalBuilder.kt:342-348`), and both loops
-  degrade on a degree-1 chain — DFS recurses 10k deep (TODO 3.12's pathology, never applied to
-  `dfsLoop`), BFS copies a growing `visited` set and `Path` per link (~100M element copies).
+  Walking `A -hasNext-> B -hasNext-> C -> …` to the end has no primitive. `paths()` is the wrong
+  instrument at 10k length: it emits one `Path` at the very end (`.take(10)` still walks the whole
+  chain), `edgesFrom` passes `type = null` with a value fetch per hop (~3 map ops/link), and both loops
+  are O(n²) CPU on a chain (DFS `snapshot()` twice per hop since 1.34; BFS `visited`/`Path` copies).
   Two public methods over one raw `walkChain(edgeType, direction, maxLength)`: iterative `while`,
-  streaming `Flow<NodeLike<*>>`, throw on a fork (>1 edge of `E` in the walked direction) or a cycle,
-  node values batched `FETCH_BATCH` behind the id chase (the chase needs only ids, so the value
-  fetches decouple and amortize).
-  **`needValue` inverts between the two** — `walkOut` passes `true` to buy `outAtPersistent`'s
-  partition-local `edgesMap` predicate (type-filtered in the map, ~2.5 map ops/link warm) and then discards the
-  value; `walkIn` passes `false` because `inAt` has no such path (adjacency index, type post-filtered
-  at `ShardedAdjacencyIndex:49`, ~3.5 map ops/link warm). There is no reverse edges map — `edgesMap` is
-  partitioned by `fromId`, so a partition-local predicate structurally cannot find in-edges.
-  Measured against the live container: `loadEdges(from_id)` 2 storage read requests / 2 rows scanned
-  vs `loadInEdges(to_id)` 3 / 4 (`edges_pkey` is `(from_id HASH, to_id ASC, type ASC)`; `to_id` is a
-  bare secondary index with no `type` column). Both are Index Scans, not seq scans — but probe degree
-  was 2, so it does not predict degree 500. Ephemeral in-edges are invisible to `walkIn` by contract
-  (outgoing-only, TODO 1.13/1.27): the one asymmetry that yields a wrong answer rather than a slow one.
-  Phase 0 done: both harness gaps closed (`MapOpCounter`; `CountingFakeEngine` type filter + `inAt`) and
-  the baseline recorded in the plan's "Phase 0 results". Next: Phase 1.
-  Design plan: `ai-scripts/TypedChainWalkPlan.md`.
+  streaming `Flow<NodeLike<*>>`, origin not emitted, throw on a fork (>1 edge of `E` in the walked
+  direction) or a cycle, node values batched behind the id chase with a window doubling 1 → `FETCH_BATCH`
+  (first emission after link 1, not 128).
+  **Plan rewritten 2026-11-19**: the first plan was costed before `888b870` (loaded flag, 4.14).
+  Today **both directions pass `needValue = false`**: one adjacency `getAll` per link (16 shards, loaded
+  flag riding the read). `needValue = true` on OUT now routes to `cachedOutScan` = `entrySet` + `count`,
+  2 ops for an unused value. So two methods stay for contract reasons only: `walkIn` emits in reverse
+  order and cannot see ephemeral links (TODO 1.13/1.27, a wrong answer rather than a slow one). Old
+  Phases 2–3 (warm-check inversion, double window-0) shipped in 4.14. The Phase 0 route baseline is
+  pre-4.14 *and* cache-only (it can't tell `needValue` true from false), so it's demoted to an appendix.
+  Phase 0′ done 2026-11-19 (`paths-re-measuring.md`): `paths()` 3.00 map ops/link in every mode (was 5.5
+  pre-4.14); hop probe store-backed `needValue` true 2.00 vs false 1.00; BFS 10k ~4.3 s CPU, DFS ~170 ms.
+  Next: Phase 1 per `impl-plan.md` (red-first, stub `emptyFlow()`). Decided 2026-11-19: window doubling; error wart documented only (cold flow
+  throws past `from {}`'s `Either.catch`, including `StoreUnavailableException`); broken links skipped
+  silently; `walkOut(includeEphemeral = false)` offered (+1 store RT per link when set).
+  Side finding: `preloadOut`/`preloadIn` await each `addAsync` one at a time (~degree sequential RTs per cold node).
+  Design plan: `ai/flow/1. Idea/typed-chain-walk/idea.md`.
 
 - **✅ 2.33 Existence reads: `crossEdgeExists` (containers) and `existingNodeIds` (typed batch)**
   **`crossEdgeExists`** on `HomogeneousSchemaGraph` and `HeterogeneousSchemaGraph`, next to
