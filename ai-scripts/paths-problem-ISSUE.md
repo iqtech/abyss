@@ -1,8 +1,10 @@
 # paths {} — silent-drop audit findings (ISSUE)
 
-Status: OPEN — findings only, nothing fixed. Audit date: 2026-09-24 (on 0.35.0, `c048725`).
-Probe: `abyss-graph/src/test/kotlin/pl/iqtech/abyss/graph/PathsSilentDropAuditTest.kt` (prints `AUDIT ...`
-lines, asserts nothing — a probe, not a gate).
+Status: Finding 1 FIXED (TODO 1.38). Finding 2 FIXED 2026-11-19 (issue
+`ai/flow/7. Done/bfs-paths-extra-emissions/`). Finding 3 OPEN (TODO 1.35, contract decisions).
+Audit date: 2026-09-24 (on 0.35.0, `c048725`).
+Probe: `abyss-graph/src/test/kotlin/pl/iqtech/abyss/graph/PathsSilentDropAuditTest.kt`. Part 1 (oracle fuzz,
+both strategies) and the part 1b BFS repros now ASSERT; the rest still prints.
 
 Question audited: can `paths {}` quietly drop something from the response?
 

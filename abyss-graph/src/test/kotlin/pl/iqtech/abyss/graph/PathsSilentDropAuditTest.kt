@@ -24,12 +24,15 @@ import pl.iqtech.abyss.store.api.StoredEdge
 import pl.iqtech.abyss.store.api.UuidKeyAdapter
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.time.Duration
 import kotlin.uuid.Uuid
 
-// Audit: can paths {} silently drop something? Findings are PRINTED ("AUDIT ..."), not asserted — this is a
-// probe, not a gate. Part 1: production DFS/BFS vs an oracle written from the KDoc contract (immutable,
-// not derived from dfsLoop). Part 2: real Hazelcast under eviction / failing store / cold index.
+// Audit: can paths {} silently drop something? Part 1: production DFS/BFS vs an oracle written from the KDoc
+// contract (immutable, not derived from dfsLoop) — a GATE for both strategies: 0 drops, 0 extras, DFS in oracle
+// order. Part 1b: the two BFS minimal repros are asserted; the parallel-edge collapse and excluded-gap lines
+// only print (contract decisions, TODO 1.35). Part 2: real Hazelcast under eviction / failing store / cold
+// index, printed (gated by StoreReadFailureTest, TODO 1.38).
 
 private class AuditFake(val nodes: Map<NodeId, TestNode>, edges: List<Hop>) : NodeIdEngine {
     override val hopDispatcher: CoroutineDispatcher = Dispatchers.Unconfined
@@ -146,6 +149,11 @@ class PathsSilentDropAuditTest {
         for (s in TraversalStrategy.entries) println("AUDIT part1 $s casesWithDrops=${drops[s] ?: 0} casesWithExtras=${extras[s] ?: 0}")
         println("AUDIT part1 DFS same-multiset-different-order=$dfsOrderDiff")
         firstExample.forEach { (k, v) -> println("AUDIT part1 example $k: $v") }
+        for (s in TraversalStrategy.entries) {
+            assertEquals(0, drops[s] ?: 0, "$s drops: ${firstExample["$s DROP"]}")
+            assertEquals(0, extras[s] ?: 0, "$s extras: ${firstExample["$s EXTRA"]}")
+        }
+        assertEquals(0, dfsOrderDiff, "DFS emission order differs from the oracle")
     }
 
     // Documented contract edges that still lose information — shown, not judged.
@@ -170,10 +178,17 @@ class PathsSilentDropAuditTest {
         val mid = m.map { UuidKeyAdapter.toNodeId(it.id) }
         fun mh(f: Int, t: Int) = Hop(mid[f], mid[t], "t", TestEdge(fromId = m[f].id, toId = m[t].id, label = "${m[f].name}-${m[t].name}"))
         val ev = { _: Path, n: NodeLike<*> -> when ((n as TestNode).name) { "x1", "x2" -> Evaluation.EXCLUDE_AND_CONTINUE; "c" -> Evaluation.INCLUDE_AND_PRUNE; else -> Evaluation.INCLUDE_AND_CONTINUE } }
-        for ((label, links) in listOf("with c" to listOf(mh(0, 1), mh(1, 2), mh(1, 4)), "x1+x2, no c" to listOf(mh(0, 1), mh(1, 2), mh(1, 3)))) {
+        // Gate (issue bfs-paths-extra-emissions): an excluded dead end must not emit its parent's prefix when a
+        // sibling extended it ("with c"), nor emit it once per dead end ("x1+x2, no c").
+        for ((label, links, expected) in listOf(
+            Triple("with c", listOf(mh(0, 1), mh(1, 2), mh(1, 4)), listOf("a>b>c|a-b,b-c")),
+            Triple("x1+x2, no c", listOf(mh(0, 1), mh(1, 2), mh(1, 3)), listOf("a>b|a-b")))) {
             val fg = AuditFake(mid.zip(m).toMap(), links)
-            for (s in TraversalStrategy.entries)
-                println("AUDIT part1b BFS-min $label $s: ${TraversalBuilder(fg, setOf(mid[0]), UuidKeyAdapter).paths(s, EdgeTraversalDirection.OUT, Int.MAX_VALUE, { _, _ -> true }, ev).toList().map(::key)}")
+            for (s in TraversalStrategy.entries) {
+                val got = TraversalBuilder(fg, setOf(mid[0]), UuidKeyAdapter).paths(s, EdgeTraversalDirection.OUT, Int.MAX_VALUE, { _, _ -> true }, ev).toList().map(::key)
+                println("AUDIT part1b BFS-min $label $s: $got")
+                assertEquals(expected, got, "$label $s")
+            }
         }
     }
 

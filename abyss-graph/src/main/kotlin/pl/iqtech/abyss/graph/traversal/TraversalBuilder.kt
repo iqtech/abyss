@@ -478,13 +478,22 @@ class TraversalBuilder<ID>(
         edgeVisitor: (Path, EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (Path, NodeLike<*>) -> Evaluation
     ) {
-        data class Entry(val path: Path, val headNid: NodeId, val fromNid: NodeId, val visited: Set<NodeId>, val depth: Int)
+        // One Head per included prefix, shared by the entry that included it and every EXCLUDE_AND_CONTINUE entry
+        // below it (they all carry its path). dfsLoop's `emitted` flag, passed up through excluded frames, done as
+        // a counter because BFS interleaves that region with other entries: the natural terminal is emitted ONCE,
+        // when the region's last entry is expanded and no included node was produced anywhere in it. A per-entry
+        // flag emitted the prefix from each excluded dead end — even when a sibling extended it — and once per dead
+        // end (issue bfs-paths-extra-emissions: 481/36k oracle cases).
+        class Head(val path: Path) { var pending = 1; var emitted = false }
+        data class Entry(val head: Head, val headNid: NodeId, val fromNid: NodeId, val visited: Set<NodeId>, val depth: Int)
         val queue = ArrayDeque<Entry>()
-        for ((nid, node) in origin) queue += Entry(Path(listOf(node), emptyList()), nid, nid, setOf(nid), 0)
+        for ((nid, node) in origin) queue += Entry(Head(Path(listOf(node), emptyList())), nid, nid, setOf(nid), 0)
         while (queue.isNotEmpty()) {
-            val (currentPath, headNid, fromNid, visited, depth) = queue.removeFirst()
-            if (depth >= maxDepth) continue // safety guard; with the enqueue guard below only fires for maxDepth == 0
-            var produced = false // this entry emitted a path or enqueued a continuation
+            val (head, headNid, fromNid, visited, depth) = queue.removeFirst()
+            val currentPath = head.path
+            // Only an origin can reach this (the enqueue guard keeps children below maxDepth), and an origin's Head
+            // never emits (lone node), so skipping its pending decrement is harmless.
+            if (depth >= maxDepth) continue
             // Per-expansion dedup, mirroring dfsLoop's `seen`: two edges from this entry to the same
             // neighbour (e.g. a→b and b→a under BOTH) visit it once, per README's path-local uniqueness
             // contract. Only this expansion's gate — children still inherit `visited + nextNid`, not
@@ -511,10 +520,11 @@ class TraversalBuilder<ID>(
                     val nextHeadNid = if (included) nextNid else headNid
                     val nextDepth = depth + 1
                     if (eval == Evaluation.INCLUDE_AND_PRUNE ||
-                        (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) { emit(extendedPath); produced = true }
+                        (eval == Evaluation.INCLUDE_AND_CONTINUE && nextDepth >= maxDepth)) { emit(extendedPath); head.emitted = true }
                     if (nextDepth < maxDepth && (eval == Evaluation.INCLUDE_AND_CONTINUE || eval == Evaluation.EXCLUDE_AND_CONTINUE)) {
-                        queue += Entry(extendedPath, nextHeadNid, nextNid, visited + nextNid, nextDepth)
-                        produced = true
+                        // an included child always emits (itself or an extension), so it settles this region now
+                        val childHead = if (included) Head(extendedPath).also { head.emitted = true } else head.also { it.pending++ }
+                        queue += Entry(childHead, nextHeadNid, nextNid, visited + nextNid, nextDepth)
                     }
                 }
                 window.clear()
@@ -528,7 +538,7 @@ class TraversalBuilder<ID>(
                 if (window.size >= FETCH_BATCH) flushWindow()
             }
             flushWindow()
-            if (!produced && currentPath.nodes.size > 1) emit(currentPath) // natural terminal (excludes lone origin)
+            if (--head.pending == 0 && !head.emitted && currentPath.nodes.size > 1) emit(currentPath) // natural terminal (excludes lone origin)
         }
     }
 

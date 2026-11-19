@@ -557,10 +557,11 @@
 
 - **➡️ 1.35 `paths {}` audit: BFS extra emissions, contract decisions**
   Full findings, repros and fix directions: `ai-scripts/paths-problem-ISSUE.md`; probe
-  `PathsSilentDropAuditTest` (prints, asserts nothing). The store-failure silent drop that was item (1)
-  here affects every read, not only `paths`, and moved to 1.38. (2) BFS emits non-maximal prefixes and
-  duplicates (`bfsLoop` natural terminal, 481/36k fuzz cases, re-measured 2026-11-19 on 0.37.2; DFS exact) —
-  filed as issue `ai/flow/2. Discuss/bfs-paths-extra-emissions/issue.md` (repros, cause, proposed fix). (3) Contract decisions: parallel-edge collapse; excluded-gap `Path` misaligns in
+  `PathsSilentDropAuditTest` (part 1 oracle fuzz is a DFS+BFS gate since 2026-11-19). The store-failure silent
+  drop that was item (1) here affects every read, not only `paths`, and moved to 1.38 (done).
+  (2) ~~BFS emits non-maximal prefixes and duplicates~~ — **fixed 2026-11-19**: a shared `Head` per included
+  prefix in `bfsLoop`; 481/36k fuzz cases → 0. Issue: `ai/flow/7. Done/bfs-paths-extra-emissions/`.
+  **Open: (3) contract decisions** — parallel-edge collapse; excluded-gap `Path` misaligns in
   `toEitherList()`. Ephemerals out of scope.
 
 - **➡️ 1.36 Adjacency preload-vs-remove race: a preload can resurrect a removed index entry**

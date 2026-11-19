@@ -80,3 +80,31 @@ Issue: `issue.md` (this folder). TODO 1.35 item (2). Date: 2026-11-19, on 0.37.2
 - **Cancellation (`.take(n)`):** an unresolved head never emits. That is correct: the consumer stopped first.
 - **`maxDepth = 0`:** the origin isn't expanded; `pending` drops 1 → 0 and `size == 1`, so nothing is emitted,
   as today and as the oracle expects.
+
+## Results (2026-11-19) [measured]
+
+- **Red:** part 1 failed on `BFS extras` (first example seed 14, BOTH, maxDepth 3, extra `n0>n5`); part 1b
+  failed on `with c BFS` (`[a>b>c, a>b]`). The DFS assertions run first and passed.
+- **Green:** part 1 gives 0/0 for both strategies, DFS order differences 0. Both repros give `[a>b>c]` / `[a>b]`
+  for both strategies.
+- **Deviation from step 2:** the `depth >= maxDepth` `continue` guard was kept instead of wrapping the expansion
+  (smaller diff). Only an origin reaches it, and an origin's `Head` never emits, so the skipped decrement
+  is harmless. Commented in place.
+- **Mutations**, each reverted:
+
+  | | mutation | part 1 (fuzz) | part 1b |
+  |---|---|---|---|
+  | A | no `pending++` | red | green |
+  | B | no `emitted` on included enqueue | red | green |
+  | C | no `emitted` on prune/cap emit | red | red |
+  | D | `pending >= 0` (emit per entry) | red | red |
+
+  **Correction to the tests table:** the repros do not guard A or B. Neither repro enqueues an included
+  child, so B is invisible to them. Under A, `b`'s own expansion drains the region first and emits `a>b`
+  once by accident. Only the fuzz guards A and B. Part 1b stops at its first failing case, so for C and D
+  it is not shown which repro caught them.
+- **Full suite:** `./gradlew build`, 521 tests, 0 failures, 0 errors.
+- **`-Pperf` round trips unchanged:**
+  - `paths BFS over a single supernode`: 5, the same as after 4.12.
+  - 10k chain BFS and DFS: 20,000 each.
+  - BFS chain wall time ~4.8 s: the quadratic `visited` copies, out of scope.
