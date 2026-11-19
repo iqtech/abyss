@@ -530,7 +530,7 @@
   ≤128-hop buffer) and read whole levels before descending. Gate: after the fix, rerun
   `DfsDepthHangReproTest` at 10k — if heap still grows with depth beyond small per-frame overhead, drop the
   recursion with those numbers. Residual risk: an engine that completes synchronously (only test fakes today).
-  Repro: `DfsDepthHangReproTest` (`-Pperf`). Evidence: `ai/flow/1. Idea/typed-chain-walk/idea.md`, "Appendix — pre-4.14 measurements".
+  Repro: `DfsDepthHangReproTest` (`-Pperf`). Evidence: `ai/flow/7. Done/typed-chain-walk/idea.md`, "Appendix — pre-4.14 measurements".
   **Done (3438a0b, 2026-09-17): iterative DFS.** The keep-recursion gate failed: with the backtracking fix alone,
   DFS still hung at 3k links — a `StackOverflowError` on the *unwind* (needValue hops descend from
   `adjacencyHopFlow`'s flush after the last read, so every return is synchronous), confirmed via
@@ -1017,7 +1017,7 @@
   Test: mixed present/absent ids (absent omitted), a cold miss healed through the store, and a
   tagged schema in a container returning only its own ids' nodes.
 
-- **➡️ 2.32 Typed chain walk — `walkOut<E>()` / `walkIn<E>()`**
+- **✅ 2.32 Typed chain walk — `walkOut<E>()` / `walkIn<E>()`**
   Walking `A -hasNext-> B -hasNext-> C -> …` to the end has no primitive. `paths()` is the wrong
   instrument at 10k length: it emits one `Path` at the very end (`.take(10)` still walks the whole
   chain), `edgesFrom` passes `type = null` with a value fetch per hop (~3 map ops/link), and both loops
@@ -1035,11 +1035,14 @@
   pre-4.14 *and* cache-only (it can't tell `needValue` true from false), so it's demoted to an appendix.
   Phase 0′ done 2026-11-19 (`paths-re-measuring.md`): `paths()` 3.00 map ops/link in every mode (was 5.5
   pre-4.14); hop probe store-backed `needValue` true 2.00 vs false 1.00; BFS 10k ~4.3 s CPU, DFS ~170 ms.
-  Next: Phase 1 per `impl-plan.md` (red-first, stub `emptyFlow()`). Decided 2026-11-19: window doubling; error wart documented only (cold flow
+  Phase 1 implemented 2026-11-19: `ChainWalkTest` 17 tests, red on the stub (16 assertion
+  failures), green after; 5 guard mutations each go red; full suite 520/520. Post: `walkChain` 1.01 map
+  ops/link vs `paths()` 3.00, 0 edge-value reads; 10k fake chain 20 ms vs BFS ~4.6 s.
+  Decided 2026-11-19: window doubling; error wart documented only (cold flow
   throws past `from {}`'s `Either.catch`, including `StoreUnavailableException`); broken links skipped
   silently; `walkOut(includeEphemeral = false)` offered (+1 store RT per link when set).
   Side finding: `preloadOut`/`preloadIn` await each `addAsync` one at a time (~degree sequential RTs per cold node).
-  Design plan: `ai/flow/1. Idea/typed-chain-walk/idea.md`.
+  Design plan: `ai/flow/7. Done/typed-chain-walk/idea.md`.
 
 - **✅ 2.33 Existence reads: `crossEdgeExists` (containers) and `existingNodeIds` (typed batch)**
   **`crossEdgeExists`** on `HomogeneousSchemaGraph` and `HeterogeneousSchemaGraph`, next to

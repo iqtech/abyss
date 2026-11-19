@@ -95,4 +95,24 @@ interface TraversalBuilderLike<ID> {
         edgeVisitor: (path: Path, edge: EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (path: Path, node: NodeLike<*>) -> Evaluation
     ): Flow<Path>
+    /**
+     * Streams the chain of [edgeType] edges from the single origin in [direction], one node per link,
+     * in walk order (INCOMING walks emit in reverse chain order). The origin itself is not emitted.
+     * Lazy: a consumer that stops early stops the walk.
+     *
+     * - Ends cleanly where no further [edgeType] edge exists, or after [maxLength] links are followed.
+     * - More than one [edgeType] edge in [direction] from a node (a fork), or a link back to an already
+     *   walked node (a cycle), throws [IllegalStateException] — a chain that forks or loops is corrupt data.
+     *   Every node up to and including the forking node (or the cycle's last new node) is emitted first.
+     * - A link to an absent node (broken link) is followed but not emitted, so emissions can be fewer
+     *   than links; [maxLength] counts links.
+     * - Exactly one origin, else [IllegalArgumentException].
+     * - [includeEphemeral] (OUTGOING only, ignored for INCOMING, as in [addHop]) also follows ephemeral
+     *   links, at one ephemeral-store read per link. Ephemeral edges are outgoing-only (TODO 1.13/1.27),
+     *   so an INCOMING walk never sees them and ends early at an ephemeral link, without error.
+     *
+     * The flow is cold and usually collected after `from {}` returns, so its errors (fork, cycle,
+     * [IllegalArgumentException], a store outage) reach the collector as exceptions, not as `Either.Left`.
+     */
+    fun walkChain(edgeType: String, direction: HopDirection, maxLength: Int = Int.MAX_VALUE, includeEphemeral: Boolean = false): Flow<NodeLike<*>>
 }

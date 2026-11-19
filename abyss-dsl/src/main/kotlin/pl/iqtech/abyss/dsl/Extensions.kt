@@ -111,6 +111,23 @@ suspend inline fun <ID, reified E : EdgeLike<*, *>, reified N : NodeLike<*>> Tra
 suspend inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.countEdges(direction: HopDirection = HopDirection.OUTGOING) =
     countEdges(direction, E::class.serialName())
 
+/**
+ * Streams the nodes along the chain of outgoing [E] edges from the single origin, in chain order, origin
+ * excluded. Throws on a fork or a cycle; contract in [TraversalBuilderLike.walkChain].
+ * [includeEphemeral] also follows ephemeral [E] links (one ephemeral-store read per link).
+ */
+inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.walkOut(maxLength: Int = Int.MAX_VALUE, includeEphemeral: Boolean = false): Flow<NodeLike<*>> =
+    walkChain(E::class.serialName(), HopDirection.OUTGOING, maxLength, includeEphemeral)
+
+/**
+ * Streams the nodes along the chain of incoming [E] edges from the single origin, so in **reverse** chain
+ * order, origin excluded. Throws on a fork (two nodes both linking into one) or a cycle; contract in
+ * [TraversalBuilderLike.walkChain]. Ephemeral links are invisible (outgoing-only, TODO 1.13/1.27):
+ * the walk ends at one without error.
+ */
+inline fun <reified E : EdgeLike<*, *>> TraversalScope<*>.walkIn(maxLength: Int = Int.MAX_VALUE): Flow<NodeLike<*>> =
+    walkChain(E::class.serialName(), HopDirection.INCOMING, maxLength)
+
 suspend inline fun <reified N : NodeLike<*>> TraversalScope<*>.nodes() =
     raw.filterFrontierByNode(N::class.serialName(), N::class.typeTag(), null)
 

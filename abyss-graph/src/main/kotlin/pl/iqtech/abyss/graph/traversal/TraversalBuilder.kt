@@ -340,6 +340,43 @@ class TraversalBuilder<ID>(
         }
     }
 
+    // TODO 2.32: a degree-1 chain walk. Iterative, O(n) memory (the visited set), streaming. The id chase needs
+    // only hops, so node values are fetched behind it in windows that double 1 → FETCH_BATCH: the first node
+    // arrives after link 1 (.take(n) chases ~n links), and a long walk still pays one nodesAt per 128 links.
+    // On a fork or cycle the window is flushed BEFORE the throw: every node up to the corrupt one is emitted.
+    override fun walkChain(edgeType: String, direction: HopDirection, maxLength: Int, includeEphemeral: Boolean): Flow<NodeLike<*>> = flow {
+        require(frontier.size == 1) { "walkChain needs exactly one origin (got ${frontier.size})" }
+        var cur = frontier.single()
+        val visited = hashSetOf(cur)
+        val window = ArrayList<NodeId>(FETCH_BATCH)
+        var cap = 1
+
+        suspend fun FlowCollector<NodeLike<*>>.flush() {
+            if (window.isEmpty()) return
+            val nodes = engine.nodesAt(window)
+            for (id in window) nodes[id]?.let { emit(it) }                 // chain order; absent (broken link) skipped
+            window.clear()
+            cap = minOf(cap * 2, FETCH_BATCH)
+        }
+
+        var links = 0
+        while (links < maxLength) {
+            // needValue = false in BOTH directions: one adjacency getAll per link (measured, TODO 2.32 Phase 0′).
+            // true would route OUT to cachedOutScan (entrySet + count = 2 ops) for an edge value never read here.
+            // includeEphemeral appends ephemeral-store hops (OUT only; hops() ignores it for IN).
+            val hops = hops(cur, direction, edgeType, needValue = false, includeEphemeral).toList()
+            if (hops.isEmpty()) break                                        // natural end of chain
+            if (hops.size > 1) { flush(); error("chain fork at $cur: ${hops.size} '$edgeType' edges ($direction)") }
+            val next = hops.single().target(direction)
+            if (!visited.add(next)) { flush(); error("chain cycle at $cur -> $next ('$edgeType', $direction)") }
+            links++
+            window += next
+            if (window.size >= cap) flush()
+            cur = next
+        }
+        flush()
+    }
+
     private fun edgesFrom(fromNid: NodeId, direction: EdgeTraversalDirection): Flow<Hop> = when (direction) {
         EdgeTraversalDirection.OUT  -> engine.outAt(fromNid, null)
         EdgeTraversalDirection.IN   -> engine.inAt(fromNid, null)

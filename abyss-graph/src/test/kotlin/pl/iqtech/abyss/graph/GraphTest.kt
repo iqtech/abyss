@@ -966,7 +966,7 @@ private class FakeStore(private val failTx: Boolean = false) : AbyssStoreLike {
     }
 }
 
-private class FakeEphemeralStore : AbyssEphemeralStoreLike {
+internal class FakeEphemeralStore : AbyssEphemeralStoreLike {
     val saveNodeCalls = mutableSetOf<Uuid>()
     private val edges = mutableListOf<StoredEdge>()   // durable ephemeral out-edges (TODO 1.27: store is their only home)
 

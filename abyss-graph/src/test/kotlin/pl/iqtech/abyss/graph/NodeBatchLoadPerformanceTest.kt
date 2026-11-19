@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.Evaluation
+import pl.iqtech.abyss.dsl.HopDirection
 import pl.iqtech.abyss.dsl.TraversalScope
 import pl.iqtech.abyss.dsl.TraversalStrategy
 import pl.iqtech.abyss.dsl.outgoing
@@ -47,7 +48,7 @@ import kotlin.uuid.Uuid
 // NOT a per-route cost model — both still charge one round trip per call; only real Hazelcast
 // (MapOpCounter) prices routes. edgeTypeOf defaults every edge to "test_edge" (TestEdge's @SerialName),
 // so the pre-existing scenarios — which pass null or "test_edge" — see exactly the hops they saw before.
-private class CountingFakeEngine(
+internal class CountingFakeEngine(
     private val children: Map<NodeId, List<NodeId>>,
     private val latencyMs: Long,
     private val valuedHops: Boolean = false,
@@ -248,6 +249,24 @@ class NodeBatchLoadPerformanceTest {
             }
             println("\nchain paths $strategy $direction (length=$CHAIN_LENGTH, latency=0): ${elapsed.inWholeMilliseconds}ms, " +
                     "${engine.roundTrips.get()} engine round trips, $outcome")
+        }
+    }
+
+    // TODO 2.32 Phase 1 post: walkChain over the same 10k chain, next to the paths() baseline above.
+    @Test fun `chain walk post - walkChain over a 10k chain`() {
+        if (System.getProperty("perf") == null) return
+        val chain = ids(CHAIN_LENGTH)
+        val children = chain.zipWithNext().associate { (a, b) -> a to listOf(b) }
+        for (direction in listOf(HopDirection.OUTGOING, HopDirection.INCOMING)) {
+            val engine = CountingFakeEngine(children, latencyMs = 0)
+            val origin = if (direction == HopDirection.OUTGOING) chain.first() else chain.last()
+            var n = 0
+            val elapsed = measureTime {
+                n = runBlocking { TraversalBuilder(engine, setOf(origin), UuidKeyAdapter).walkChain("test_edge", direction).toList().size }
+            }
+            assertEquals(CHAIN_LENGTH - 1, n, "walk must cover the whole chain")
+            println("\nchain walk $direction (length=$CHAIN_LENGTH, latency=0): ${elapsed.inWholeMilliseconds}ms, " +
+                    "${engine.roundTrips.get()} engine round trips, $n nodes")
         }
     }
 }

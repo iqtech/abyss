@@ -206,7 +206,9 @@ through its adjacency, which is normally empty after a delete fanout. Default: s
   3. **Decision probe for §3 "hop call"**: in store-backed warm mode, count ops/link for a bare loop of
      `outAt(cur, E, needValue = true)` vs `needValue = false`. Expected 2 vs 1. If the measurement disagrees, the plan is wrong again: stop and rethink.
   4. Fake engine, 10k: `paths()` BFS wall time + round trips (CPU baseline after 1.34; DFS is now iterative, so measure it too).
-- **Phase 1 — the primitive, red first.**
+- **Phase 1 — the primitive, red first.** **Implemented 2026-11-19**; results in `paths-re-measuring.md` §6.
+  One deviation from §7: on a fork or cycle the window is flushed before the throw (deterministic
+  "everything up to the corrupt node is emitted" contract).
   1. Add `walkChain` to `TraversalBuilderLike`/`TraversalScope`/`Extensions` with a **stub `emptyFlow()`** in
      `TraversalBuilder`, so `ChainWalkTest` compiles and fails on real assertions (expected chain ≠ empty).
   2. Implement §7. Green. Full suite.

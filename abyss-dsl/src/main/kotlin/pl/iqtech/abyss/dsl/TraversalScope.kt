@@ -35,4 +35,7 @@ class TraversalScope<ID>(@PublishedApi internal val raw: TraversalBuilderLike<ID
         edgeVisitor: (path: Path, edge: EdgeLike<*, *>) -> Boolean,
         nodeEvaluator: (path: Path, node: NodeLike<*>) -> Evaluation
     ): Flow<Path> = raw.paths(strategy, direction, maxDepth, edgeVisitor, nodeEvaluator)
+    /** See [TraversalBuilderLike.walkChain]; typed sugar: `walkOut<E>()` / `walkIn<E>()`. */
+    fun walkChain(edgeType: String, direction: HopDirection, maxLength: Int = Int.MAX_VALUE, includeEphemeral: Boolean = false): Flow<NodeLike<*>> =
+        raw.walkChain(edgeType, direction, maxLength, includeEphemeral)
 }

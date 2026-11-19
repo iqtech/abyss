@@ -93,3 +93,23 @@ difference nobody has measured as a cost. Open for cane.
 1. idea.md §2.3 and §1's DFS row: soften "O(n²) CPU" for DFS to "~170 ms at 10k (measured); BFS ~4.3 s".
 2. idea.md §4 table: confirmed. Add the cache-only payload nuance (§2 above) and the "keep `false`" decision once agreed.
 3. The new probe is the natural home for Phase 1's map-op guard: add a third route, `walkChain`, and assert ≤ 1.05 ops/link.
+
+## 6. Phase 1 post — `walkChain` vs `paths()` (2026-11-19, same harnesses, single run)
+
+Real Hazelcast, warm 2,000-link chain, map ops per link (`chain walk post - walkChain map ops per link`).
+Every row is identical across CACHE_ONLY / STORE_WARM and OUT / IN, with 0 store loads (asserted):
+
+| `others` | `paths()` (§1) | `walkChain` | breakdown | payload/link |
+|---|---|---|---|---|
+| 0 | 3.00 | **1.01** | adjacency `getAll` 1.00 + nodes `getAll` 0.01 | 1 adj entry; 0 edge values |
+| 16 | 3.00 | **1.01** | same | 17 adj entries (post-filter, expected); **0 edge values** (paths: 17) |
+
+Fake engine, 10k chain, latency 0 (`chain walk post - walkChain over a 10k chain`):
+
+| | wall | engine round trips |
+|---|---|---|
+| `paths()` DFS OUT / IN | 204 / 176 ms | 20,000 |
+| `paths()` BFS OUT / IN | 4,695 / 4,599 ms | 20,000 |
+| `walkChain` OUT / IN | **20 / 17 ms** | **10,085** = 10,000 hop reads + 85 `nodesAt` (7 doubling windows + 78 of 128) |
+
+Map ops: 3.00 → 1.01 per link (−66%). CPU at 10k: BFS ~4.6 s → ~20 ms; DFS ~190 ms → ~20 ms.

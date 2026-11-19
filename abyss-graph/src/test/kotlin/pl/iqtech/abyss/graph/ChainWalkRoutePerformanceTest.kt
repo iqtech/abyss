@@ -8,6 +8,8 @@ import pl.iqtech.abyss.dsl.EdgeTraversalDirection
 import pl.iqtech.abyss.dsl.Evaluation
 import pl.iqtech.abyss.dsl.TraversalStrategy
 import pl.iqtech.abyss.dsl.typeTag
+import pl.iqtech.abyss.dsl.walkIn
+import pl.iqtech.abyss.dsl.walkOut
 import pl.iqtech.abyss.store.api.AbyssStoreLike
 import pl.iqtech.abyss.store.api.EdgeLike
 import java.util.concurrent.atomic.AtomicInteger
@@ -114,6 +116,25 @@ class ChainWalkRoutePerformanceTest {
                 assertEquals(listOf(length), paths.map { it.nodes.size }, "walk must cover the whole chain (else the seed is wrong)")
                 assertEquals(0, store.loads.get(), "store loads during a warm walk: the seed is cold, numbers invalid")
                 report("chain paths $mode $strategy $direction (length=$length, others=$others)", counter, length - 1)
+            }
+        }
+    }
+
+    // TODO 2.32 Phase 1 post: the walk itself, same chain, modes and report as the paths() baseline above.
+    @Test fun `chain walk post - walkChain map ops per link`() {
+        if (System.getProperty("perf") == null) return
+        for (others in listOf(0, 16)) {
+            val chain = seedChain(graphTestHz, nodesName, edgesName, length, others, loaded = true)
+            for (mode in Mode.entries) for (out in listOf(true, false)) {
+                val counter = MapOpCounter(graphTestHz)
+                val store = LoadCountingStore()
+                val g = schema(counter, mode, store)
+                val walked = runBlocking {
+                    (if (out) g.from(chain.first()) { walkOut<TestEdge>() } else g.from(chain.last()) { walkIn<TestEdge>() }).getOrNull()!!.toList()
+                }
+                assertEquals(length - 1, walked.size, "walk must cover the whole chain")
+                assertEquals(0, store.loads.get(), "store loads during a warm walk: the seed is cold, numbers invalid")
+                report("chain walk $mode ${if (out) "OUT" else "IN"} (length=$length, others=$others)", counter, length - 1)
             }
         }
     }
